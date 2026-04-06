@@ -5,17 +5,24 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use aes::{Aes128, Aes192, Aes256};
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Multipart, Path as AxumPath, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::{Form, Router};
+use axum::Router;
+use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
 use chrono::Local;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use uuid::Uuid;
+
+type Aes128CbcEnc = cbc::Encryptor<Aes128>;
+type Aes192CbcEnc = cbc::Encryptor<Aes192>;
+type Aes256CbcEnc = cbc::Encryptor<Aes256>;
 
 #[derive(Clone)]
 struct AppState {
@@ -27,12 +34,6 @@ struct AppState {
 const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES_PER_SECOND: usize = 1024 * 1024;
 const THROTTLE_CHUNK_BYTES: usize = 16 * 1024;
-
-#[derive(Debug, Deserialize)]
-struct PathGenerateForm {
-    input_path: String,
-    playlist_name: Option<String>,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct JobMeta {
@@ -47,12 +48,96 @@ struct JobSummary {
     meta: JobMeta,
     segment_count: usize,
     playlist_path: String,
+    aes128_playlist_path: Option<String>,
+    aes192_playlist_path: Option<String>,
+    aes256_playlist_path: Option<String>,
 }
 
 #[derive(Debug)]
 struct AppError {
     status: StatusCode,
     message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HlsEncryptionMode {
+    None,
+    Aes128,
+    Aes192,
+    Aes256,
+}
+
+impl HlsEncryptionMode {
+    fn all_encrypted() -> [Self; 3] {
+        [Self::Aes128, Self::Aes192, Self::Aes256]
+    }
+
+    fn playlist_file_name(self) -> &'static str {
+        match self {
+            Self::None => "index.m3u8",
+            Self::Aes128 => "index-aes128.m3u8",
+            Self::Aes192 => "index-aes192.m3u8",
+            Self::Aes256 => "index-aes256.m3u8",
+        }
+    }
+
+    fn segment_file_pattern(self) -> &'static str {
+        match self {
+            Self::None => "seg_%04d.ts",
+            Self::Aes128 => "enc_seg_%04d.ts",
+            Self::Aes192 => "enc192_seg_%04d.ts",
+            Self::Aes256 => "enc256_seg_%04d.ts",
+        }
+    }
+
+    fn segment_name(self, index: usize) -> String {
+        match self {
+            Self::None => format!("seg_{index:04}.ts"),
+            Self::Aes128 => format!("enc_seg_{index:04}.ts"),
+            Self::Aes192 => format!("enc192_seg_{index:04}.ts"),
+            Self::Aes256 => format!("enc256_seg_{index:04}.ts"),
+        }
+    }
+
+    fn key_file_name(self) -> &'static str {
+        match self {
+            Self::None => "plain.key",
+            Self::Aes128 => "enc-aes128.key",
+            Self::Aes192 => "enc-aes192.key",
+            Self::Aes256 => "enc-aes256.key",
+        }
+    }
+
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::None => "普通流",
+            Self::Aes128 => "AES-128",
+            Self::Aes192 => "AES-192",
+            Self::Aes256 => "AES-256",
+        }
+    }
+
+    fn key_len(self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::Aes128 => 16,
+            Self::Aes192 => 24,
+            Self::Aes256 => 32,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct EncryptionArtifacts {
+    key_bytes: Vec<u8>,
+    iv: [u8; 16],
+    key_uri: String,
+}
+
+#[derive(Debug, Clone)]
+struct PlaylistVariant {
+    label: &'static str,
+    path: String,
 }
 
 impl AppError {
@@ -108,7 +193,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/generate/upload",
             post(generate_from_upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
         )
-        .route("/generate/path", post(generate_from_path))
+        .route(
+            "/generate/local-file",
+            post(generate_from_local_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
         .route("/hls/{job_id}/{*file}", get(serve_hls_file))
         .with_state(state);
 
@@ -216,44 +304,101 @@ async fn generate_from_upload(
         source_name
     };
 
-    let result = create_hls_job(
-        &state,
-        &video_path,
-        playlist_name,
-        source_name,
-    )
-    .await;
+    let result = create_hls_job(&state, &video_path, playlist_name, source_name).await;
 
     let _ = tokio::fs::remove_dir_all(&upload_dir).await;
     result?;
     Ok(Redirect::to("/"))
 }
 
-async fn generate_from_path(
+async fn generate_from_local_file(
     State(state): State<AppState>,
-    Form(form): Form<PathGenerateForm>,
+    mut multipart: Multipart,
 ) -> Result<Redirect, AppError> {
     ensure_ffmpeg_available().await?;
 
-    let input_path = PathBuf::from(form.input_path.trim());
-    if form.input_path.trim().is_empty() {
-        return Err(AppError::bad_request("请输入本地视频文件路径"));
-    }
-
-    let metadata = tokio::fs::metadata(&input_path)
+    let upload_id = Uuid::new_v4().to_string();
+    let upload_dir = state.temp_dir.join(&upload_id);
+    tokio::fs::create_dir_all(&upload_dir)
         .await
-        .map_err(|e| AppError::bad_request(format!("读取输入文件失败: {}", e)))?;
-    if !metadata.is_file() {
-        return Err(AppError::bad_request("输入路径不是一个有效视频文件"));
+        .map_err(|e| AppError::internal(format!("创建本地文件上传临时目录失败: {}", e)))?;
+
+    let mut playlist_name: Option<String> = None;
+    let mut video_path: Option<PathBuf> = None;
+    let mut source_name: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::bad_request(format!("解析本地文件上传内容失败: {}", e)))?
+    {
+        let field_name = field.name().unwrap_or_default().to_string();
+
+        if field_name == "playlist_name" {
+            let text = field
+                .text()
+                .await
+                .map_err(|e| AppError::bad_request(format!("读取表单字段失败: {}", e)))?;
+            if !text.trim().is_empty() {
+                playlist_name = Some(text);
+            }
+            continue;
+        }
+
+        if field_name != "local_video" {
+            continue;
+        }
+
+        let original_name = field.file_name().unwrap_or_default().to_string();
+        if !is_supported_video_file(&original_name) {
+            continue;
+        }
+        if video_path.is_some() {
+            let _ = tokio::fs::remove_dir_all(&upload_dir).await;
+            return Err(AppError::bad_request("请只选择一个本地视频文件"));
+        }
+
+        let safe_name = sanitize_filename(
+            Path::new(&original_name)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("video.mp4"),
+            "video.mp4",
+        );
+        let file_path = upload_dir.join(&safe_name);
+        let mut file = tokio::fs::File::create(&file_path)
+            .await
+            .map_err(|e| AppError::internal(format!("创建本地文件上传失败: {}", e)))?;
+        let mut field = field;
+
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| AppError::bad_request(format!("读取本地文件上传失败: {}", e)))?
+        {
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| AppError::internal(format!("写入本地文件上传失败: {}", e)))?;
+        }
+
+        source_name = Some(original_name);
+        video_path = Some(file_path);
     }
 
-    let source_name = input_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("video")
-        .to_string();
+    let video_path = video_path.ok_or_else(|| {
+        AppError::bad_request("请先选择一个本地视频文件")
+    })?;
+    let source_name = source_name.unwrap_or_else(|| {
+        video_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("video.mp4")
+            .to_string()
+    });
 
-    create_hls_job(&state, &input_path, form.playlist_name, source_name).await?;
+    let result = create_hls_job(&state, &video_path, playlist_name, source_name).await;
+    let _ = tokio::fs::remove_dir_all(&upload_dir).await;
+    result?;
     Ok(Redirect::to("/"))
 }
 
@@ -319,49 +464,25 @@ async fn create_hls_job(
         .await
         .map_err(|e| AppError::internal(format!("创建输出目录失败: {}", e)))?;
 
-    let playlist_path = job_dir.join("index.m3u8");
-    let segment_pattern = job_dir.join("seg_%04d.ts");
-
-    let output = Command::new("ffmpeg")
-        .arg("-y")
-        .arg("-i")
-        .arg(input_path)
-        .args(["-c:v", "libx264"])
-        .args(["-c:a", "aac"])
-        .args(["-f", "hls"])
-        .args(["-hls_time", "6"])
-        .args(["-hls_playlist_type", "vod"])
-        .args(["-hls_segment_filename"])
-        .arg(&segment_pattern)
-        .arg(&playlist_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| AppError::internal(format!("启动 ffmpeg 失败: {}", e)))?;
-
-    if !output.status.success() {
+    let plain_result = run_ffmpeg_hls_encode(
+        input_path,
+        &job_dir.join(HlsEncryptionMode::None.playlist_file_name()),
+        &job_dir.join(HlsEncryptionMode::None.segment_file_pattern()),
+    )
+    .await;
+    if let Err(error) = plain_result {
         let _ = tokio::fs::remove_dir_all(&job_dir).await;
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        let detail = if stderr.is_empty() {
-            "未返回额外错误信息".to_string()
-        } else {
-            stderr
-                .lines()
-                .rev()
-                .take(6)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join(" | ")
-        };
-        return Err(AppError::internal(format!(
-            "ffmpeg 执行失败，退出码: {}。错误详情: {}。请确认输入视频可读，且本机已正确安装 ffmpeg。",
-            output.status.code().unwrap_or(-1),
-            detail
-        )));
+        return Err(error);
+    }
+
+    let encrypted_result = generate_encrypted_playlists(
+        &job_dir,
+        &job_dir.join(HlsEncryptionMode::None.playlist_file_name()),
+    )
+    .await;
+    if let Err(error) = encrypted_result {
+        let _ = tokio::fs::remove_dir_all(&job_dir).await;
+        return Err(error);
     }
 
     let meta = JobMeta {
@@ -377,6 +498,192 @@ async fn create_hls_job(
         .map_err(|e| AppError::internal(format!("写入任务信息失败: {}", e)))?;
 
     Ok(())
+}
+
+async fn run_ffmpeg_hls_encode(
+    input_path: &Path,
+    playlist_path: &Path,
+    segment_pattern: &Path,
+) -> Result<(), AppError> {
+    let mut command = Command::new("ffmpeg");
+    command
+        .arg("-y")
+        .arg("-i")
+        .arg(input_path)
+        .args(["-c:v", "libx264"])
+        .args(["-c:a", "aac"])
+        .args(["-f", "hls"])
+        .args(["-hls_time", "6"])
+        .args(["-hls_playlist_type", "vod"]);
+
+    let output = command
+        .args(["-hls_segment_filename"])
+        .arg(segment_pattern)
+        .arg(playlist_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| AppError::internal(format!("启动 ffmpeg 失败: {}", e)))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    let detail = if stderr.is_empty() {
+        "未返回额外错误信息".to_string()
+    } else {
+        stderr
+            .lines()
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    Err(AppError::internal(format!(
+        "ffmpeg 执行失败，退出码: {}。错误详情: {}。请确认输入视频可读，且本机已正确安装 ffmpeg。",
+        output.status.code().unwrap_or(-1),
+        detail
+    )))
+}
+
+async fn generate_encrypted_playlists(
+    job_dir: &Path,
+    plain_playlist_path: &Path,
+) -> Result<(), AppError> {
+    let plain_playlist = tokio::fs::read_to_string(plain_playlist_path)
+        .await
+        .map_err(|e| AppError::internal(format!("读取明文播放列表失败: {}", e)))?;
+    let segment_names = plain_playlist_segment_names(&plain_playlist);
+
+    for mode in HlsEncryptionMode::all_encrypted() {
+        let encryption = prepare_encryption_artifacts(job_dir, mode).await?;
+        for (index, segment_name) in segment_names.iter().enumerate() {
+            let plain_bytes = tokio::fs::read(job_dir.join(segment_name))
+                .await
+                .map_err(|e| AppError::internal(format!("读取明文切片失败: {}", e)))?;
+            let encrypted_bytes = encrypt_segment(&plain_bytes, &encryption.key_bytes, &encryption.iv)?;
+            tokio::fs::write(job_dir.join(mode.segment_name(index)), encrypted_bytes)
+                .await
+                .map_err(|e| AppError::internal(format!("写入加密切片失败: {}", e)))?;
+        }
+
+        let encrypted_playlist = build_encrypted_playlist(&plain_playlist, mode, &encryption);
+        tokio::fs::write(job_dir.join(mode.playlist_file_name()), encrypted_playlist)
+            .await
+            .map_err(|e| AppError::internal(format!("写入加密播放列表失败: {}", e)))?;
+    }
+
+    Ok(())
+}
+
+async fn prepare_encryption_artifacts(
+    job_dir: &Path,
+    mode: HlsEncryptionMode,
+) -> Result<EncryptionArtifacts, AppError> {
+    let key_path = job_dir.join(mode.key_file_name());
+    let mut key_bytes = vec![0u8; mode.key_len()];
+    let mut iv = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut key_bytes);
+    rand::rngs::OsRng.fill_bytes(&mut iv);
+
+    tokio::fs::write(&key_path, &key_bytes)
+        .await
+        .map_err(|e| AppError::internal(format!("写入 {} key 失败: {}", mode.display_name(), e)))?;
+
+    Ok(EncryptionArtifacts {
+        key_bytes,
+        iv,
+        key_uri: mode.key_file_name().to_string(),
+    })
+}
+
+fn plain_playlist_segment_names(playlist: &str) -> Vec<String> {
+    playlist
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+fn build_encrypted_playlist(
+    plain_playlist: &str,
+    mode: HlsEncryptionMode,
+    encryption: &EncryptionArtifacts,
+) -> String {
+    let key_line = format!(
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"{}\",IV=0x{}",
+        encryption.key_uri,
+        bytes_to_hex(&encryption.iv)
+    );
+
+    let mut result = Vec::new();
+    let mut key_inserted = false;
+    let mut segment_index = 0usize;
+
+    for line in plain_playlist.lines() {
+        let trimmed = line.trim();
+        if !key_inserted && trimmed.starts_with("#EXTINF") {
+            result.push(key_line.clone());
+            key_inserted = true;
+        }
+
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            result.push(mode.segment_name(segment_index));
+            segment_index += 1;
+            continue;
+        }
+
+        result.push(line.to_string());
+    }
+
+    result.join("\n") + "\n"
+}
+
+fn encrypt_segment(data: &[u8], key: &[u8], iv: &[u8; 16]) -> Result<Vec<u8>, AppError> {
+    let block_size = 16usize;
+    let mut buf = vec![0u8; data.len() + block_size];
+    buf[..data.len()].copy_from_slice(data);
+
+    match key.len() {
+        16 => {
+            let key: [u8; 16] = key
+                .try_into()
+                .map_err(|_| AppError::internal("无效的 AES-128 key 长度"))?;
+            let encrypted = Aes128CbcEnc::new((&key).into(), iv.into())
+                .encrypt_padded_mut::<Pkcs7>(&mut buf, data.len())
+                .map_err(|e| AppError::internal(format!("AES-128 加密失败: {}", e)))?;
+            Ok(encrypted.to_vec())
+        }
+        24 => {
+            let key: [u8; 24] = key
+                .try_into()
+                .map_err(|_| AppError::internal("无效的 AES-192 key 长度"))?;
+            let encrypted = Aes192CbcEnc::new((&key).into(), iv.into())
+                .encrypt_padded_mut::<Pkcs7>(&mut buf, data.len())
+                .map_err(|e| AppError::internal(format!("AES-192 加密失败: {}", e)))?;
+            Ok(encrypted.to_vec())
+        }
+        32 => {
+            let key: [u8; 32] = key
+                .try_into()
+                .map_err(|_| AppError::internal("无效的 AES-256 key 长度"))?;
+            let encrypted = Aes256CbcEnc::new((&key).into(), iv.into())
+                .encrypt_padded_mut::<Pkcs7>(&mut buf, data.len())
+                .map_err(|e| AppError::internal(format!("AES-256 加密失败: {}", e)))?;
+            Ok(encrypted.to_vec())
+        }
+        other => Err(AppError::internal(format!(
+            "不支持的 AES key 长度: {}",
+            other
+        ))),
+    }
 }
 
 async fn ffmpeg_available() -> bool {
@@ -438,13 +745,30 @@ async fn load_jobs(state: &AppState) -> Result<Vec<JobSummary>, AppError> {
             .map_err(|e| AppError::internal(format!("读取切片文件失败: {}", e)))?
         {
             let file_path = file.path();
-            if file_path.extension().and_then(|ext| ext.to_str()) == Some("ts") {
+            let is_plain_segment = file_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("seg_") && name.ends_with(".ts"))
+                .unwrap_or(false);
+            if is_plain_segment {
                 segment_count += 1;
             }
         }
 
         jobs.push(JobSummary {
             playlist_path: format!("/hls/{}/index.m3u8", meta.id),
+            aes128_playlist_path: path
+                .join(HlsEncryptionMode::Aes128.playlist_file_name())
+                .is_file()
+                .then(|| format!("/hls/{}/index-aes128.m3u8", meta.id)),
+            aes192_playlist_path: path
+                .join(HlsEncryptionMode::Aes192.playlist_file_name())
+                .is_file()
+                .then(|| format!("/hls/{}/index-aes192.m3u8", meta.id)),
+            aes256_playlist_path: path
+                .join(HlsEncryptionMode::Aes256.playlist_file_name())
+                .is_file()
+                .then(|| format!("/hls/{}/index-aes256.m3u8", meta.id)),
             meta,
             segment_count,
         });
@@ -479,7 +803,7 @@ fn render_index_page(
           <div class="section-head section-head-tight">
             <div>
               <h2>M3U8 在线播放</h2>
-              <p>支持直接播放当前服务生成的测试流，也支持手动粘贴任意 M3U8 地址。</p>
+              <p>支持直接选择普通流、AES-128、AES-192、AES-256 测试流，也支持手动粘贴任意 M3U8 地址。</p>
             </div>
           </div>
           <div class="player-toolbar">
@@ -622,7 +946,30 @@ fn render_index_page(
     } else {
         jobs.iter()
             .map(|job| {
-                let playlist_url = format!("{}{}", base_url, job.playlist_path);
+                let variants = collect_playlist_variants(job);
+                let variant_html = variants
+                    .iter()
+                    .map(|variant| {
+                        let playlist_url = format!("{}{}", base_url, variant.path);
+                        format!(
+                            "<p>{} M3U8：<code>{}</code></p>\
+                             <div class=\"actions\">\
+                               <button type=\"button\" class=\"button-link js-play-job\" data-playlist-url=\"{}\">播放 {}</button>\
+                               <a href=\"{}\" target=\"_blank\" rel=\"noreferrer\">打开 {}</a>\
+                               <a href=\"{}\" download>下载 {}</a>\
+                             </div>",
+                            variant.label,
+                            escape_html(&playlist_url),
+                            escape_html(&playlist_url),
+                            variant.label,
+                            variant.path,
+                            variant.label,
+                            variant.path,
+                            variant.label,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
                 format!(
                     "<article class=\"job-card\">\
                        <div class=\"job-top\">\
@@ -631,22 +978,15 @@ fn render_index_page(
                        </div>\
                        <p>任务 ID：<code>{}</code></p>\
                        <p>切片数量：<strong>{}</strong></p>\
-                       <p>M3U8 地址：<code>{}</code></p>\
-                       <div class=\"actions\">\
-                         <button type=\"button\" class=\"button-link js-play-job\" data-playlist-url=\"{}\">在线播放</button>\
-                         <a href=\"{}\" target=\"_blank\" rel=\"noreferrer\">打开 M3U8</a>\
-                         <a href=\"{}\" download>下载 M3U8</a>\
-                       </div>\
+                       <p class=\"hint\">AES-192 / AES-256 主要用于下载联调，浏览器在线播放未必支持。</p>\
+                       {}\
                      </article>",
                     escape_html(&job.meta.playlist_name),
                     escape_html(&job.meta.source_name),
                     escape_html(&job.meta.created_at),
                     escape_html(&job.meta.id),
                     job.segment_count,
-                    escape_html(&playlist_url),
-                    escape_html(&playlist_url),
-                    job.playlist_path,
-                    job.playlist_path,
+                    variant_html,
                 )
             })
             .collect::<Vec<_>>()
@@ -732,18 +1072,18 @@ fn render_index_page(
                  <p class=\"hint\">上传后会先保存到临时目录，再调用本机 ffmpeg 生成 HLS。</p>\
                  <button type=\"submit\">开始生成</button>\
                </form>\
-               <form class=\"panel\" action=\"/generate/path\" method=\"post\">\
-                 <h2>使用本地路径生成</h2>\
+               <form class=\"panel\" action=\"/generate/local-file\" method=\"post\" enctype=\"multipart/form-data\">\
+                 <h2>选择本地视频并生成</h2>\
                  <div class=\"field\">\
-                   <label for=\"input_path\">本地视频路径</label>\
-                   <input id=\"input_path\" class=\"mono\" type=\"text\" name=\"input_path\" placeholder=\"/Users/name/Movies/demo.mp4\" required>\
+                   <label for=\"local_video\">本地视频文件</label>\
+                   <input id=\"local_video\" type=\"file\" name=\"local_video\" accept=\"video/*,.ts,.mkv,.flv,.avi,.mpeg,.mpg\" required>\
                  </div>\
                  <div class=\"field\">\
                    <label for=\"path_name\">播放列表名称（可选）</label>\
                    <input id=\"path_name\" type=\"text\" name=\"playlist_name\" placeholder=\"例如 local-sample\">\
                  </div>\
-                 <p class=\"hint\">适合本机已有大文件，避免浏览器上传等待。</p>\
-                 <button type=\"submit\">按路径生成</button>\
+                 <p class=\"hint\">直接选择一个本地视频文件生成，不需要手写路径。</p>\
+                 <button type=\"submit\">按本地视频生成</button>\
                </form>\
              </section>\
              {}\
@@ -766,6 +1106,34 @@ fn render_index_page(
         player_html,
         jobs_html,
     )
+}
+
+fn collect_playlist_variants(job: &JobSummary) -> Vec<PlaylistVariant> {
+    let mut variants = vec![PlaylistVariant {
+        label: HlsEncryptionMode::None.display_name(),
+        path: job.playlist_path.clone(),
+    }];
+
+    if let Some(path) = &job.aes128_playlist_path {
+        variants.push(PlaylistVariant {
+            label: HlsEncryptionMode::Aes128.display_name(),
+            path: path.clone(),
+        });
+    }
+    if let Some(path) = &job.aes192_playlist_path {
+        variants.push(PlaylistVariant {
+            label: HlsEncryptionMode::Aes192.display_name(),
+            path: path.clone(),
+        });
+    }
+    if let Some(path) = &job.aes256_playlist_path {
+        variants.push(PlaylistVariant {
+            label: HlsEncryptionMode::Aes256.display_name(),
+            path: path.clone(),
+        });
+    }
+
+    variants
 }
 
 fn request_base_url(headers: &HeaderMap) -> String {
@@ -805,6 +1173,26 @@ fn content_type_for_path(path: &Path) -> &'static str {
         "json" => "application/json; charset=utf-8",
         _ => "application/octet-stream",
     }
+}
+
+fn is_supported_video_file(name: &str) -> bool {
+    matches!(
+        Path::new(name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("mp4")
+            | Some("mov")
+            | Some("m4v")
+            | Some("mkv")
+            | Some("webm")
+            | Some("avi")
+            | Some("flv")
+            | Some("mpeg")
+            | Some("mpg")
+            | Some("ts")
+    )
 }
 
 fn sanitize_filename(input: &str, fallback: &str) -> String {
@@ -859,4 +1247,11 @@ fn escape_html(input: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{:02x}", byte))
+        .collect::<String>()
 }
