@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button, Layout, Modal, Popconfirm, Space, Tabs, Typography, message, theme } from "antd";
 import { ChromeOutlined, ClearOutlined, FolderOpenOutlined } from "@ant-design/icons";
+import { EdgeIcon } from "./components/EdgeIcon";
 import { FirefoxIcon } from "./components/FirefoxIcon";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Toolbar } from "./components/Toolbar";
@@ -10,14 +11,18 @@ import { SettingsModal } from "./components/SettingsModal";
 import { ToolsModal, type ToolAction } from "./components/ToolsModal";
 import { useDownloads } from "./hooks/useDownloads";
 import {
-  installChromeExtension,
-  openChromeExtensionsPage,
+  installChromiumExtension,
+  openChromiumExtensionsPage,
   installFirefoxExtension,
   openFirefoxAddonsPage,
   openFileLocation,
   openDownloadPlaybackSession,
 } from "./services/api";
-import type { ChromeExtensionInstallResult, FirefoxExtensionInstallResult } from "./types";
+import type {
+  ChromiumBrowser,
+  ChromiumExtensionInstallResult,
+  FirefoxExtensionInstallResult,
+} from "./types";
 import type { ThemeMode } from "./types/settings";
 
 const { Header, Content } = Layout;
@@ -33,14 +38,45 @@ interface AppProps {
   onThemeModeChange: (mode: ThemeMode) => void;
 }
 
+interface ChromiumInstallGuideState {
+  browser: ChromiumBrowser;
+  guide: ChromiumExtensionInstallResult;
+}
+
+const CHROMIUM_BROWSER_META: Record<
+  ChromiumBrowser,
+  {
+    title: string;
+    name: string;
+    shortName: string;
+    openButtonText: string;
+    accentColor: string;
+  }
+> = {
+  chrome: {
+    title: "安装 Chrome 扩展",
+    name: "Chrome",
+    shortName: "Chrome",
+    openButtonText: "打开Chrome",
+    accentColor: "#4285f4",
+  },
+  edge: {
+    title: "安装 Microsoft Edge 扩展",
+    name: "Microsoft Edge",
+    shortName: "Edge",
+    openButtonText: "打开Edge",
+    accentColor: "#0f6cbd",
+  },
+};
+
 function App({ themeMode, onThemeModeChange }: AppProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toolModalOpen, setToolModalOpen] = useState(false);
   const [activeTool, setActiveTool] = useState<ToolAction | null>(null);
   const [downloadDraft, setDownloadDraft] = useState<DownloadDraft | null>(null);
-  const [chromeInstallGuide, setChromeInstallGuide] =
-    useState<ChromeExtensionInstallResult | null>(null);
+  const [chromiumInstallGuide, setChromiumInstallGuide] =
+    useState<ChromiumInstallGuideState | null>(null);
   const [firefoxInstallGuide, setFirefoxInstallGuide] =
     useState<FirefoxExtensionInstallResult | null>(null);
   const {
@@ -156,36 +192,38 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     }
   };
 
-  const handleInstallChromeExtension = async () => {
+  const handleInstallChromiumExtension = async (browser: ChromiumBrowser) => {
     try {
-      const result = await installChromeExtension();
-      setChromeInstallGuide(result);
+      const guide = await installChromiumExtension(browser);
+      setChromiumInstallGuide({ browser, guide });
     } catch (error) {
-      console.error("Failed to open chrome extension installer", error);
+      console.error("Failed to open chromium extension installer", error);
       message.error(`打开安装引导失败: ${error}`);
     }
   };
 
-  const handleOpenChromeExtensionsPage = async () => {
+  const handleOpenChromiumExtensionsPage = async (browser: ChromiumBrowser) => {
+    const browserName = CHROMIUM_BROWSER_META[browser].name;
+
     try {
-      const opened = await openChromeExtensionsPage();
+      const opened = await openChromiumExtensionsPage(browser);
       if (!opened) {
-        message.warning("未找到 Chrome，请手动打开扩展页面");
+        message.warning(`未找到 ${browserName}，请手动打开扩展页面`);
       }
     } catch (error) {
-      console.error("Failed to open chrome extensions page", error);
-      message.error(`打开 Chrome 扩展页失败: ${error}`);
+      console.error("Failed to open chromium extensions page", error);
+      message.error(`打开 ${browserName} 扩展页失败: ${error}`);
     }
   };
 
-  const handleOpenChromeExtensionFolder = async () => {
-    if (!chromeInstallGuide) return;
+  const handleOpenChromiumExtensionFolder = async () => {
+    if (!chromiumInstallGuide) return;
 
     try {
-      await openFileLocation(chromeInstallGuide.extension_path);
+      await openFileLocation(chromiumInstallGuide.guide.extension_path);
       message.success("扩展目录已打开");
     } catch (error) {
-      console.error("Failed to open chrome extension folder", error);
+      console.error("Failed to open chromium extension folder", error);
       message.error(`打开扩展目录失败: ${error}`);
     }
   };
@@ -223,6 +261,8 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
       message.error(`打开扩展目录失败: ${error}`);
     }
   };
+
+  const chromiumBrowserMeta = CHROMIUM_BROWSER_META[chromiumInstallGuide?.browser ?? "chrome"];
 
   const tabItems = [
     {
@@ -317,7 +357,11 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
           }}
           onOpenTool={(tool) => {
             if (tool === "install-chrome-extension") {
-              void handleInstallChromeExtension();
+              void handleInstallChromiumExtension("chrome");
+              return;
+            }
+            if (tool === "install-edge-extension") {
+              void handleInstallChromiumExtension("edge");
               return;
             }
             if (tool === "install-firefox-extension") {
@@ -364,13 +408,13 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         }}
       />
       <Modal
-        title="安装 Chrome 扩展"
-        open={Boolean(chromeInstallGuide)}
-        onCancel={() => setChromeInstallGuide(null)}
+        title={chromiumBrowserMeta.title}
+        open={Boolean(chromiumInstallGuide)}
+        onCancel={() => setChromiumInstallGuide(null)}
         footer={null}
         width={680}
       >
-        {chromeInstallGuide && (
+        {chromiumInstallGuide && (
           <div style={{ marginTop: 12, display: "grid", gap: 16 }}>
             <div
               style={{
@@ -389,16 +433,20 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    background: token.colorPrimary,
+                    background: chromiumBrowserMeta.accentColor,
                     color: token.colorWhite,
                     flex: "0 0 auto",
                   }}
                 >
-                  <ChromeOutlined style={{ fontSize: 20 }} />
+                  {chromiumInstallGuide.browser === "edge" ? (
+                    <EdgeIcon style={{ fontSize: 20 }} />
+                  ) : (
+                    <ChromeOutlined style={{ fontSize: 20 }} />
+                  )}
                 </div>
                 <div>
                   <Typography.Title level={5} style={{ margin: 0 }}>
-                    请按以下 3 步完成 Chrome 扩展安装
+                    请按以下 3 步完成 {chromiumBrowserMeta.name} 扩展安装
                   </Typography.Title>
                 </div>
               </Space>
@@ -441,19 +489,21 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
                       1
                     </div>
                     <div>
-                      <Typography.Text strong>打开Chrome浏览器，在地址栏输入下面的地址并回车</Typography.Text>
+                      <Typography.Text strong>
+                        打开 {chromiumBrowserMeta.name} 浏览器，在地址栏输入下面的地址并回车
+                      </Typography.Text>
                       <Typography.Paragraph
                         type="secondary"
                         style={{ margin: "6px 0 0" }}
                       >
-                        打开后会进入 Chrome 的扩展管理页。
+                        打开后会进入 {chromiumBrowserMeta.name} 的扩展管理页。
                       </Typography.Paragraph>
                       <div style={{ marginTop: 10 }}>
                         <Typography.Text
                           code
-                          copyable={{ text: chromeInstallGuide.manual_url }}
+                          copyable={{ text: chromiumInstallGuide.guide.manual_url }}
                         >
-                          {chromeInstallGuide.manual_url}
+                          {chromiumInstallGuide.guide.manual_url}
                         </Typography.Text>
                       </div>
                     </div>
@@ -461,12 +511,25 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
                   <Button
                     type="primary"
                     size="middle"
-                    icon={<ChromeOutlined />}
-                    aria-label="打开 Chrome 扩展页"
-                    onClick={() => void handleOpenChromeExtensionsPage()}
-                    style={{ height: 40, paddingInline: 18 }}
+                    icon={
+                      chromiumInstallGuide.browser === "edge" ? (
+                        <EdgeIcon />
+                      ) : (
+                        <ChromeOutlined />
+                      )
+                    }
+                    aria-label={`打开 ${chromiumBrowserMeta.name} 扩展页`}
+                    onClick={() =>
+                      void handleOpenChromiumExtensionsPage(chromiumInstallGuide.browser)
+                    }
+                    style={{
+                      height: 40,
+                      paddingInline: 18,
+                      background: chromiumBrowserMeta.accentColor,
+                      borderColor: chromiumBrowserMeta.accentColor,
+                    }}
                   >
-                    打开Chrome
+                    {chromiumBrowserMeta.openButtonText}
                   </Button>
                 </Space>
               </div>
@@ -501,7 +564,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
                       type="secondary"
                       style={{ margin: "6px 0 0" }}
                     >
-                      开启后，Chrome 会显示用于加载本地扩展的按钮。
+                      开启后，浏览器会显示用于加载本地扩展的按钮。
                     </Typography.Paragraph>
                   </div>
                 </Space>
@@ -539,7 +602,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
                       type="secondary"
                       style={{ margin: "6px 0 0" }}
                     >
-                      应用会先准备一个可直接选择的本地目录，你只需要打开并选中它。
+                      这是 Chromium 通用扩展目录，Chrome 和 Microsoft Edge 都可以直接使用。
                     </Typography.Paragraph>
                     <div
                       style={{
@@ -553,7 +616,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
                       <Button
                         type="link"
                         icon={<FolderOpenOutlined />}
-                        onClick={() => void handleOpenChromeExtensionFolder()}
+                        onClick={() => void handleOpenChromiumExtensionFolder()}
                         style={{
                           paddingInline: 0,
                           height: "auto",
@@ -561,7 +624,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
                           textAlign: "left",
                         }}
                       >
-                        {chromeInstallGuide.extension_path}
+                        {chromiumInstallGuide.guide.extension_path}
                       </Button>
                     </div>
                   </div>

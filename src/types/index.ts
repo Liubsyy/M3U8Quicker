@@ -78,7 +78,9 @@ export interface OpenPlaybackSessionResponse {
 
 export type PlaybackSourceKind = "hls" | "file";
 
-export interface ChromeExtensionInstallResult {
+export type ChromiumBrowser = "chrome" | "edge";
+
+export interface ChromiumExtensionInstallResult {
   extension_path: string;
   manual_url: string;
 }

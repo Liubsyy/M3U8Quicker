@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  ChromeExtensionInstallResult,
+  ChromiumBrowser,
+  ChromiumExtensionInstallResult,
   FirefoxExtensionInstallResult,
   CreateDownloadParams,
   DownloadCounts,
@@ -83,12 +84,18 @@ export async function openFileLocation(path: string): Promise<void> {
   return invoke("open_file_location", { path });
 }
 
-export async function installChromeExtension(): Promise<ChromeExtensionInstallResult> {
-  return invoke<ChromeExtensionInstallResult>("install_chrome_extension");
+export async function installChromiumExtension(
+  browser: ChromiumBrowser
+): Promise<ChromiumExtensionInstallResult> {
+  return invoke<ChromiumExtensionInstallResult>("install_chromium_extension", {
+    browser,
+  });
 }
 
-export async function openChromeExtensionsPage(): Promise<boolean> {
-  return invoke<boolean>("open_chrome_extensions_page");
+export async function openChromiumExtensionsPage(
+  browser: ChromiumBrowser
+): Promise<boolean> {
+  return invoke<boolean>("open_chromium_extensions_page", { browser });
 }
 
 export async function installFirefoxExtension(): Promise<FirefoxExtensionInstallResult> {

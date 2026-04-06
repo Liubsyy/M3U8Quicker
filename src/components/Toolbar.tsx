@@ -12,6 +12,7 @@ import {
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
 import type { ToolAction } from "./ToolsModal";
+import { EdgeIcon } from "./EdgeIcon";
 import { FirefoxIcon } from "./FirefoxIcon";
 
 interface ToolbarProps {
@@ -46,6 +47,11 @@ export function Toolbar({
           key: "install-chrome-extension",
           label: "Chrome 扩展",
           icon: <ChromeOutlined />,
+        },
+        {
+          key: "install-edge-extension",
+          label: "Microsoft Edge 扩展",
+          icon: <EdgeIcon />,
         },
         {
           key: "install-firefox-extension",

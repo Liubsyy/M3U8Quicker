@@ -227,6 +227,13 @@ pub enum PlaybackSourceKind {
     File,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChromiumBrowser {
+    Chrome,
+    Edge,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct OpenPlaybackSessionResponse {
     pub window_label: String,
@@ -238,7 +245,7 @@ pub struct OpenPlaybackSessionResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ChromeExtensionInstallResult {
+pub struct ChromiumExtensionInstallResult {
     pub extension_path: String,
     pub manual_url: String,
 }

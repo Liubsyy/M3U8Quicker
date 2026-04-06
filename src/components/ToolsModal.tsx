@@ -13,6 +13,7 @@ export type ToolAction =
   | "merge-ts"
   | "ts-to-mp4"
   | "install-chrome-extension"
+  | "install-edge-extension"
   | "install-firefox-extension";
 
 interface ToolsModalProps {

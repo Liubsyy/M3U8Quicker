@@ -2,8 +2,8 @@ mod commands;
 mod downloader;
 mod error;
 mod models;
-mod playback;
 mod persistence;
+mod playback;
 mod remux;
 mod state;
 
@@ -122,8 +122,8 @@ pub fn run() {
             commands::set_download_concurrency,
             commands::set_download_output_settings,
             commands::open_file_location,
-            commands::install_chrome_extension,
-            commands::open_chrome_extensions_page,
+            commands::install_chromium_extension,
+            commands::open_chromium_extensions_page,
             commands::install_firefox_extension,
             commands::open_firefox_addons_page,
             commands::merge_ts_files,

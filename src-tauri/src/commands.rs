@@ -13,11 +13,12 @@ use uuid::Uuid;
 use crate::downloader;
 use crate::error::AppError;
 use crate::models::*;
-use crate::playback;
 use crate::persistence;
+use crate::playback;
 use crate::state::AppState;
 
 const CHROME_EXTENSIONS_URL: &str = "chrome://extensions/";
+const EDGE_EXTENSIONS_URL: &str = "edge://extensions/";
 const FIREFOX_ADDONS_URL: &str = "about:debugging#/runtime/this-firefox";
 
 #[tauri::command]
@@ -419,7 +420,8 @@ pub async fn remove_download(
     };
 
     if let Some(task) = removed_task {
-        if let Some(session) = playback::remove_playback_session(&state.playback_sessions, &task.id).await
+        if let Some(session) =
+            playback::remove_playback_session(&state.playback_sessions, &task.id).await
         {
             if let Some(window) = app_handle.get_webview_window(&session.window_label) {
                 let _ = window.close();
@@ -612,7 +614,10 @@ pub async fn open_download_playback_session(
         ));
     }
 
-    let task = if matches!(task.status, DownloadStatus::Downloading | DownloadStatus::Paused) {
+    let task = if matches!(
+        task.status,
+        DownloadStatus::Downloading | DownloadStatus::Paused
+    ) {
         ensure_task_playback_ready(&app_handle, &state, &id).await?
     } else {
         task
@@ -682,7 +687,10 @@ pub async fn open_download_playback_session(
 
     Ok(OpenPlaybackSessionResponse {
         window_label,
-        playback_url: format!("{}{}?token={}", playback_server.base_url, playback_path, session_token),
+        playback_url: format!(
+            "{}{}?token={}",
+            playback_server.base_url, playback_path, session_token
+        ),
         playback_kind,
         session_token,
         filename: task.filename,
@@ -771,20 +779,21 @@ pub async fn open_file_location(path: String) -> Result<(), AppError> {
 }
 
 #[tauri::command]
-pub async fn install_chrome_extension(
+pub async fn install_chromium_extension(
     app_handle: AppHandle,
-) -> Result<ChromeExtensionInstallResult, AppError> {
+    browser: ChromiumBrowser,
+) -> Result<ChromiumExtensionInstallResult, AppError> {
     let extension_path = prepare_chrome_extension_install_dir(&app_handle).await?;
 
-    Ok(ChromeExtensionInstallResult {
+    Ok(ChromiumExtensionInstallResult {
         extension_path: normalize_display_path(&extension_path),
-        manual_url: CHROME_EXTENSIONS_URL.to_string(),
+        manual_url: chromium_extensions_url(browser).to_string(),
     })
 }
 
 #[tauri::command]
-pub async fn open_chrome_extensions_page() -> Result<bool, AppError> {
-    Ok(try_open_chrome_extensions_page())
+pub async fn open_chromium_extensions_page(browser: ChromiumBrowser) -> Result<bool, AppError> {
+    Ok(try_open_chromium_extensions_page(browser))
 }
 
 #[tauri::command]
@@ -883,7 +892,9 @@ async fn ensure_task_playback_ready(
 
     let refreshed_task = {
         let mut downloads = state.downloads.lock().await;
-        downloads.entry(id.to_string()).or_insert_with(|| task.clone());
+        downloads
+            .entry(id.to_string())
+            .or_insert_with(|| task.clone());
         let task = downloads
             .get_mut(id)
             .ok_or_else(|| AppError::InvalidInput(format!("Download {} not found", id)))?;
@@ -901,9 +912,10 @@ async fn ensure_task_playback_ready(
 fn playback_target_for_task(task: &DownloadTask) -> Result<(PlaybackSourceKind, String), AppError> {
     match task.status {
         DownloadStatus::Completed => {
-            let file_path = task.file_path.as_ref().ok_or_else(|| {
-                AppError::InvalidInput("下载完成文件不存在".to_string())
-            })?;
+            let file_path = task
+                .file_path
+                .as_ref()
+                .ok_or_else(|| AppError::InvalidInput("下载完成文件不存在".to_string()))?;
             if !std::path::Path::new(file_path).is_file() {
                 return Err(AppError::InvalidInput("下载完成文件不存在".to_string()));
             }
@@ -912,9 +924,7 @@ fn playback_target_for_task(task: &DownloadTask) -> Result<(PlaybackSourceKind, 
         DownloadStatus::Downloading | DownloadStatus::Paused => {
             Ok((PlaybackSourceKind::Hls, playback::playlist_path(&task.id)))
         }
-        _ => Err(AppError::InvalidInput(
-            "当前任务状态不支持播放".to_string(),
-        )),
+        _ => Err(AppError::InvalidInput("当前任务状态不支持播放".to_string())),
     }
 }
 
@@ -948,7 +958,10 @@ async fn maybe_cleanup_completed_temp_dir(
     let task = if let Some(task) = task {
         Some(task)
     } else {
-        persistence::load_download_task(app_handle, id).await.ok().flatten()
+        persistence::load_download_task(app_handle, id)
+            .await
+            .ok()
+            .flatten()
     };
 
     let Some(task) = task else {
@@ -1215,7 +1228,8 @@ async fn start_download_worker(
             Some(DownloadStatus::Paused) => {}
             Some(DownloadStatus::Downloading) | Some(DownloadStatus::Pending) => {}
             Some(_) | None => {
-                playback::remove_download_priority_state(&state_download_priorities, &task_id).await;
+                playback::remove_download_priority_state(&state_download_priorities, &task_id)
+                    .await;
             }
         }
 
@@ -1363,7 +1377,9 @@ fn chrome_extension_install_target_dir() -> Result<PathBuf, AppError> {
 #[allow(dead_code)]
 fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), AppError> {
     if !source.is_dir() {
-        return Err(AppError::InvalidInput("Chrome 扩展目录不存在".to_string()));
+        return Err(AppError::InvalidInput(
+            "Chrome / Edge 扩展目录不存在".to_string(),
+        ));
     }
 
     std::fs::create_dir_all(target)?;
@@ -1421,7 +1437,7 @@ where
     }
 
     Err(AppError::InvalidInput(
-        "未找到内置 Chrome 扩展目录".to_string(),
+        "未找到内置 Chrome / Edge 扩展目录".to_string(),
     ))
 }
 
@@ -1455,7 +1471,9 @@ fn resolve_firefox_extension_dir(app_handle: &AppHandle) -> Result<PathBuf, AppE
 }
 
 #[cfg(target_os = "macos")]
-async fn prepare_firefox_extension_install_dir(app_handle: &AppHandle) -> Result<PathBuf, AppError> {
+async fn prepare_firefox_extension_install_dir(
+    app_handle: &AppHandle,
+) -> Result<PathBuf, AppError> {
     let source_dir = resolve_firefox_extension_dir(app_handle)?;
     let target_dir = firefox_extension_install_target_dir()?;
 
@@ -1480,7 +1498,9 @@ async fn prepare_firefox_extension_install_dir(app_handle: &AppHandle) -> Result
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn prepare_firefox_extension_install_dir(app_handle: &AppHandle) -> Result<PathBuf, AppError> {
+async fn prepare_firefox_extension_install_dir(
+    app_handle: &AppHandle,
+) -> Result<PathBuf, AppError> {
     resolve_firefox_extension_dir(app_handle)
 }
 
@@ -1533,15 +1553,22 @@ where
     ))
 }
 
-fn try_open_chrome_extensions_page() -> bool {
-    chrome_command_candidates()
-        .iter()
-        .any(|command| open_chrome_extensions_page_with_command(command))
+fn chromium_extensions_url(browser: ChromiumBrowser) -> &'static str {
+    match browser {
+        ChromiumBrowser::Chrome => CHROME_EXTENSIONS_URL,
+        ChromiumBrowser::Edge => EDGE_EXTENSIONS_URL,
+    }
 }
 
-fn open_chrome_extensions_page_with_command(command: &OsStr) -> bool {
+fn try_open_chromium_extensions_page(browser: ChromiumBrowser) -> bool {
+    chromium_command_candidates(browser)
+        .iter()
+        .any(|command| open_chromium_extensions_page_with_command(command, browser))
+}
+
+fn open_chromium_extensions_page_with_command(command: &OsStr, browser: ChromiumBrowser) -> bool {
     Command::new(command)
-        .arg(CHROME_EXTENSIONS_URL)
+        .arg(chromium_extensions_url(browser))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1549,10 +1576,11 @@ fn open_chrome_extensions_page_with_command(command: &OsStr) -> bool {
         .is_ok()
 }
 
-fn chrome_command_candidates() -> Vec<OsString> {
+fn chromium_command_candidates(browser: ChromiumBrowser) -> Vec<OsString> {
     #[cfg(target_os = "windows")]
     {
-        return build_windows_chrome_command_candidates(
+        return build_windows_chromium_command_candidates(
+            browser,
             std::env::var_os("ProgramFiles"),
             std::env::var_os("ProgramFiles(x86)"),
             std::env::var_os("LocalAppData"),
@@ -1561,12 +1589,12 @@ fn chrome_command_candidates() -> Vec<OsString> {
 
     #[cfg(target_os = "macos")]
     {
-        return build_macos_chrome_command_candidates();
+        return build_macos_chromium_command_candidates(browser);
     }
 
     #[cfg(target_os = "linux")]
     {
-        return build_linux_chrome_command_candidates();
+        return build_linux_chromium_command_candidates(browser);
     }
 
     #[allow(unreachable_code)]
@@ -1574,12 +1602,22 @@ fn chrome_command_candidates() -> Vec<OsString> {
 }
 
 #[cfg(target_os = "windows")]
-fn build_windows_chrome_command_candidates(
+fn build_windows_chromium_command_candidates(
+    browser: ChromiumBrowser,
     program_files: Option<OsString>,
     program_files_x86: Option<OsString>,
     local_app_data: Option<OsString>,
 ) -> Vec<OsString> {
-    let suffix = Path::new("Google").join("Chrome").join("Application").join("chrome.exe");
+    let suffix = match browser {
+        ChromiumBrowser::Chrome => Path::new("Google")
+            .join("Chrome")
+            .join("Application")
+            .join("chrome.exe"),
+        ChromiumBrowser::Edge => Path::new("Microsoft")
+            .join("Edge")
+            .join("Application")
+            .join("msedge.exe"),
+    };
     let mut candidates = Vec::new();
 
     for base in [program_files, program_files_x86, local_app_data]
@@ -1587,7 +1625,10 @@ fn build_windows_chrome_command_candidates(
         .flatten()
     {
         let candidate = PathBuf::from(base).join(&suffix);
-        if !candidates.iter().any(|existing| existing == candidate.as_os_str()) {
+        if !candidates
+            .iter()
+            .any(|existing| existing == candidate.as_os_str())
+        {
             candidates.push(candidate.into_os_string());
         }
     }
@@ -1596,18 +1637,29 @@ fn build_windows_chrome_command_candidates(
 }
 
 #[cfg(target_os = "macos")]
-fn build_macos_chrome_command_candidates() -> Vec<OsString> {
-    vec![OsString::from(
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    )]
+fn build_macos_chromium_command_candidates(browser: ChromiumBrowser) -> Vec<OsString> {
+    match browser {
+        ChromiumBrowser::Chrome => vec![OsString::from(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        )],
+        ChromiumBrowser::Edge => vec![OsString::from(
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        )],
+    }
 }
 
 #[cfg(target_os = "linux")]
-fn build_linux_chrome_command_candidates() -> Vec<OsString> {
-    vec![
-        OsString::from("google-chrome"),
-        OsString::from("google-chrome-stable"),
-    ]
+fn build_linux_chromium_command_candidates(browser: ChromiumBrowser) -> Vec<OsString> {
+    match browser {
+        ChromiumBrowser::Chrome => vec![
+            OsString::from("google-chrome"),
+            OsString::from("google-chrome-stable"),
+        ],
+        ChromiumBrowser::Edge => vec![
+            OsString::from("microsoft-edge"),
+            OsString::from("microsoft-edge-stable"),
+        ],
+    }
 }
 
 fn try_open_firefox_addons_page() -> bool {
@@ -1657,12 +1709,12 @@ fn build_windows_firefox_command_candidates(
     let suffix = Path::new("Mozilla Firefox").join("firefox.exe");
     let mut candidates = Vec::new();
 
-    for base in [program_files, program_files_x86]
-        .into_iter()
-        .flatten()
-    {
+    for base in [program_files, program_files_x86].into_iter().flatten() {
         let candidate = PathBuf::from(base).join(&suffix);
-        if !candidates.iter().any(|existing| existing == candidate.as_os_str()) {
+        if !candidates
+            .iter()
+            .any(|existing| existing == candidate.as_os_str())
+        {
             candidates.push(candidate.into_os_string());
         }
     }
@@ -1679,9 +1731,7 @@ fn build_macos_firefox_command_candidates() -> Vec<OsString> {
 
 #[cfg(target_os = "linux")]
 fn build_linux_firefox_command_candidates() -> Vec<OsString> {
-    vec![
-        OsString::from("firefox"),
-    ]
+    vec![OsString::from("firefox")]
 }
 
 #[cfg(test)]
@@ -1767,8 +1817,9 @@ mod tests {
         create_manifest(&bundled_dir);
         create_manifest(&dev_dir);
 
-        let resolved = resolve_chrome_extension_dir_from_candidates(vec![bundled_dir.clone(), dev_dir])
-            .expect("expected chrome extension dir");
+        let resolved =
+            resolve_chrome_extension_dir_from_candidates(vec![bundled_dir.clone(), dev_dir])
+                .expect("expected chrome extension dir");
 
         assert_eq!(resolved, bundled_dir);
         remove_temp_dir(&temp_root);
@@ -1781,8 +1832,9 @@ mod tests {
         let dev_dir = temp_root.join("workspace").join("chrome-extension");
         create_manifest(&dev_dir);
 
-        let resolved = resolve_chrome_extension_dir_from_candidates(vec![missing_dir, dev_dir.clone()])
-            .expect("expected fallback chrome extension dir");
+        let resolved =
+            resolve_chrome_extension_dir_from_candidates(vec![missing_dir, dev_dir.clone()])
+                .expect("expected fallback chrome extension dir");
 
         assert_eq!(resolved, dev_dir);
         remove_temp_dir(&temp_root);
@@ -1814,8 +1866,9 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn build_windows_chrome_command_candidates_keeps_expected_priority() {
-        let candidates = build_windows_chrome_command_candidates(
+    fn build_windows_chromium_command_candidates_keeps_expected_priority_for_chrome() {
+        let candidates = build_windows_chromium_command_candidates(
+            ChromiumBrowser::Chrome,
             Some(OsString::from(r"C:\Program Files")),
             Some(OsString::from(r"C:\Program Files (x86)")),
             Some(OsString::from(r"C:\Users\Test\AppData\Local")),
@@ -1833,9 +1886,9 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn build_linux_chrome_command_candidates_keeps_expected_priority() {
+    fn build_linux_chromium_command_candidates_keeps_expected_priority_for_chrome() {
         assert_eq!(
-            build_linux_chrome_command_candidates(),
+            build_linux_chromium_command_candidates(ChromiumBrowser::Chrome),
             vec![
                 OsString::from("google-chrome"),
                 OsString::from("google-chrome-stable"),
@@ -1845,11 +1898,56 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn build_macos_chrome_command_candidates_keeps_expected_priority() {
+    fn build_macos_chromium_command_candidates_keeps_expected_priority_for_chrome() {
         assert_eq!(
-            build_macos_chrome_command_candidates(),
+            build_macos_chromium_command_candidates(ChromiumBrowser::Chrome),
             vec![OsString::from(
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            )]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn build_windows_chromium_command_candidates_keeps_expected_priority_for_edge() {
+        let candidates = build_windows_chromium_command_candidates(
+            ChromiumBrowser::Edge,
+            Some(OsString::from(r"C:\Program Files")),
+            Some(OsString::from(r"C:\Program Files (x86)")),
+            Some(OsString::from(r"C:\Users\Test\AppData\Local")),
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                OsString::from(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+                OsString::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+                OsString::from(
+                    r"C:\Users\Test\AppData\Local\Microsoft\Edge\Application\msedge.exe"
+                ),
+            ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn build_linux_chromium_command_candidates_keeps_expected_priority_for_edge() {
+        assert_eq!(
+            build_linux_chromium_command_candidates(ChromiumBrowser::Edge),
+            vec![
+                OsString::from("microsoft-edge"),
+                OsString::from("microsoft-edge-stable"),
+            ]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn build_macos_chromium_command_candidates_keeps_expected_priority_for_edge() {
+        assert_eq!(
+            build_macos_chromium_command_candidates(ChromiumBrowser::Edge),
+            vec![OsString::from(
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
             )]
         );
     }
@@ -1867,4 +1965,3 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 }
-
