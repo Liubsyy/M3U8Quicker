@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Existing release tag to upload assets to"
+        required: true
+        type: string
+      release_id:
+        description: "Optional existing GitHub Release ID"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish-tauri:
+    if: github.event_name == 'release' || github.event.inputs.tag_name != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: --config src-tauri/tauri.windows.conf.json
+          - platform: windows-latest
+            args: --target i686-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin --bundles dmg
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin --bundles dmg
+          - platform: ubuntu-22.04
+            args: --bundles appimage,deb,rpm
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust stable on Windows with 32-bit target
+        if: matrix.platform == 'windows-latest'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+
+      - name: Install Rust stable on Linux
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust stable with macOS targets
+        if: matrix.platform == 'macos-latest'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build and upload Tauri bundles
+        uses: tauri-apps/tauri-action@action-v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ github.event.inputs.release_id || github.event.release.id || '' }}
+          tagName: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
+          releaseDraft: false
+          prerelease: ${{ github.event.release.prerelease || false }}
+          releaseAssetNamePattern: "[name]_[version]_[arch][_setup][ext]"
+          args: ${{ matrix.args }}

@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "m3u8quicker Detector",
+  "version": "1.0.0",
+  "description": "Detect m3u8 resources on the page and show a quick download button.",
+  "icons": {
+    "128": "icon.png"
+  },
+  "permissions": [
+    "webRequest"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "injected-network.js",
+        "icon.png"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

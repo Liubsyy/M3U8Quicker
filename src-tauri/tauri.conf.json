@@ -1,0 +1,44 @@
+{
+  "productName": "M3U8 Quicker",
+  "identifier": "com.liubsyy.m3u8quicker",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "M3U8 Quicker",
+        "width": 1000,
+        "height": 680,
+        "resizable": true,
+        "decorations": true,
+        "minWidth": 800,
+        "minHeight": 500
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "resources": {
+      "../chrome-extension/": "chrome-extension/"
+    },
+    "icon": [
+      "icons/icon.png"
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "m3u8quicker"
+        ]
+      }
+    }
+  }
+}
