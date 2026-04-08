@@ -577,6 +577,7 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         default_download_dir: Some(state.default_download_dir.lock().await.clone()),
         proxy: state.proxy_settings.lock().await.clone(),
         download_concurrency: *state.max_concurrent_segments.lock().await,
+        download_speed_limit_kbps: state.download_rate_limiter.limit_kbps().await,
         delete_ts_temp_dir_after_download: *state.delete_ts_temp_dir_after_download.lock().await,
         convert_to_mp4: *state.convert_to_mp4.lock().await,
     })
@@ -648,6 +649,27 @@ pub async fn set_download_concurrency(
 
     persistence::update_settings(&app_handle, |settings| {
         settings.download_concurrency = download_concurrency;
+    })
+    .await;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_download_speed_limit(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    download_speed_limit_kbps: u64,
+) -> Result<(), AppError> {
+    let normalized_limit = normalize_download_speed_limit_kbps(download_speed_limit_kbps);
+
+    state
+        .download_rate_limiter
+        .set_limit_kbps(normalized_limit)
+        .await;
+
+    persistence::update_settings(&app_handle, |settings| {
+        settings.download_speed_limit_kbps = normalized_limit;
     })
     .await;
 
@@ -1181,6 +1203,10 @@ async fn start_mp4_download_worker(
     let filename = task.filename.clone();
     let url = task.url.clone();
     let cancel_token = CancellationToken::new();
+    let rate_limiter = app_handle
+        .state::<AppState>()
+        .download_rate_limiter
+        .clone();
 
     {
         let mut tokens = state_cancel_tokens.lock().await;
@@ -1192,6 +1218,7 @@ async fn start_mp4_download_worker(
             app_handle.clone(),
             state_downloads.clone(),
             client,
+            rate_limiter,
             task_id.clone(),
             url,
             Arc::new(request_headers),
@@ -1314,6 +1341,10 @@ async fn start_download_worker(
         .lock()
         .await;
     let convert_to_mp4 = *app_handle.state::<AppState>().convert_to_mp4.lock().await;
+    let rate_limiter = app_handle
+        .state::<AppState>()
+        .download_rate_limiter
+        .clone();
 
     {
         let mut tokens = state_cancel_tokens.lock().await;
@@ -1325,6 +1356,7 @@ async fn start_download_worker(
             app_handle.clone(),
             state_downloads.clone(),
             client,
+            rate_limiter,
             task_id.clone(),
             segments,
             Arc::new(request_headers),

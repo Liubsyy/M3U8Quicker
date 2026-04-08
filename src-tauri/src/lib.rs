@@ -64,6 +64,10 @@ pub fn run() {
                     let mut max_concurrent_segments = state.max_concurrent_segments.lock().await;
                     *max_concurrent_segments = settings.download_concurrency;
                 }
+                state
+                    .download_rate_limiter
+                    .set_limit_kbps(settings.download_speed_limit_kbps)
+                    .await;
                 {
                     let mut delete_ts_temp_dir_after_download =
                         state.delete_ts_temp_dir_after_download.lock().await;
@@ -120,6 +124,7 @@ pub fn run() {
             commands::get_app_settings,
             commands::set_proxy_settings,
             commands::set_download_concurrency,
+            commands::set_download_speed_limit,
             commands::set_download_output_settings,
             commands::open_file_location,
             commands::install_chromium_extension,

@@ -52,3 +52,25 @@ body,
 .new-download-form .ant-form-item {
   margin-bottom: 14px;
 }
+
+.settings-modal-tabs .ant-tabs-nav {
+  margin-bottom: 20px;
+}
+
+.settings-modal-tabs .ant-tabs-nav::before {
+  border-bottom-color: var(--app-table-border);
+}
+
+.settings-modal-tabs .ant-tabs-tab {
+  padding: 8px 4px 10px;
+  font-size: 14px;
+}
+
+.settings-modal-tabs .ant-tabs-ink-bar {
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+}
+
+.settings-modal-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
+  font-weight: 600;
+}

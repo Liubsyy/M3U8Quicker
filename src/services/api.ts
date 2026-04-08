@@ -120,6 +120,12 @@ export async function setDownloadConcurrency(
   return invoke("set_download_concurrency", { downloadConcurrency });
 }
 
+export async function setDownloadSpeedLimit(
+  downloadSpeedLimitKbps: number
+): Promise<void> {
+  return invoke("set_download_speed_limit", { downloadSpeedLimitKbps });
+}
+
 export async function setDownloadOutputSettings(
   deleteTsTempDirAfterDownload: boolean,
   convertToMp4: boolean

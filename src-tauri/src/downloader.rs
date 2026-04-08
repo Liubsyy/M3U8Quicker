@@ -11,7 +11,7 @@ use chrono::Utc;
 use futures::StreamExt;
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, TryAcquireError};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore, TryAcquireError};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -54,6 +54,90 @@ struct RuntimeProgressSnapshot {
 struct PersistThrottleState {
     last_saved_at: Instant,
     last_failed_segment_count: usize,
+}
+
+#[derive(Debug)]
+struct DownloadRateLimitState {
+    limit_kbps: u64,
+    next_available_at: Instant,
+}
+
+#[derive(Debug)]
+pub struct DownloadRateLimiter {
+    state: Mutex<DownloadRateLimitState>,
+    notify: Notify,
+}
+
+impl DownloadRateLimiter {
+    pub fn new(limit_kbps: u64) -> Self {
+        Self {
+            state: Mutex::new(DownloadRateLimitState {
+                limit_kbps,
+                next_available_at: Instant::now(),
+            }),
+            notify: Notify::new(),
+        }
+    }
+
+    pub async fn set_limit_kbps(&self, limit_kbps: u64) {
+        let mut state = self.state.lock().await;
+        state.limit_kbps = limit_kbps;
+        state.next_available_at = Instant::now();
+        self.notify.notify_waiters();
+    }
+
+    pub async fn limit_kbps(&self) -> u64 {
+        self.state.lock().await.limit_kbps
+    }
+
+    pub async fn wait_for_bytes(
+        &self,
+        byte_count: usize,
+        cancel: &CancellationToken,
+    ) -> Result<(), AppError> {
+        loop {
+            let notified = self.notify.notified();
+            let wait_duration = {
+                let mut state = self.state.lock().await;
+                reserve_rate_limit_delay(&mut state, byte_count, Instant::now())
+            };
+
+            if wait_duration.is_zero() {
+                return Ok(());
+            }
+
+            tokio::select! {
+                _ = cancel.cancelled() => return Err(AppError::Cancelled),
+                _ = tokio::time::sleep(wait_duration) => return Ok(()),
+                _ = notified => {}
+            }
+        }
+    }
+}
+
+fn reserve_rate_limit_delay(
+    state: &mut DownloadRateLimitState,
+    byte_count: usize,
+    now: Instant,
+) -> Duration {
+    if state.limit_kbps == 0 || byte_count == 0 {
+        state.next_available_at = now;
+        return Duration::ZERO;
+    }
+
+    let bytes_per_second = state.limit_kbps.saturating_mul(1024);
+    if bytes_per_second == 0 {
+        state.next_available_at = now;
+        return Duration::ZERO;
+    }
+
+    let transfer_nanos =
+        (byte_count as u128).saturating_mul(1_000_000_000u128) / bytes_per_second as u128;
+    let transfer_duration = Duration::from_nanos(transfer_nanos.min(u64::MAX as u128) as u64);
+    let start_at = state.next_available_at.max(now);
+    let ready_at = start_at + transfer_duration;
+    state.next_available_at = ready_at;
+    ready_at.saturating_duration_since(now)
 }
 
 pub fn build_http_client(proxy_url: Option<&str>) -> Result<reqwest::Client, AppError> {
@@ -607,6 +691,7 @@ pub async fn run_download(
     app_handle: AppHandle,
     downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
     client: Arc<RwLock<reqwest::Client>>,
+    rate_limiter: Arc<DownloadRateLimiter>,
     task_id: DownloadId,
     segments: Vec<SegmentInfo>,
     headers: Arc<RequestHeaders>,
@@ -785,6 +870,7 @@ pub async fn run_download(
             semaphore.clone(),
             priority_state.clone(),
             client.clone(),
+            rate_limiter.clone(),
             headers.clone(),
             temp_dir.clone(),
             segments.clone(),
@@ -956,6 +1042,7 @@ async fn download_worker_loop(
     semaphore: Arc<Semaphore>,
     priority_state: Arc<playback::DownloadPriorityState>,
     client: Arc<RwLock<reqwest::Client>>,
+    rate_limiter: Arc<DownloadRateLimiter>,
     headers: Arc<RequestHeaders>,
     temp_dir: PathBuf,
     segments: Arc<Vec<SegmentInfo>>,
@@ -1004,6 +1091,7 @@ async fn download_worker_loop(
         let segment_path = segment_file_path(&temp_dir, segment.index);
         let outcome = download_segment_with_retry(
             client.clone(),
+            rate_limiter.clone(),
             headers.clone(),
             &segment.uri,
             &segment_path,
@@ -1102,6 +1190,7 @@ async fn download_worker_loop(
 
 async fn download_segment_with_retry(
     client: Arc<RwLock<reqwest::Client>>,
+    rate_limiter: Arc<DownloadRateLimiter>,
     headers: Arc<RequestHeaders>,
     url: &str,
     path: &Path,
@@ -1117,6 +1206,7 @@ async fn download_segment_with_retry(
         }
         match download_segment(
             client.clone(),
+            rate_limiter.clone(),
             headers.clone(),
             url,
             path,
@@ -1152,6 +1242,7 @@ async fn download_segment_with_retry(
 
 async fn download_segment(
     client: Arc<RwLock<reqwest::Client>>,
+    rate_limiter: Arc<DownloadRateLimiter>,
     headers: Arc<RequestHeaders>,
     url: &str,
     path: &Path,
@@ -1180,6 +1271,7 @@ async fn download_segment(
         }
 
         let chunk = chunk?;
+        rate_limiter.wait_for_bytes(chunk.len(), cancel).await?;
         output.write_all(&chunk).await?;
     }
     output.flush().await?;
@@ -1255,6 +1347,7 @@ pub async fn run_mp4_download(
     app_handle: AppHandle,
     downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
     client: Arc<RwLock<reqwest::Client>>,
+    rate_limiter: Arc<DownloadRateLimiter>,
     task_id: DownloadId,
     url: String,
     headers: Arc<RequestHeaders>,
@@ -1293,6 +1386,9 @@ pub async fn run_mp4_download(
         }
     } {
         let chunk = chunk.map_err(|e| AppError::Network(e.to_string()))?;
+        rate_limiter
+            .wait_for_bytes(chunk.len(), &cancel_token)
+            .await?;
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
 
@@ -1432,5 +1528,33 @@ mod tests {
         let iv = [0u8; 16];
         let err = decrypt_aes_cbc(b"ciphertext", &[1, 2, 3], &iv).expect_err("must fail");
         assert!(err.to_string().contains("Unsupported AES key length"));
+    }
+
+    #[test]
+    fn reserve_rate_limit_delay_allows_unlimited_downloads() {
+        let now = Instant::now();
+        let mut state = DownloadRateLimitState {
+            limit_kbps: 0,
+            next_available_at: now,
+        };
+
+        let delay = reserve_rate_limit_delay(&mut state, 1024 * 1024, now);
+
+        assert_eq!(delay, Duration::ZERO);
+    }
+
+    #[test]
+    fn reserve_rate_limit_delay_delays_limited_chunks() {
+        let now = Instant::now();
+        let mut state = DownloadRateLimitState {
+            limit_kbps: 1024,
+            next_available_at: now,
+        };
+
+        let first_delay = reserve_rate_limit_delay(&mut state, 1024, now);
+        let second_delay = reserve_rate_limit_delay(&mut state, 1024, now);
+
+        assert!(first_delay > Duration::ZERO);
+        assert!(second_delay > first_delay);
     }
 }

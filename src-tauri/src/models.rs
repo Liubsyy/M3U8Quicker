@@ -111,9 +111,14 @@ pub struct ProxySettings {
 pub const DEFAULT_DOWNLOAD_CONCURRENCY: usize = 8;
 pub const MIN_DOWNLOAD_CONCURRENCY: usize = 1;
 pub const MAX_DOWNLOAD_CONCURRENCY: usize = 64;
+pub const DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS: u64 = 0;
 
 pub fn normalize_download_concurrency(value: usize) -> usize {
     value.clamp(MIN_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY)
+}
+
+pub fn normalize_download_speed_limit_kbps(value: u64) -> u64 {
+    value
 }
 
 impl Default for ProxySettings {
@@ -137,6 +142,7 @@ pub struct AppSettings {
     pub default_download_dir: Option<String>,
     pub proxy: ProxySettings,
     pub download_concurrency: usize,
+    pub download_speed_limit_kbps: u64,
     pub delete_ts_temp_dir_after_download: bool,
     pub convert_to_mp4: bool,
 }
@@ -147,6 +153,7 @@ impl Default for AppSettings {
             default_download_dir: None,
             proxy: ProxySettings::default(),
             download_concurrency: DEFAULT_DOWNLOAD_CONCURRENCY,
+            download_speed_limit_kbps: DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS,
             delete_ts_temp_dir_after_download: true,
             convert_to_mp4: true,
         }
@@ -156,6 +163,8 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn sanitize(&mut self) {
         self.download_concurrency = normalize_download_concurrency(self.download_concurrency);
+        self.download_speed_limit_kbps =
+            normalize_download_speed_limit_kbps(self.download_speed_limit_kbps);
     }
 }
 
@@ -273,4 +282,43 @@ pub struct ChromiumExtensionInstallResult {
 pub struct FirefoxExtensionInstallResult {
     pub extension_path: String,
     pub manual_url: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_settings_defaults_download_speed_limit_to_unlimited() {
+        let settings: AppSettings = serde_json::from_str(
+            r#"{
+                "default_download_dir": null,
+                "proxy": {"enabled": false, "url": "http://127.0.0.1:10808"},
+                "download_concurrency": 8,
+                "delete_ts_temp_dir_after_download": true,
+                "convert_to_mp4": true
+            }"#,
+        )
+        .expect("settings deserialize");
+
+        assert_eq!(
+            settings.download_speed_limit_kbps,
+            DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS
+        );
+    }
+
+    #[test]
+    fn app_settings_keeps_positive_download_speed_limit() {
+        let mut settings = AppSettings {
+            download_speed_limit_kbps: 1024,
+            ..AppSettings::default()
+        };
+
+        settings.sanitize();
+
+        assert_eq!(
+            settings.download_speed_limit_kbps,
+            1024
+        );
+    }
 }
