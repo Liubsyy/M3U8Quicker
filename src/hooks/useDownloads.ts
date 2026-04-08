@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { message } from "antd";
+import { message, Modal } from "antd";
 import type {
   CreateDownloadParams,
   DownloadCounts,
@@ -27,6 +27,31 @@ const INITIAL_PAGE_STATE: PageState = {
   page: 1,
   pageSize: DEFAULT_PAGE_SIZE,
 };
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+}
+
+function confirmRestartMp4Download(downloadedBytes: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    Modal.confirm({
+      title: "服务器不支持断点续传",
+      content: `当前已下载 ${formatBytes(downloadedBytes)}，继续将从头下载。`,
+      okText: "从头下载",
+      cancelText: "保持暂停",
+      onOk: () => {
+        resolve(true);
+      },
+      onCancel: () => {
+        resolve(false);
+      },
+    });
+  });
+}
 
 function toPageState(page: DownloadTaskPage): PageState {
   return {
@@ -188,7 +213,17 @@ export function useDownloads() {
   }, []);
 
   const resume = useCallback(async (id: string) => {
-    const task = await api.resumeDownload(id);
+    const check = await api.checkResumeDownload(id);
+    const restartConfirmed =
+      check.action === "confirm_restart"
+        ? await confirmRestartMp4Download(check.downloaded_bytes)
+        : false;
+
+    if (check.action === "confirm_restart" && !restartConfirmed) {
+      return undefined;
+    }
+
+    const task = await api.resumeDownload(id, restartConfirmed);
     await refreshCounts();
     await refreshGroup("active");
     return task;

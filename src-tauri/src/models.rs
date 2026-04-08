@@ -250,6 +250,19 @@ pub struct DownloadTaskPage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ResumeDownloadAction {
+    Resume,
+    ConfirmRestart,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeDownloadCheckResult {
+    pub action: ResumeDownloadAction,
+    pub downloaded_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum PlaybackSourceKind {
     Hls,
     File,
@@ -316,9 +329,6 @@ mod tests {
 
         settings.sanitize();
 
-        assert_eq!(
-            settings.download_speed_limit_kbps,
-            1024
-        );
+        assert_eq!(settings.download_speed_limit_kbps, 1024);
     }
 }

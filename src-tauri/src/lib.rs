@@ -110,6 +110,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::create_download,
             commands::pause_download,
+            commands::check_resume_download,
             commands::resume_download,
             commands::retry_failed_segments,
             commands::cancel_download,

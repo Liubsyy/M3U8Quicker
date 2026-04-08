@@ -176,6 +176,22 @@ pub fn task_to_summary(task: &DownloadTask) -> DownloadTaskSummary {
     }
 }
 
+async fn refresh_completed_file_size(summary: &mut DownloadTaskSummary) {
+    if !matches!(summary.status, crate::models::DownloadStatus::Completed) {
+        return;
+    }
+
+    let Some(file_path) = summary.file_path.as_deref() else {
+        return;
+    };
+
+    if let Ok(metadata) = tokio::fs::metadata(file_path).await {
+        if metadata.is_file() {
+            summary.total_bytes = metadata.len();
+        }
+    }
+}
+
 pub fn task_to_segment_state(task: &DownloadTask) -> DownloadTaskSegmentState {
     DownloadTaskSegmentState {
         id: task.id.clone(),
@@ -347,6 +363,8 @@ pub async fn load_download_summary(
     for group in [DownloadGroup::Active, DownloadGroup::History] {
         let items = read_index_locked(app_handle, group).await?;
         if let Some(item) = items.into_iter().find(|item| item.id == id) {
+            let mut item = item;
+            refresh_completed_file_size(&mut item).await;
             return Ok(Some(item));
         }
     }
@@ -419,11 +437,15 @@ pub async fn get_downloads_page(
     let paged_items = if start >= total {
         Vec::new()
     } else {
-        items
+        let mut paged_items = items
             .into_iter()
             .skip(start)
             .take(safe_page_size)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        for item in &mut paged_items {
+            refresh_completed_file_size(item).await;
+        }
+        paged_items
     };
 
     Ok(DownloadTaskPage {

@@ -97,6 +97,8 @@ pub async fn create_download(
                 state.http_client.clone(),
                 task.clone(),
                 request_headers,
+                false,
+                false,
             )
             .await;
 
@@ -203,6 +205,7 @@ pub async fn resume_download(
     app_handle: AppHandle,
     state: State<'_, AppState>,
     id: String,
+    restart_confirmed: Option<bool>,
 ) -> Result<DownloadTaskSummary, AppError> {
     let task = get_or_load_task(&app_handle, &state, &id).await?;
 
@@ -222,6 +225,29 @@ pub async fn resume_download(
     let request_headers = parse_request_headers(task.extra_headers.as_deref())?;
 
     if task.file_type == FileType::Mp4 {
+        let client = state.http_client.read().await.clone();
+        let resume_check = downloader::check_mp4_resume(
+            &client,
+            &task.url,
+            &request_headers,
+            &PathBuf::from(&task.output_dir),
+            &task.filename,
+        )
+        .await?;
+        let should_restart_mp4 = matches!(
+            resume_check,
+            downloader::Mp4ResumeCheck::RequiresRestartConfirmation { .. }
+        ) && restart_confirmed.unwrap_or(false);
+        if matches!(
+            resume_check,
+            downloader::Mp4ResumeCheck::RequiresRestartConfirmation { .. }
+        ) && !restart_confirmed.unwrap_or(false)
+        {
+            return Err(AppError::InvalidInput(
+                "服务器不支持断点续传，请确认后从头下载".to_string(),
+            ));
+        }
+
         let updated_task = {
             let mut downloads = state.downloads.lock().await;
             downloads.entry(id.clone()).or_insert_with(|| task.clone());
@@ -232,6 +258,10 @@ pub async fn resume_download(
             task.speed_bytes_per_sec = 0;
             task.completed_at = None;
             task.file_path = None;
+            if should_restart_mp4 {
+                task.total_bytes = 0;
+                task.completed_segments = 0;
+            }
             task.touch();
             task.clone()
         };
@@ -247,6 +277,8 @@ pub async fn resume_download(
             state.http_client.clone(),
             updated_task.clone(),
             request_headers,
+            true,
+            restart_confirmed.unwrap_or(false),
         )
         .await;
 
@@ -295,6 +327,52 @@ pub async fn resume_download(
     .await;
 
     Ok(persistence::task_to_summary(&updated_task))
+}
+
+#[tauri::command]
+pub async fn check_resume_download(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ResumeDownloadCheckResult, AppError> {
+    let task = get_or_load_task(&app_handle, &state, &id).await?;
+
+    if task.status != DownloadStatus::Paused {
+        return Err(AppError::InvalidInput(
+            "只有已暂停的任务可以继续".to_string(),
+        ));
+    }
+
+    if task.file_type != FileType::Mp4 {
+        return Ok(ResumeDownloadCheckResult {
+            action: ResumeDownloadAction::Resume,
+            downloaded_bytes: task.total_bytes,
+        });
+    }
+
+    let client = state.http_client.read().await.clone();
+    let request_headers = parse_request_headers(task.extra_headers.as_deref())?;
+    let check = downloader::check_mp4_resume(
+        &client,
+        &task.url,
+        &request_headers,
+        &PathBuf::from(&task.output_dir),
+        &task.filename,
+    )
+    .await?;
+
+    Ok(match check {
+        downloader::Mp4ResumeCheck::Ready { downloaded_bytes } => ResumeDownloadCheckResult {
+            action: ResumeDownloadAction::Resume,
+            downloaded_bytes,
+        },
+        downloader::Mp4ResumeCheck::RequiresRestartConfirmation { downloaded_bytes } => {
+            ResumeDownloadCheckResult {
+                action: ResumeDownloadAction::ConfirmRestart,
+                downloaded_bytes,
+            }
+        }
+    })
 }
 
 #[tauri::command]
@@ -397,6 +475,9 @@ pub async fn cancel_download(
 
     if let Some(token) = token {
         token.cancel();
+    } else if task.file_type == FileType::Mp4 {
+        downloader::cleanup_mp4_partial_file(&PathBuf::from(&task.output_dir), &task.filename)
+            .await?;
     } else {
         downloader::cleanup_temp_dir(&PathBuf::from(&task.output_dir), &task.id).await?;
     }
@@ -508,7 +589,15 @@ pub async fn remove_download(
             }
         }
         playback::remove_download_priority_state(&state.download_priorities, &task.id).await;
-        let _ = downloader::cleanup_temp_dir(&PathBuf::from(&task.output_dir), &task.id).await;
+        if task.file_type == FileType::Mp4 {
+            let _ = downloader::cleanup_mp4_partial_file(
+                &PathBuf::from(&task.output_dir),
+                &task.filename,
+            )
+            .await;
+        } else {
+            let _ = downloader::cleanup_temp_dir(&PathBuf::from(&task.output_dir), &task.id).await;
+        }
         if delete_file {
             if let Some(path) = &task.file_path {
                 let _ = tokio::fs::remove_file(path).await;
@@ -1197,16 +1286,15 @@ async fn start_mp4_download_worker(
     client: Arc<RwLock<reqwest::Client>>,
     task: DownloadTask,
     request_headers: RequestHeaders,
+    resume_existing_partial: bool,
+    restart_confirmed: bool,
 ) {
     let task_id = task.id.clone();
     let output_dir_path = PathBuf::from(&task.output_dir);
     let filename = task.filename.clone();
     let url = task.url.clone();
     let cancel_token = CancellationToken::new();
-    let rate_limiter = app_handle
-        .state::<AppState>()
-        .download_rate_limiter
-        .clone();
+    let rate_limiter = app_handle.state::<AppState>().download_rate_limiter.clone();
 
     {
         let mut tokens = state_cancel_tokens.lock().await;
@@ -1224,6 +1312,8 @@ async fn start_mp4_download_worker(
             Arc::new(request_headers),
             output_dir_path,
             filename,
+            resume_existing_partial,
+            restart_confirmed,
             cancel_token.clone(),
         )
         .await;
@@ -1238,11 +1328,16 @@ async fn start_mp4_download_worker(
                 match result {
                     Ok(downloader::DownloadRunOutcome::Completed(final_path)) => {
                         let completed_at = Utc::now();
+                        let final_size = final_path.metadata().map(|metadata| metadata.len()).ok();
                         task.status = DownloadStatus::Completed;
                         task.completed_at = Some(completed_at);
                         task.updated_at = Some(completed_at);
                         task.speed_bytes_per_sec = 0;
                         task.file_path = Some(final_path.to_string_lossy().to_string());
+                        if let Some(final_size) = final_size {
+                            task.total_bytes = final_size;
+                            task.completed_segments = task.total_segments;
+                        }
                         if let Some(name) = final_path.file_name() {
                             task.filename = name.to_string_lossy().to_string();
                         }
@@ -1341,10 +1436,7 @@ async fn start_download_worker(
         .lock()
         .await;
     let convert_to_mp4 = *app_handle.state::<AppState>().convert_to_mp4.lock().await;
-    let rate_limiter = app_handle
-        .state::<AppState>()
-        .download_rate_limiter
-        .clone();
+    let rate_limiter = app_handle.state::<AppState>().download_rate_limiter.clone();
 
     {
         let mut tokens = state_cancel_tokens.lock().await;
@@ -1381,12 +1473,16 @@ async fn start_download_worker(
                 match result {
                     Ok(downloader::DownloadRunOutcome::Completed(final_path)) => {
                         let completed_at = Utc::now();
+                        let final_size = final_path.metadata().map(|metadata| metadata.len()).ok();
                         task.status = DownloadStatus::Completed;
                         task.completed_at = Some(completed_at);
                         task.updated_at = Some(completed_at);
                         task.completed_segments = task.total_segments;
                         task.speed_bytes_per_sec = 0;
                         task.file_path = Some(final_path.to_string_lossy().to_string());
+                        if let Some(final_size) = final_size {
+                            task.total_bytes = final_size;
+                        }
                         if let Some(name) = final_path.file_name() {
                             task.filename = name.to_string_lossy().to_string();
                         }

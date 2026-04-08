@@ -50,6 +50,13 @@ export interface DownloadTaskPage {
   page_size: number;
 }
 
+export type ResumeDownloadAction = "resume" | "confirm_restart";
+
+export interface ResumeDownloadCheckResult {
+  action: ResumeDownloadAction;
+  downloaded_bytes: number;
+}
+
 export interface DownloadProgressEvent {
   id: string;
   status: DownloadStatus;

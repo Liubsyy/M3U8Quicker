@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit};
 use chrono::Utc;
 use futures::StreamExt;
+use reqwest::{header, StatusCode};
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore, TryAcquireError};
@@ -26,6 +28,7 @@ type Aes256CbcDec = cbc::Decryptor<Aes256>;
 
 const M3U8_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 const VIDEO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const MP4_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 pub enum DownloadRunOutcome {
     Completed(PathBuf),
@@ -35,6 +38,19 @@ pub enum DownloadRunOutcome {
 enum SegmentDownloadOutcome {
     Downloaded(u64),
     Skipped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mp4ResumeCheck {
+    Ready { downloaded_bytes: u64 },
+    RequiresRestartConfirmation { downloaded_bytes: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mp4ResumeResponseMode {
+    Append,
+    RestartRequired,
+    Unexpected,
 }
 
 #[derive(Debug, Clone)]
@@ -486,6 +502,118 @@ fn resolve_available_output_path(output_dir: &Path, filename: &str) -> PathBuf {
     }
 }
 
+fn mp4_partial_path_for_output_path(mp4_path: &Path) -> PathBuf {
+    mp4_path.with_extension("mp4.partial")
+}
+
+fn find_existing_mp4_partial_path(output_dir: &Path, filename: &str) -> Option<PathBuf> {
+    let (base_name, extension) = split_filename_and_extension(filename);
+    let initial = output_dir.join(build_filename(&base_name, extension.as_deref()));
+    let mut candidate = initial;
+    let mut index = 1usize;
+
+    loop {
+        let partial = mp4_partial_path_for_output_path(&candidate);
+        if partial.exists() {
+            return Some(partial);
+        }
+        if !candidate.exists() {
+            return None;
+        }
+
+        candidate = output_dir.join(build_indexed_filename(
+            &base_name,
+            index,
+            extension.as_deref(),
+        ));
+        index += 1;
+    }
+}
+
+fn mp4_output_path_from_partial_path(partial_path: &Path) -> PathBuf {
+    let Some(file_name) = partial_path.file_name().and_then(|value| value.to_str()) else {
+        return partial_path.to_path_buf();
+    };
+    let Some(output_name) = file_name.strip_suffix(".partial") else {
+        return partial_path.to_path_buf();
+    };
+    partial_path
+        .parent()
+        .map(|parent| parent.join(output_name))
+        .unwrap_or_else(|| PathBuf::from(output_name))
+}
+
+fn resolve_available_mp4_output_paths(output_dir: &Path, filename: &str) -> (PathBuf, PathBuf) {
+    let mp4_filename = ensure_extension(filename, "mp4");
+    let (base_name, extension) = split_filename_and_extension(&mp4_filename);
+    let mut candidate = output_dir.join(build_filename(&base_name, extension.as_deref()));
+    let mut index = 1usize;
+
+    loop {
+        let partial_path = mp4_partial_path_for_output_path(&candidate);
+        if !candidate.exists() && !partial_path.exists() {
+            return (candidate, partial_path);
+        }
+
+        candidate = output_dir.join(build_indexed_filename(
+            &base_name,
+            index,
+            extension.as_deref(),
+        ));
+        index += 1;
+    }
+}
+
+fn resolve_mp4_output_paths(
+    output_dir: &Path,
+    filename: &str,
+    prefer_existing_partial: bool,
+) -> (PathBuf, PathBuf) {
+    let mp4_filename = ensure_extension(filename, "mp4");
+
+    if prefer_existing_partial {
+        if let Some(partial_path) = find_existing_mp4_partial_path(output_dir, &mp4_filename) {
+            return (
+                mp4_output_path_from_partial_path(&partial_path),
+                partial_path,
+            );
+        }
+    }
+
+    resolve_available_mp4_output_paths(output_dir, &mp4_filename)
+}
+
+fn resolve_existing_mp4_partial_paths(output_dir: &Path, filename: &str) -> (PathBuf, PathBuf) {
+    let mp4_filename = ensure_extension(filename, "mp4");
+
+    if let Some(partial_path) = find_existing_mp4_partial_path(output_dir, &mp4_filename) {
+        return (
+            mp4_output_path_from_partial_path(&partial_path),
+            partial_path,
+        );
+    }
+
+    resolve_available_mp4_output_paths(output_dir, &mp4_filename)
+}
+
+async fn file_len_if_exists(path: &Path) -> Result<u64, AppError> {
+    match tokio::fs::metadata(path).await {
+        Ok(metadata) if metadata.is_file() => Ok(metadata.len()),
+        Ok(_) => Ok(0),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub async fn cleanup_mp4_partial_file(output_dir: &Path, filename: &str) -> Result<(), AppError> {
+    let (_, partial_path) = resolve_existing_mp4_partial_paths(output_dir, filename);
+    match tokio::fs::remove_file(&partial_path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub fn resolve_available_file_path(output_path: &Path) -> PathBuf {
     if !output_path.exists() {
         return output_path.to_path_buf();
@@ -594,7 +722,8 @@ async fn maybe_persist_task_progress(
 ) {
     let failed_segment_count = {
         let tasks = downloads.lock().await;
-        tasks.get(task_id)
+        tasks
+            .get(task_id)
             .map(|task| task.failed_segment_indices.len())
             .unwrap_or_default()
     };
@@ -628,12 +757,7 @@ async fn maybe_persist_task_progress(
 }
 
 async fn snapshot_segments(segment_indices: &Arc<Mutex<BTreeSet<usize>>>) -> Vec<usize> {
-    segment_indices
-        .lock()
-        .await
-        .iter()
-        .copied()
-        .collect()
+    segment_indices.lock().await.iter().copied().collect()
 }
 
 async fn restore_download_state(
@@ -668,7 +792,11 @@ async fn restore_download_state(
         }
     }
 
-    Ok((completed_segment_indices, failed_segment_indices, total_bytes))
+    Ok((
+        completed_segment_indices,
+        failed_segment_indices,
+        total_bytes,
+    ))
 }
 
 async fn current_task_status(
@@ -720,17 +848,14 @@ pub async fn run_download(
             })
             .unwrap_or_default()
     };
-    let (
-        restored_completed_segment_indices,
-        restored_failed_segment_indices,
-        restored_total_bytes,
-    ) = restore_download_state(
-        &temp_dir,
-        &segments,
-        &existing_completed_segment_indices,
-        &existing_failed_segment_indices,
-    )
-    .await?;
+    let (restored_completed_segment_indices, restored_failed_segment_indices, restored_total_bytes) =
+        restore_download_state(
+            &temp_dir,
+            &segments,
+            &existing_completed_segment_indices,
+            &existing_failed_segment_indices,
+        )
+        .await?;
 
     let semaphore = Arc::new(Semaphore::new(MAX_DOWNLOAD_CONCURRENCY));
     let completed = Arc::new(AtomicUsize::new(restored_completed_segment_indices.len()));
@@ -1108,8 +1233,14 @@ async fn download_worker_loop(
             Ok(SegmentDownloadOutcome::Downloaded(file_size)) => {
                 priority_state.mark_segment_completed(segment.index).await;
                 total_bytes.fetch_add(file_size, Ordering::Relaxed);
-                completed_segment_indices.lock().await.insert(segment.index + 1);
-                failed_segment_indices.lock().await.remove(&(segment.index + 1));
+                completed_segment_indices
+                    .lock()
+                    .await
+                    .insert(segment.index + 1);
+                failed_segment_indices
+                    .lock()
+                    .await
+                    .remove(&(segment.index + 1));
                 let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                 let downloaded_bytes = total_bytes.load(Ordering::Relaxed);
                 let speed = speed_bytes_per_sec.load(Ordering::Relaxed);
@@ -1143,7 +1274,10 @@ async fn download_worker_loop(
             }
             Ok(SegmentDownloadOutcome::Skipped) => {
                 priority_state.mark_segment_skipped(segment.index).await;
-                failed_segment_indices.lock().await.insert(segment.index + 1);
+                failed_segment_indices
+                    .lock()
+                    .await
+                    .insert(segment.index + 1);
                 let done = completed.load(Ordering::Relaxed);
                 let downloaded_bytes = total_bytes.load(Ordering::Relaxed);
                 let completed_segments_list = snapshot_segments(&completed_segment_indices).await;
@@ -1343,6 +1477,61 @@ pub async fn merge_ts_files_in_dir(input_dir: &Path, output_path: &Path) -> Resu
     merge_files(&files, output_path).await
 }
 
+fn mp4_resume_response_mode(status: StatusCode) -> Mp4ResumeResponseMode {
+    match status {
+        StatusCode::PARTIAL_CONTENT => Mp4ResumeResponseMode::Append,
+        StatusCode::OK | StatusCode::RANGE_NOT_SATISFIABLE => {
+            Mp4ResumeResponseMode::RestartRequired
+        }
+        _ => Mp4ResumeResponseMode::Unexpected,
+    }
+}
+
+fn should_keep_mp4_partial_on_cancel(status: Option<&DownloadStatus>) -> bool {
+    matches!(status, Some(DownloadStatus::Paused))
+}
+
+async fn send_mp4_download_request(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &RequestHeaders,
+    resume_from: Option<u64>,
+) -> Result<reqwest::Response, AppError> {
+    let mut request =
+        build_request_with_headers(client, url, headers).timeout(MP4_DOWNLOAD_TIMEOUT);
+    if let Some(offset) = resume_from.filter(|offset| *offset > 0) {
+        request = request.header(header::RANGE, format!("bytes={}-", offset));
+    }
+
+    Ok(request.send().await?)
+}
+
+pub async fn check_mp4_resume(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &RequestHeaders,
+    output_dir: &Path,
+    filename: &str,
+) -> Result<Mp4ResumeCheck, AppError> {
+    let (_, partial_path) = resolve_mp4_output_paths(output_dir, filename, true);
+    let downloaded_bytes = file_len_if_exists(&partial_path).await?;
+    if downloaded_bytes == 0 {
+        return Ok(Mp4ResumeCheck::Ready { downloaded_bytes });
+    }
+
+    let response = send_mp4_download_request(client, url, headers, Some(downloaded_bytes)).await?;
+    match mp4_resume_response_mode(response.status()) {
+        Mp4ResumeResponseMode::Append => Ok(Mp4ResumeCheck::Ready { downloaded_bytes }),
+        Mp4ResumeResponseMode::RestartRequired => {
+            Ok(Mp4ResumeCheck::RequiresRestartConfirmation { downloaded_bytes })
+        }
+        Mp4ResumeResponseMode::Unexpected => {
+            response.error_for_status()?;
+            Ok(Mp4ResumeCheck::RequiresRestartConfirmation { downloaded_bytes })
+        }
+    }
+}
+
 pub async fn run_mp4_download(
     app_handle: AppHandle,
     downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
@@ -1353,35 +1542,87 @@ pub async fn run_mp4_download(
     headers: Arc<RequestHeaders>,
     output_dir: PathBuf,
     filename: String,
+    resume_existing_partial: bool,
+    restart_confirmed: bool,
     cancel_token: CancellationToken,
 ) -> Result<DownloadRunOutcome, AppError> {
-    let mp4_filename = ensure_extension(&filename, "mp4");
-    let mp4_path = resolve_available_output_path(&output_dir, &mp4_filename);
-    let partial_path = mp4_path.with_extension("mp4.partial");
-
+    let (mp4_path, partial_path) =
+        resolve_mp4_output_paths(&output_dir, &filename, resume_existing_partial);
     let client = client.read().await.clone();
-    let response = build_request_with_headers(&client, &url, &headers)
-        .send()
-        .await?
-        .error_for_status()?;
+    let existing_bytes = file_len_if_exists(&partial_path).await?;
+    let mut downloaded = 0u64;
+    let mut append = false;
+    let response = if existing_bytes > 0 {
+        let response =
+            send_mp4_download_request(&client, &url, &headers, Some(existing_bytes)).await?;
+
+        match mp4_resume_response_mode(response.status()) {
+            Mp4ResumeResponseMode::Append => {
+                downloaded = existing_bytes;
+                append = true;
+                response.error_for_status()?
+            }
+            Mp4ResumeResponseMode::RestartRequired => {
+                if !restart_confirmed {
+                    return Err(AppError::InvalidInput(
+                        "服务器不支持断点续传，请确认后从头下载".to_string(),
+                    ));
+                }
+
+                let _ = tokio::fs::remove_file(&partial_path).await;
+                if response.status() == StatusCode::OK {
+                    response.error_for_status()?
+                } else {
+                    send_mp4_download_request(&client, &url, &headers, None)
+                        .await?
+                        .error_for_status()?
+                }
+            }
+            Mp4ResumeResponseMode::Unexpected => response.error_for_status()?,
+        }
+    } else {
+        send_mp4_download_request(&client, &url, &headers, None)
+            .await?
+            .error_for_status()?
+    };
 
     let content_length = response.content_length().unwrap_or(0);
+    let expected_total_bytes = if content_length > 0 {
+        downloaded.saturating_add(content_length)
+    } else {
+        0
+    };
     let mut stream = response.bytes_stream();
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .truncate(true)
+        .append(append)
+        .truncate(!append)
         .open(&partial_path)
         .await?;
 
-    let mut downloaded: u64 = 0;
     let mut last_report = Instant::now();
-    let mut last_report_bytes: u64 = 0;
+    let mut last_report_bytes = downloaded;
+
+    emit_mp4_progress(
+        &app_handle,
+        &downloads,
+        &task_id,
+        downloaded,
+        expected_total_bytes,
+        0,
+    )
+    .await;
 
     while let Some(chunk) = tokio::select! {
         chunk = stream.next() => chunk,
         _ = cancel_token.cancelled() => {
-            let _ = tokio::fs::remove_file(&partial_path).await;
+            file.flush().await?;
+            drop(file);
+            let status = current_task_status(&downloads, &task_id).await;
+            if !should_keep_mp4_partial_on_cancel(status.as_ref()) {
+                let _ = tokio::fs::remove_file(&partial_path).await;
+            }
             return Err(AppError::Cancelled);
         }
     } {
@@ -1397,27 +1638,13 @@ pub async fn run_mp4_download(
             last_report_bytes = downloaded;
             last_report = Instant::now();
 
-            let total_segments = if content_length > 0 { 100 } else { 0 };
-            let completed_segments = if content_length > 0 {
-                ((downloaded as f64 / content_length as f64) * 100.0).min(100.0) as usize
-            } else {
-                0
-            };
-
-            emit_progress(
+            emit_mp4_progress(
                 &app_handle,
                 &downloads,
-                RuntimeProgressSnapshot {
-                    id: task_id.clone(),
-                    status: DownloadStatus::Downloading,
-                    completed_segments,
-                    total_segments,
-                    completed_segment_indices: Vec::new(),
-                    failed_segment_indices: Vec::new(),
-                    total_bytes: downloaded,
-                    speed_bytes_per_sec: speed,
-                    updated_at: Utc::now().to_rfc3339(),
-                },
+                &task_id,
+                downloaded,
+                expected_total_bytes,
+                speed,
             )
             .await;
         }
@@ -1428,6 +1655,39 @@ pub async fn run_mp4_download(
     tokio::fs::rename(&partial_path, &mp4_path).await?;
 
     Ok(DownloadRunOutcome::Completed(mp4_path))
+}
+
+async fn emit_mp4_progress(
+    app_handle: &AppHandle,
+    downloads: &Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
+    task_id: &str,
+    downloaded: u64,
+    expected_total_bytes: u64,
+    speed_bytes_per_sec: u64,
+) {
+    let total_segments = if expected_total_bytes > 0 { 100 } else { 0 };
+    let completed_segments = if expected_total_bytes > 0 {
+        ((downloaded as f64 / expected_total_bytes as f64) * 100.0).min(100.0) as usize
+    } else {
+        0
+    };
+
+    emit_progress(
+        app_handle,
+        downloads,
+        RuntimeProgressSnapshot {
+            id: task_id.to_string(),
+            status: DownloadStatus::Downloading,
+            completed_segments,
+            total_segments,
+            completed_segment_indices: Vec::new(),
+            failed_segment_indices: Vec::new(),
+            total_bytes: downloaded,
+            speed_bytes_per_sec,
+            updated_at: Utc::now().to_rfc3339(),
+        },
+    )
+    .await;
 }
 
 pub async fn convert_ts_to_mp4_file(
@@ -1471,6 +1731,8 @@ async fn merge_files(files: &[PathBuf], output_path: &Path) -> Result<(), AppErr
 mod tests {
     use super::*;
     use cbc::cipher::BlockEncryptMut;
+    use std::fs;
+    use uuid::Uuid;
 
     type Aes128CbcEnc = cbc::Encryptor<Aes128>;
     type Aes192CbcEnc = cbc::Encryptor<Aes192>;
@@ -1509,8 +1771,8 @@ mod tests {
     #[test]
     fn decrypt_aes_cbc_supports_128_192_and_256_bit_keys() {
         let iv = [
-            0x3c, 0x4d, 0x7e, 0x23, 0xed, 0xf7, 0x84, 0x18, 0xa3, 0xb4, 0xbe, 0xc4, 0x30,
-            0xdf, 0x2b, 0x61,
+            0x3c, 0x4d, 0x7e, 0x23, 0xed, 0xf7, 0x84, 0x18, 0xa3, 0xb4, 0xbe, 0xc4, 0x30, 0xdf,
+            0x2b, 0x61,
         ];
         let plaintext = b"m3u8quicker AES CBC compatibility";
         let key_sizes = [16usize, 24, 32];
@@ -1556,5 +1818,89 @@ mod tests {
 
         assert!(first_delay > Duration::ZERO);
         assert!(second_delay > first_delay);
+    }
+
+    #[test]
+    fn resolve_mp4_output_paths_reuses_existing_indexed_partial() {
+        let temp_root = unique_temp_path("mp4-partial-reuse");
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let existing_final_path = temp_root.join("video.mp4");
+        let partial_path = temp_root.join("video (1).mp4.partial");
+        fs::write(&existing_final_path, b"existing").expect("write existing file");
+        fs::write(&partial_path, b"partial").expect("write partial file");
+
+        let (resolved_final_path, resolved_partial_path) =
+            resolve_mp4_output_paths(&temp_root, "video", true);
+
+        assert_eq!(resolved_final_path, temp_root.join("video (1).mp4"));
+        assert_eq!(resolved_partial_path, partial_path);
+        remove_temp_dir(&temp_root);
+    }
+
+    #[test]
+    fn resolve_mp4_output_paths_avoids_old_partial_for_new_downloads() {
+        let temp_root = unique_temp_path("mp4-partial-new-download");
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        fs::write(temp_root.join("video.mp4.partial"), b"partial").expect("write partial file");
+
+        let (resolved_final_path, resolved_partial_path) =
+            resolve_mp4_output_paths(&temp_root, "video", false);
+
+        assert_eq!(resolved_final_path, temp_root.join("video (1).mp4"));
+        assert_eq!(
+            resolved_partial_path,
+            temp_root.join("video (1).mp4.partial")
+        );
+        remove_temp_dir(&temp_root);
+    }
+
+    #[test]
+    fn mp4_resume_response_mode_appends_on_partial_content() {
+        assert_eq!(
+            mp4_resume_response_mode(StatusCode::PARTIAL_CONTENT),
+            Mp4ResumeResponseMode::Append
+        );
+    }
+
+    #[test]
+    fn mp4_resume_response_mode_requires_restart_on_ok_with_partial() {
+        assert_eq!(
+            mp4_resume_response_mode(StatusCode::OK),
+            Mp4ResumeResponseMode::RestartRequired
+        );
+    }
+
+    #[test]
+    fn mp4_cancel_only_keeps_partial_for_paused_tasks() {
+        assert!(should_keep_mp4_partial_on_cancel(Some(
+            &DownloadStatus::Paused
+        )));
+        assert!(!should_keep_mp4_partial_on_cancel(Some(
+            &DownloadStatus::Cancelled
+        )));
+        assert!(!should_keep_mp4_partial_on_cancel(None));
+    }
+
+    #[tokio::test]
+    async fn cleanup_mp4_partial_file_removes_existing_partial() {
+        let temp_root = unique_temp_path("mp4-partial-cleanup");
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let partial_path = temp_root.join("video.mp4.partial");
+        fs::write(&partial_path, b"partial").expect("write partial file");
+
+        cleanup_mp4_partial_file(&temp_root, "video")
+            .await
+            .expect("cleanup partial file");
+
+        assert!(!partial_path.exists());
+        remove_temp_dir(&temp_root);
+    }
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("m3u8quicker-{}-{}", name, Uuid::new_v4()))
+    }
+
+    fn remove_temp_dir(dir: &Path) {
+        let _ = fs::remove_dir_all(dir);
     }
 }

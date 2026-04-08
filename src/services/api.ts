@@ -10,6 +10,7 @@ import type {
   DownloadTaskSegmentState,
   DownloadTaskSummary,
   OpenPlaybackSessionResponse,
+  ResumeDownloadCheckResult,
 } from "../types";
 import type { AppSettings, ProxySettings } from "../types/settings";
 
@@ -27,8 +28,20 @@ export async function pauseDownload(id: string): Promise<void> {
   return invoke("pause_download", { id });
 }
 
-export async function resumeDownload(id: string): Promise<DownloadTaskSummary> {
-  return invoke<DownloadTaskSummary>("resume_download", { id });
+export async function checkResumeDownload(
+  id: string
+): Promise<ResumeDownloadCheckResult> {
+  return invoke<ResumeDownloadCheckResult>("check_resume_download", { id });
+}
+
+export async function resumeDownload(
+  id: string,
+  restartConfirmed = false
+): Promise<DownloadTaskSummary> {
+  return invoke<DownloadTaskSummary>("resume_download", {
+    id,
+    restartConfirmed,
+  });
 }
 
 export async function retryFailedSegments(id: string): Promise<DownloadTaskSummary> {
