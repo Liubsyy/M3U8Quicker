@@ -30,6 +30,10 @@ impl FileType {
         !matches!(self, FileType::Hls)
     }
 
+    pub fn supports_progressive_playback(self) -> bool {
+        matches!(self, FileType::Mp4 | FileType::Webm)
+    }
+
     pub fn default_extension(self) -> Option<&'static str> {
         match self {
             FileType::Hls => None,
@@ -379,5 +383,23 @@ mod tests {
 
         assert!(!FileType::Hls.is_direct_download());
         assert_eq!(FileType::Hls.default_extension(), None);
+    }
+
+    #[test]
+    fn file_type_progressive_playback_is_limited_to_mp4_and_webm() {
+        assert!(FileType::Mp4.supports_progressive_playback());
+        assert!(FileType::Webm.supports_progressive_playback());
+
+        for file_type in [
+            FileType::Hls,
+            FileType::Mkv,
+            FileType::Avi,
+            FileType::Wmv,
+            FileType::Flv,
+            FileType::Mov,
+            FileType::Rmvb,
+        ] {
+            assert!(!file_type.supports_progressive_playback());
+        }
     }
 }

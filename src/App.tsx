@@ -22,8 +22,9 @@ import type {
   ChromiumBrowser,
   ChromiumExtensionInstallResult,
   FirefoxExtensionInstallResult,
+  DownloadTaskSummary,
 } from "./types";
-import { parseFileType } from "./types";
+import { canOpenInProgressPlayback, isDirectFileType, parseFileType } from "./types";
 import type { ThemeMode } from "./types/settings";
 
 const { Header, Content } = Layout;
@@ -150,9 +151,18 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     };
   }, []);
 
-  const handleOpenPlaybackWindow = async (id: string) => {
+  const handleOpenPlaybackWindow = async (task: DownloadTaskSummary) => {
+    if (
+      (task.status === "Downloading" || task.status === "Paused") &&
+      isDirectFileType(task.file_type) &&
+      !canOpenInProgressPlayback(task)
+    ) {
+      message.warning("当前格式暂不支持边下边播，请等待下载完成后再播放");
+      return;
+    }
+
     try {
-      const session = await openDownloadPlaybackSession(id);
+      const session = await openDownloadPlaybackSession(task.id);
       const existingWindow = await WebviewWindow.getByLabel(session.window_label);
 
       if (existingWindow) {
@@ -163,7 +173,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
 
       const url = `/?${new URLSearchParams({
         view: "player",
-        taskId: id,
+        taskId: task.id,
         playbackUrl: session.playback_url,
         playbackKind: session.playback_kind,
         sessionToken: session.session_token,
@@ -285,8 +295,8 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
           onRetryFailed={retryFailed}
           onCancel={cancel}
           onRemove={remove}
-          onPlay={(id) => {
-            void handleOpenPlaybackWindow(id);
+          onPlay={(task) => {
+            void handleOpenPlaybackWindow(task);
           }}
           loading={loadingActive}
           showActions={["play", "pause", "resume", "cancel", "open"]}
@@ -311,8 +321,8 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
           onRetryFailed={retryFailed}
           onCancel={cancel}
           onRemove={remove}
-          onPlay={(id) => {
-            void handleOpenPlaybackWindow(id);
+          onPlay={(task) => {
+            void handleOpenPlaybackWindow(task);
           }}
           loading={loadingHistory}
           showActions={["play", "remove", "open"]}

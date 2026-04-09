@@ -31,11 +31,13 @@ export function PlaybackWindow() {
   const sessionClosedRef = useRef(false);
   const taskStatusRef = useRef<DownloadStatus | null>(null);
   const lastPrioritizedRef = useRef<{ position: number; at: number } | null>(null);
+  const suppressSeekGuardRef = useRef(false);
   const [taskStatus, setTaskStatus] = useState<DownloadStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(
     query ? null : "播放器参数不完整，无法打开当前任务。"
   );
+  const [noticeText, setNoticeText] = useState<string | null>(null);
 
   const appendDebugLog = useEffectEvent((message: string) => {
     const line = `${formatDebugTime()} ${message}`;
@@ -219,6 +221,7 @@ export function PlaybackWindow() {
         return;
       }
       appendDebugLog("video: playing");
+      setNoticeText(null);
       setErrorText((current) => {
         if (current === "视频流暂不可用，请稍后重试。") {
           return null;
@@ -239,6 +242,25 @@ export function PlaybackWindow() {
     const handleSeeking = () => {
       if (!disposed) {
         appendDebugLog(`video: seeking target=${video.currentTime.toFixed(3)}`);
+        if (suppressSeekGuardRef.current) {
+          suppressSeekGuardRef.current = false;
+          return;
+        }
+
+        if (isInProgressProgressiveFilePlayback(query, taskStatusRef.current)) {
+          const bufferedEnd = getPlayableBufferedEnd(video);
+          if (bufferedEnd !== null && video.currentTime > bufferedEnd + 0.35) {
+            const fallbackTime = Math.max(0, bufferedEnd - 0.1);
+            suppressSeekGuardRef.current = true;
+            setNoticeText("尚未下载到该位置，请在已下载范围内播放");
+            appendDebugLog(
+              `video: seek blocked target=${video.currentTime.toFixed(3)} bufferedEnd=${bufferedEnd.toFixed(3)}`
+            );
+            video.currentTime = fallbackTime;
+            return;
+          }
+        }
+
         void prioritizeCurrentPosition();
       }
     };
@@ -284,7 +306,7 @@ export function PlaybackWindow() {
     video.addEventListener("volumechange", handleVolumeChange);
 
     if (query.playbackKind === "file") {
-      appendDebugLog("使用最终文件直接播放");
+      appendDebugLog("使用文件直连播放");
       video.src = query.playbackUrl;
       video.load();
       setLoading(false);
@@ -427,6 +449,7 @@ export function PlaybackWindow() {
           {taskStatus === "Cancelled" ? (
             <Alert type="warning" showIcon message="下载已取消，播放器不会再补齐新切片。" />
           ) : null}
+          {noticeText ? <Alert type="warning" showIcon message={noticeText} /> : null}
           {errorText ? <Alert type="error" showIcon message={errorText} /> : null}
         </div>
       </div>
@@ -457,6 +480,39 @@ function parsePlaybackWindowQuery(search: string): PlaybackWindowQuery | null {
 
 function normalizePlaybackKind(value: string | null): PlaybackSourceKind {
   return value === "file" ? "file" : "hls";
+}
+
+function isInProgressProgressiveFilePlayback(
+  query: PlaybackWindowQuery,
+  taskStatus: DownloadStatus | null
+) {
+  return (
+    query.playbackKind === "file" &&
+    supportsProgressivePlaybackFilename(query.filename) &&
+    (taskStatus === "Downloading" || taskStatus === "Paused")
+  );
+}
+
+function supportsProgressivePlaybackFilename(filename: string) {
+  const lower = filename.trim().toLowerCase();
+  return lower.endsWith(".mp4") || lower.endsWith(".webm");
+}
+
+function getPlayableBufferedEnd(video: HTMLVideoElement) {
+  if (video.buffered.length === 0) {
+    return null;
+  }
+
+  const currentTime = video.currentTime || 0;
+  for (let index = 0; index < video.buffered.length; index += 1) {
+    const start = video.buffered.start(index);
+    const end = video.buffered.end(index);
+    if (currentTime >= start && currentTime <= end) {
+      return end;
+    }
+  }
+
+  return video.buffered.end(video.buffered.length - 1);
 }
 
 function formatDebugTime() {

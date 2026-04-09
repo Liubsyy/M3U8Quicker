@@ -153,6 +153,21 @@ export function getFileTypeLabel(fileType: FileType): string {
   return fileType === "hls" ? "HLS" : fileType.toUpperCase();
 }
 
+export function supportsProgressivePlayback(fileType: FileType): boolean {
+  return fileType === "mp4" || fileType === "webm";
+}
+
+export function canOpenInProgressPlayback(task: Pick<DownloadTaskSummary, "file_type" | "status">): boolean {
+  const isInProgress =
+    task.status === "Downloading" || task.status === "Paused";
+
+  if (!isInProgress) {
+    return task.status === "Completed";
+  }
+
+  return task.file_type === "hls" || supportsProgressivePlayback(task.file_type);
+}
+
 export function deriveFilenameFromUrl(url: string): string {
   try {
     const parsed = new URL(url.trim());

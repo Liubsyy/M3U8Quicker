@@ -813,7 +813,8 @@ pub async fn open_download_playback_session(
     let task = if matches!(
         task.status,
         DownloadStatus::Downloading | DownloadStatus::Paused
-    ) {
+    ) && task.file_type == FileType::Hls
+    {
         ensure_task_playback_ready(&app_handle, &state, &id).await?
     } else {
         task
@@ -909,8 +910,16 @@ pub async fn prioritize_download_playback_position(
 
     match task.status {
         DownloadStatus::Downloading | DownloadStatus::Paused => {
-            playback::prioritize_download_position(&state.download_priorities, &task, position_secs)
+            if task.file_type.is_direct_download() {
+                Ok(())
+            } else {
+                playback::prioritize_download_position(
+                    &state.download_priorities,
+                    &task,
+                    position_secs,
+                )
                 .await
+            }
         }
         DownloadStatus::Completed | DownloadStatus::Merging | DownloadStatus::Converting => Ok(()),
         DownloadStatus::Cancelled => Err(AppError::InvalidInput("任务已取消".to_string())),
@@ -1117,9 +1126,17 @@ fn playback_target_for_task(task: &DownloadTask) -> Result<(PlaybackSourceKind, 
             }
             Ok((PlaybackSourceKind::File, playback::file_path(&task.id)))
         }
-        DownloadStatus::Downloading | DownloadStatus::Paused => {
+        DownloadStatus::Downloading | DownloadStatus::Paused if task.file_type == FileType::Hls => {
             Ok((PlaybackSourceKind::Hls, playback::playlist_path(&task.id)))
         }
+        DownloadStatus::Downloading | DownloadStatus::Paused
+            if task.file_type.supports_progressive_playback() =>
+        {
+            Ok((PlaybackSourceKind::File, playback::file_path(&task.id)))
+        }
+        DownloadStatus::Downloading | DownloadStatus::Paused => Err(AppError::InvalidInput(
+            "当前格式暂不支持边下边播，请等待下载完成后再播放".to_string(),
+        )),
         _ => Err(AppError::InvalidInput("当前任务状态不支持播放".to_string())),
     }
 }
@@ -2169,6 +2186,37 @@ mod tests {
             normalize_direct_download_filename("movie.rmvb".to_string(), FileType::Webm),
             "movie.webm"
         );
+    }
+
+    #[test]
+    fn playback_target_for_task_uses_file_route_for_in_progress_mp4_and_webm() {
+        let mut mp4_task = build_task(Vec::new());
+        mp4_task.status = DownloadStatus::Downloading;
+        mp4_task.file_type = FileType::Mp4;
+        let (mp4_kind, mp4_path) = playback_target_for_task(&mp4_task).expect("mp4 playback path");
+        assert_eq!(mp4_kind, PlaybackSourceKind::File);
+        assert_eq!(mp4_path, playback::file_path(&mp4_task.id));
+
+        let mut webm_task = build_task(Vec::new());
+        webm_task.status = DownloadStatus::Paused;
+        webm_task.file_type = FileType::Webm;
+        let (webm_kind, webm_path) =
+            playback_target_for_task(&webm_task).expect("webm playback path");
+        assert_eq!(webm_kind, PlaybackSourceKind::File);
+        assert_eq!(webm_path, playback::file_path(&webm_task.id));
+    }
+
+    #[test]
+    fn playback_target_for_task_rejects_in_progress_unsupported_direct_formats() {
+        let mut task = build_task(Vec::new());
+        task.status = DownloadStatus::Downloading;
+        task.file_type = FileType::Mkv;
+
+        let error = playback_target_for_task(&task).expect_err("unsupported format should fail");
+
+        assert!(error
+            .to_string()
+            .contains("当前格式暂不支持边下边播，请等待下载完成后再播放"));
     }
 
     #[test]

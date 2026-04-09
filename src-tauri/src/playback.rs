@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path as FsPath;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -508,7 +508,7 @@ async fn serve_file(
         Err(error) => return error.into_response(),
     };
 
-    let response = match build_completed_file_response(&task, &headers).await {
+    let response = match build_file_response(&task, &headers).await {
         Ok(response) => response,
         Err(error) => error.into_response(),
     };
@@ -562,29 +562,11 @@ async fn serve_segment(
     response
 }
 
-async fn build_completed_file_response(
+async fn build_file_response(
     task: &DownloadTask,
     headers: &HeaderMap,
 ) -> Result<Response, PlaybackHttpError> {
-    if !matches!(task.status, DownloadStatus::Completed) {
-        return Err(PlaybackHttpError::new(
-            StatusCode::CONFLICT,
-            "当前任务尚未生成最终播放文件",
-        ));
-    }
-
-    let file_path = task
-        .file_path
-        .as_ref()
-        .ok_or_else(|| PlaybackHttpError::new(StatusCode::NOT_FOUND, "下载完成文件不存在"))?;
-    let path = std::path::PathBuf::from(file_path);
-    if !path.is_file() {
-        return Err(PlaybackHttpError::new(
-            StatusCode::NOT_FOUND,
-            "下载完成文件不存在",
-        ));
-    }
-
+    let path = playback_file_path_for_task(task)?;
     let mut file = File::open(&path)
         .await
         .map_err(|error| PlaybackHttpError::new(StatusCode::NOT_FOUND, error.to_string()))?;
@@ -596,10 +578,12 @@ async fn build_completed_file_response(
         })?
         .len();
     if file_size == 0 {
-        return Err(PlaybackHttpError::new(
-            StatusCode::NOT_FOUND,
-            "下载完成文件为空",
-        ));
+        let message = if matches!(task.status, DownloadStatus::Completed) {
+            "下载完成文件为空"
+        } else {
+            "当前任务尚未生成可播放数据"
+        };
+        return Err(PlaybackHttpError::new(StatusCode::NOT_FOUND, message));
     }
 
     let (start, end, status) = match parse_byte_range(headers, file_size)? {
@@ -619,7 +603,7 @@ async fn build_completed_file_response(
     let response_headers = response.headers_mut();
     response_headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static(content_type_for_file_path(file_path)),
+        HeaderValue::from_static(content_type_for_file_path(&task.filename)),
     );
     response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     response_headers.insert(
@@ -640,6 +624,52 @@ async fn build_completed_file_response(
     }
 
     Ok(with_playback_headers(response))
+}
+
+fn playback_file_path_for_task(task: &DownloadTask) -> Result<PathBuf, PlaybackHttpError> {
+    match task.status {
+        DownloadStatus::Completed => {
+            let file_path = task.file_path.as_ref().ok_or_else(|| {
+                PlaybackHttpError::new(StatusCode::NOT_FOUND, "下载完成文件不存在")
+            })?;
+            let path = PathBuf::from(file_path);
+            if !path.is_file() {
+                return Err(PlaybackHttpError::new(
+                    StatusCode::NOT_FOUND,
+                    "下载完成文件不存在",
+                ));
+            }
+            Ok(path)
+        }
+        DownloadStatus::Downloading | DownloadStatus::Paused
+            if task.file_type.supports_progressive_playback() =>
+        {
+            let partial_path = downloader::existing_mp4_partial_path(
+                FsPath::new(&task.output_dir),
+                &task.filename,
+            )
+            .ok_or_else(|| {
+                PlaybackHttpError::new(StatusCode::CONFLICT, "当前任务尚未生成可播放文件")
+            })?;
+
+            if !partial_path.is_file() {
+                return Err(PlaybackHttpError::new(
+                    StatusCode::NOT_FOUND,
+                    "当前任务尚未生成可播放文件",
+                ));
+            }
+
+            Ok(partial_path)
+        }
+        DownloadStatus::Downloading | DownloadStatus::Paused => Err(PlaybackHttpError::new(
+            StatusCode::CONFLICT,
+            "当前格式暂不支持边下边播",
+        )),
+        _ => Err(PlaybackHttpError::new(
+            StatusCode::CONFLICT,
+            "当前任务尚未生成最终播放文件",
+        )),
+    }
 }
 
 async fn read_or_wait_for_segment(
@@ -1024,6 +1054,8 @@ fn token_suffix(token: &str) -> &str {
 mod tests {
     use super::*;
     use crate::models::{DownloadTask, FileType};
+    use std::fs;
+    use uuid::Uuid;
 
     fn build_task(status: DownloadStatus) -> DownloadTask {
         DownloadTask {
@@ -1052,6 +1084,14 @@ mod tests {
             updated_at: None,
             file_path: None,
         }
+    }
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("m3u8quicker-playback-{}-{}", name, Uuid::new_v4()))
+    }
+
+    fn remove_temp_dir(dir: &FsPath) {
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1115,5 +1155,94 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("*")
         );
+    }
+
+    #[test]
+    fn playback_file_path_for_task_supports_in_progress_mp4_and_webm_only() {
+        let temp_root = unique_temp_path("progressive-file");
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let mut mp4_task = build_task(DownloadStatus::Downloading);
+        mp4_task.file_type = FileType::Mp4;
+        mp4_task.output_dir = temp_root.to_string_lossy().to_string();
+        mp4_task.filename = "video.mp4".to_string();
+        let mp4_partial = temp_root.join("video.mp4.partial");
+        fs::write(&mp4_partial, b"partial").expect("write mp4 partial");
+
+        let mut webm_task = build_task(DownloadStatus::Paused);
+        webm_task.file_type = FileType::Webm;
+        webm_task.output_dir = temp_root.to_string_lossy().to_string();
+        webm_task.filename = "clip.webm".to_string();
+        let webm_partial = temp_root.join("clip.webm.partial");
+        fs::write(&webm_partial, b"partial").expect("write webm partial");
+
+        let mut mkv_task = build_task(DownloadStatus::Downloading);
+        mkv_task.file_type = FileType::Mkv;
+        mkv_task.output_dir = temp_root.to_string_lossy().to_string();
+        mkv_task.filename = "movie.mkv".to_string();
+
+        assert_eq!(
+            playback_file_path_for_task(&mp4_task).expect("mp4 partial"),
+            mp4_partial
+        );
+        assert_eq!(
+            playback_file_path_for_task(&webm_task).expect("webm partial"),
+            webm_partial
+        );
+        assert!(playback_file_path_for_task(&mkv_task)
+            .expect_err("mkv should fail")
+            .message
+            .contains("当前格式暂不支持边下边播"));
+
+        remove_temp_dir(&temp_root);
+    }
+
+    #[tokio::test]
+    async fn build_file_response_serves_partial_file_with_ranges() {
+        let temp_root = unique_temp_path("partial-response");
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let partial_path = temp_root.join("video.mp4.partial");
+        fs::write(&partial_path, b"0123456789").expect("write partial");
+
+        let mut task = build_task(DownloadStatus::Downloading);
+        task.file_type = FileType::Mp4;
+        task.output_dir = temp_root.to_string_lossy().to_string();
+        task.filename = "video.mp4".to_string();
+
+        let response = build_file_response(&task, &HeaderMap::new())
+            .await
+            .expect("build response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok()),
+            Some("10")
+        );
+
+        let mut ranged_headers = HeaderMap::new();
+        ranged_headers.insert(header::RANGE, HeaderValue::from_static("bytes=3-5"));
+        let ranged_response = build_file_response(&task, &ranged_headers)
+            .await
+            .expect("build ranged response");
+        assert_eq!(ranged_response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            ranged_response
+                .headers()
+                .get(header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok()),
+            Some("bytes 3-5/10")
+        );
+
+        let mut invalid_headers = HeaderMap::new();
+        invalid_headers.insert(header::RANGE, HeaderValue::from_static("bytes=20-30"));
+        let error = build_file_response(&task, &invalid_headers)
+            .await
+            .expect_err("range should fail");
+        assert_eq!(error.status, StatusCode::RANGE_NOT_SATISFIABLE);
+
+        remove_temp_dir(&temp_root);
     }
 }

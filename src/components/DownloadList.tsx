@@ -28,7 +28,11 @@ import type {
   DownloadTaskSummary,
   DownloadStatus,
 } from "../types";
-import { getFileTypeLabel, isDirectFileType } from "../types";
+import {
+  canOpenInProgressPlayback,
+  getFileTypeLabel,
+  isDirectFileType,
+} from "../types";
 import { openFileLocation } from "../services/api";
 
 interface DownloadListProps {
@@ -43,7 +47,7 @@ interface DownloadListProps {
   onRetryFailed: (id: string) => void;
   onCancel: (id: string) => void;
   onRemove: (id: string, deleteFile: boolean) => void;
-  onPlay?: (id: string) => void;
+  onPlay?: (task: DownloadTaskSummary) => void;
   loading: boolean;
   showActions: ("pause" | "resume" | "cancel" | "remove" | "open" | "play")[];
   showSpeed?: boolean;
@@ -447,20 +451,29 @@ export function DownloadList({
       width: 160,
       render: (_, record) => (
         <Space>
-          {showActions.includes("play") &&
-            onPlay &&
-            (record.status === "Downloading" ||
-              record.status === "Paused" ||
-              record.status === "Completed") && (
-              <Tooltip title="播放">
-                <Button
-                  type="text"
-                  icon={<VideoCameraOutlined />}
-                  onClick={() => onPlay(record.id)}
-                  size="small"
-                />
-              </Tooltip>
-            )}
+          {(() => {
+            const canPlay = canOpenInProgressPlayback(record);
+            const playTooltip = canPlay
+              ? "播放"
+              : "当前格式暂不支持边下边播";
+
+            return (
+              showActions.includes("play") &&
+              onPlay &&
+              (record.status === "Downloading" ||
+                record.status === "Paused" ||
+                record.status === "Completed") && (
+                <Tooltip title={playTooltip}>
+                  <Button
+                    type="text"
+                    icon={<VideoCameraOutlined />}
+                    onClick={() => onPlay(record)}
+                    size="small"
+                  />
+                </Tooltip>
+              )
+            );
+          })()}
           {showActions.includes("pause") &&
             record.status === "Downloading" && (
               <Tooltip title="暂停">

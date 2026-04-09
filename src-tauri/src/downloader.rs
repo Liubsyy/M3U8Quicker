@@ -612,6 +612,15 @@ fn resolve_existing_mp4_partial_paths(output_dir: &Path, filename: &str) -> (Pat
     resolve_available_mp4_output_paths(output_dir, &mp4_filename)
 }
 
+pub fn existing_mp4_partial_path(output_dir: &Path, filename: &str) -> Option<PathBuf> {
+    let (_, partial_path) = resolve_existing_mp4_partial_paths(output_dir, filename);
+    if partial_path.exists() {
+        Some(partial_path)
+    } else {
+        None
+    }
+}
+
 async fn file_len_if_exists(path: &Path) -> Result<u64, AppError> {
     match tokio::fs::metadata(path).await {
         Ok(metadata) if metadata.is_file() => Ok(metadata.len()),
