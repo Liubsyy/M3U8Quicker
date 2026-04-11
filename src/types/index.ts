@@ -24,6 +24,12 @@ export type FileType = "hls" | DirectFileType;
 
 export type DownloadMode = "hls" | "direct";
 
+export type HlsOutputMode = "single_stream" | "multi_track_bundle";
+
+export type HlsPlaylistKind = "media" | "master";
+
+export type HlsTrackType = "video" | "audio" | "subtitle";
+
 export const DIRECT_FILE_TYPES: DirectFileType[] = [
   "mp4",
   "mkv",
@@ -47,6 +53,8 @@ export interface DownloadTaskSummary {
   id: string;
   filename: string;
   file_type: FileType;
+  hls_output_mode: HlsOutputMode;
+  hls_selection: HlsTrackSelection | null;
   encryption_method: string | null;
   output_dir: string;
   status: DownloadStatus;
@@ -58,6 +66,7 @@ export interface DownloadTaskSummary {
   created_at: string;
   completed_at: string | null;
   updated_at: string;
+  playback_available: boolean;
   file_path: string | null;
 }
 
@@ -108,6 +117,44 @@ export interface CreateDownloadParams {
   extra_headers?: string;
   download_mode?: DownloadMode;
   file_type?: FileType;
+  hls_selection?: HlsTrackSelection;
+}
+
+export interface HlsTrackSelection {
+  video_id?: string;
+  audio_id?: string;
+  subtitle_id?: string;
+}
+
+export interface HlsTrackOption {
+  id: string;
+  track_type: HlsTrackType;
+  label: string;
+  name: string | null;
+  language: string | null;
+  group_id: string | null;
+  audio_group_id: string | null;
+  subtitle_group_id: string | null;
+  bandwidth: number | null;
+  resolution: string | null;
+  codecs: string | null;
+  is_default: boolean;
+  is_autoselect: boolean;
+  is_forced: boolean;
+}
+
+export interface InspectHlsTracksParams {
+  url: string;
+  extra_headers?: string;
+}
+
+export interface InspectHlsTracksResult {
+  kind: HlsPlaylistKind;
+  requires_selection: boolean;
+  video_tracks: HlsTrackOption[];
+  audio_tracks: HlsTrackOption[];
+  subtitle_tracks: HlsTrackOption[];
+  default_selection: HlsTrackSelection;
 }
 
 export interface OpenPlaybackSessionResponse {
@@ -197,7 +244,13 @@ export function supportsProgressivePlayback(fileType: FileType): boolean {
   return fileType === "mp4" || fileType === "webm";
 }
 
-export function canOpenInProgressPlayback(task: Pick<DownloadTaskSummary, "file_type" | "status">): boolean {
+export function canOpenInProgressPlayback(
+  task: Pick<DownloadTaskSummary, "file_type" | "status" | "playback_available">
+): boolean {
+  if (!task.playback_available) {
+    return false;
+  }
+
   const isInProgress =
     task.status === "Downloading" || task.status === "Paused";
 

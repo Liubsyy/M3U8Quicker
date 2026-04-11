@@ -55,6 +55,113 @@ enum Mp4ResumeResponseMode {
 }
 
 #[derive(Debug, Clone)]
+pub enum PreparedHlsDownload {
+    Single(PreparedSingleHlsDownload),
+    Bundle(PreparedBundleHlsDownload),
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedSingleHlsDownload {
+    pub segments: Vec<SegmentInfo>,
+    pub selection: Option<HlsTrackSelection>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedBundleHlsDownload {
+    pub selection: HlsTrackSelection,
+    pub playlist_files: Vec<BundlePlaylistFile>,
+    pub entries: Vec<BundleDownloadEntry>,
+}
+
+impl PreparedBundleHlsDownload {
+    pub fn total_units(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn source_uris(&self) -> Vec<String> {
+        self.entries.iter().map(|entry| entry.uri.clone()).collect()
+    }
+
+    pub fn durations(&self) -> Vec<f32> {
+        self.entries.iter().map(|entry| entry.duration).collect()
+    }
+
+    pub fn encryption_method(&self) -> Option<String> {
+        self.entries
+            .iter()
+            .find_map(|entry| entry.encryption.as_ref())
+            .map(|encryption| encryption.method.clone())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BundlePlaylistFile {
+    pub relative_path: PathBuf,
+    pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BundleDownloadEntry {
+    pub index: usize,
+    pub uri: String,
+    pub duration: f32,
+    pub sequence_number: u64,
+    pub byte_range: Option<ByteRangeSpec>,
+    pub encryption: Option<EncryptionInfo>,
+    pub relative_path: PathBuf,
+}
+
+impl BundleDownloadEntry {
+    fn output_path(&self, bundle_dir: &Path) -> PathBuf {
+        bundle_dir.join(&self.relative_path)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FetchedPlaylist {
+    base_url: Url,
+    playlist: m3u8_rs::Playlist,
+}
+
+#[derive(Debug, Clone)]
+struct MasterVideoTrack {
+    option: HlsTrackOption,
+    uri: String,
+}
+
+#[derive(Debug, Clone)]
+struct MasterAlternativeTrack {
+    option: HlsTrackOption,
+    uri: String,
+}
+
+#[derive(Debug, Clone)]
+struct MasterTrackCatalog {
+    inspection: InspectHlsTracksResult,
+    videos: Vec<MasterVideoTrack>,
+    audios: Vec<MasterAlternativeTrack>,
+    subtitles: Vec<MasterAlternativeTrack>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedEncryptionState {
+    method: String,
+    key_uri: String,
+    iv: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BundleMapState {
+    local_file_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BundleMapCacheKey {
+    uri: String,
+    byte_range: Option<ByteRangeSpec>,
+}
+
+#[derive(Debug, Clone)]
 struct RuntimeProgressSnapshot {
     id: DownloadId,
     status: DownloadStatus,
@@ -197,97 +304,768 @@ fn build_request_with_headers(
 
 // --- M3U8 Parsing ---
 
-pub fn resolve_m3u8<'a>(
-    client: &'a reqwest::Client,
-    m3u8_url: &'a str,
-    headers: &'a RequestHeaders,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Vec<SegmentInfo>, AppError>> + Send + 'a>,
-> {
-    let url = m3u8_url.to_string();
-    Box::pin(async move {
-        let base_url = Url::parse(&url)?;
-        let response = build_request_with_headers(client, &url, headers)
-            .timeout(M3U8_METADATA_TIMEOUT)
-            .send()
-            .await?
-            .error_for_status()?;
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value.to_string());
-        let bytes = response.bytes().await?;
+pub async fn inspect_hls_tracks(
+    client: &reqwest::Client,
+    m3u8_url: &str,
+    headers: &RequestHeaders,
+) -> Result<InspectHlsTracksResult, AppError> {
+    let fetched = fetch_hls_playlist(client, m3u8_url, headers).await?;
 
-        if looks_like_html_response(&bytes, content_type.as_deref()) {
-            return Err(AppError::InvalidInput(
-                "链接内容不是有效的 M3U8 播放列表，请检查地址是否正确".to_string(),
-            ));
+    match fetched.playlist {
+        m3u8_rs::Playlist::MediaPlaylist(_) => Ok(InspectHlsTracksResult {
+            kind: HlsPlaylistKind::Media,
+            requires_selection: false,
+            video_tracks: Vec::new(),
+            audio_tracks: Vec::new(),
+            subtitle_tracks: Vec::new(),
+            default_selection: HlsTrackSelection::default(),
+        }),
+        m3u8_rs::Playlist::MasterPlaylist(master) => Ok(build_master_track_catalog(
+            &fetched.base_url,
+            &master,
+        )?
+        .inspection),
+    }
+}
+
+pub async fn prepare_hls_download(
+    client: &reqwest::Client,
+    m3u8_url: &str,
+    headers: &RequestHeaders,
+    selection: Option<&HlsTrackSelection>,
+) -> Result<PreparedHlsDownload, AppError> {
+    let fetched = fetch_hls_playlist(client, m3u8_url, headers).await?;
+
+    match fetched.playlist {
+        m3u8_rs::Playlist::MediaPlaylist(media) => {
+            let mut segments = parse_media_playlist_segments(&fetched.base_url, &media)?;
+            fetch_encryption_keys(client, &mut segments, headers).await?;
+
+            Ok(PreparedHlsDownload::Single(PreparedSingleHlsDownload {
+                segments,
+                selection: None,
+            }))
         }
+        m3u8_rs::Playlist::MasterPlaylist(master) => {
+            let catalog = build_master_track_catalog(&fetched.base_url, &master)?;
+            let default_selection = catalog.inspection.default_selection.clone();
+            let requested_selection = selection.cloned().unwrap_or_default();
+            let selected_video_id = requested_selection
+                .video_id
+                .clone()
+                .or(default_selection.video_id.clone())
+                .ok_or_else(|| AppError::M3u8Parse("No variants found".into()))?;
+            let selected_video = catalog
+                .videos
+                .iter()
+                .find(|track| track.option.id == selected_video_id)
+                .cloned()
+                .ok_or_else(|| {
+                    AppError::InvalidInput("所选视频轨道不存在，请重新解析后再下载".to_string())
+                })?;
 
-        match m3u8_rs::parse_playlist_res(&bytes) {
-            Ok(m3u8_rs::Playlist::MediaPlaylist(pl)) => {
-                let media_sequence = pl.media_sequence;
-                let mut current_key: Option<(String, String, Option<String>)> = None;
-                let mut segments = Vec::new();
+            let available_audios =
+                tracks_for_group(&catalog.audios, selected_video.option.audio_group_id.as_deref());
+            let available_subtitles = tracks_for_group(
+                &catalog.subtitles,
+                selected_video.option.subtitle_group_id.as_deref(),
+            );
+            let selected_audio = resolve_selected_alternative_track(
+                &available_audios,
+                requested_selection.audio_id.as_deref(),
+                default_audio_track_id(&available_audios).as_deref(),
+                "音频",
+            )?;
+            let selected_subtitle = resolve_selected_optional_track(
+                &available_subtitles,
+                requested_selection.subtitle_id.as_deref(),
+                "字幕",
+            )?;
 
-                for (i, seg) in pl.segments.iter().enumerate() {
-                    // Track key inheritance
-                    if let Some(ref key) = seg.key {
-                        match key.method {
-                            m3u8_rs::KeyMethod::AES128 => {
-                                let key_uri = key.uri.as_ref().ok_or_else(|| {
-                                    AppError::M3u8Parse("AES-128 key missing URI".into())
-                                })?;
-                                let resolved_uri = resolve_url(&base_url, key_uri);
-                                current_key =
-                                    Some(("AES-128".to_string(), resolved_uri, key.iv.clone()));
-                            }
-                            m3u8_rs::KeyMethod::None => {
-                                current_key = None;
-                            }
-                            _ => {
-                                return Err(AppError::M3u8Parse(format!(
-                                    "Unsupported encryption method: {:?}",
-                                    key.method
-                                )));
-                            }
-                        }
-                    }
+            let resolved_selection = HlsTrackSelection {
+                video_id: Some(selected_video.option.id.clone()),
+                audio_id: selected_audio.as_ref().map(|track| track.option.id.clone()),
+                subtitle_id: selected_subtitle
+                    .as_ref()
+                    .map(|track| track.option.id.clone()),
+            };
 
-                    let encryption = current_key
-                        .as_ref()
-                        .map(|(method, uri, iv)| EncryptionInfo {
-                            method: method.clone(),
-                            key_uri: uri.clone(),
-                            iv: iv.clone(),
-                            key_bytes: Vec::new(),
-                        });
+            if selected_audio.is_none() && selected_subtitle.is_none() {
+                let video_playlist =
+                    fetch_media_playlist_following_variants(client, &selected_video.uri, headers)
+                        .await?;
+                let mut segments =
+                    parse_media_playlist_segments(&video_playlist.base_url, &video_playlist.playlist)?;
+                fetch_encryption_keys(client, &mut segments, headers).await?;
 
-                    segments.push(SegmentInfo {
-                        index: i,
-                        uri: resolve_url(&base_url, &seg.uri),
-                        duration: seg.duration,
-                        sequence_number: media_sequence + i as u64,
-                        encryption,
-                    });
-                }
-                Ok(segments)
+                return Ok(PreparedHlsDownload::Single(PreparedSingleHlsDownload {
+                    segments,
+                    selection: Some(resolved_selection),
+                }));
             }
-            Ok(m3u8_rs::Playlist::MasterPlaylist(pl)) => {
-                let variant = pl
-                    .variants
-                    .iter()
-                    .max_by_key(|v| v.bandwidth)
-                    .ok_or_else(|| AppError::M3u8Parse("No variants found".into()))?;
-                let variant_url = resolve_url(&base_url, &variant.uri);
-                resolve_m3u8(client, &variant_url, headers).await
+
+            let video_playlist =
+                fetch_media_playlist_following_variants(client, &selected_video.uri, headers).await?;
+            let mut plan = build_bundle_track_plan(&video_playlist, "video")?;
+
+            if let Some(selected_audio) = selected_audio {
+                let audio_playlist =
+                    fetch_media_playlist_following_variants(client, &selected_audio.uri, headers)
+                        .await?;
+                plan.extend(build_bundle_track_plan(&audio_playlist, "audio")?);
             }
-            Err(_) => Err(AppError::InvalidInput(
-                "链接内容不是有效的 M3U8 播放列表，请检查地址是否正确".to_string(),
-            )),
+
+            if let Some(selected_subtitle) = selected_subtitle {
+                let subtitle_playlist = fetch_media_playlist_following_variants(
+                    client,
+                    &selected_subtitle.uri,
+                    headers,
+                )
+                .await?;
+                plan.extend(build_bundle_track_plan(&subtitle_playlist, "subtitle")?);
+            }
+
+            fetch_bundle_encryption_keys(client, &mut plan.entries, headers).await?;
+
+            Ok(PreparedHlsDownload::Bundle(PreparedBundleHlsDownload {
+                selection: resolved_selection,
+                playlist_files: plan.playlist_files,
+                entries: plan.entries,
+            }))
         }
+    }
+}
+
+async fn fetch_hls_playlist(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &RequestHeaders,
+) -> Result<FetchedPlaylist, AppError> {
+    let base_url = Url::parse(url)?;
+    let response = build_request_with_headers(client, url, headers)
+        .timeout(M3U8_METADATA_TIMEOUT)
+        .send()
+        .await?
+        .error_for_status()?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string());
+    let bytes = response.bytes().await?;
+
+    if looks_like_html_response(&bytes, content_type.as_deref()) {
+        return Err(AppError::InvalidInput(
+            "链接内容不是有效的 M3U8 播放列表，请检查地址是否正确".to_string(),
+        ));
+    }
+
+    let playlist = m3u8_rs::parse_playlist_res(&bytes).map_err(|_| {
+        AppError::InvalidInput("链接内容不是有效的 M3U8 播放列表，请检查地址是否正确".to_string())
+    })?;
+
+    Ok(FetchedPlaylist {
+        base_url,
+        playlist,
     })
+}
+
+async fn fetch_media_playlist_following_variants(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &RequestHeaders,
+) -> Result<FetchedResolvedMediaPlaylist, AppError> {
+    let fetched = fetch_hls_playlist(client, url, headers).await?;
+
+    match fetched.playlist {
+        m3u8_rs::Playlist::MediaPlaylist(playlist) => Ok(FetchedResolvedMediaPlaylist {
+            base_url: fetched.base_url,
+            playlist,
+        }),
+        m3u8_rs::Playlist::MasterPlaylist(master) => {
+            let variant = master
+                .variants
+                .iter()
+                .filter(|variant| !variant.is_i_frame)
+                .max_by_key(|variant| variant.bandwidth)
+                .ok_or_else(|| AppError::M3u8Parse("No variants found".into()))?;
+            let variant_url = resolve_url(&fetched.base_url, &variant.uri);
+            Box::pin(fetch_media_playlist_following_variants(
+                client,
+                &variant_url,
+                headers,
+            ))
+            .await
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FetchedResolvedMediaPlaylist {
+    base_url: Url,
+    playlist: m3u8_rs::MediaPlaylist,
+}
+
+fn build_master_track_catalog(
+    base_url: &Url,
+    master: &m3u8_rs::MasterPlaylist,
+) -> Result<MasterTrackCatalog, AppError> {
+    let mut videos = master
+        .variants
+        .iter()
+        .filter(|variant| !variant.is_i_frame)
+        .filter(|variant| !variant.uri.trim().is_empty())
+        .map(|variant| MasterVideoTrack {
+            uri: resolve_url(base_url, &variant.uri),
+            option: HlsTrackOption {
+                id: build_video_track_id(
+                    &resolve_url(base_url, &variant.uri),
+                    variant.bandwidth,
+                    variant.resolution.as_ref(),
+                    variant.codecs.as_deref(),
+                ),
+                track_type: HlsTrackType::Video,
+                label: build_video_track_label(variant),
+                name: None,
+                language: None,
+                group_id: None,
+                audio_group_id: variant.audio.clone(),
+                subtitle_group_id: variant.subtitles.clone(),
+                bandwidth: Some(variant.bandwidth),
+                resolution: variant.resolution.as_ref().map(ToString::to_string),
+                codecs: variant.codecs.clone(),
+                is_default: false,
+                is_autoselect: false,
+                is_forced: false,
+            },
+        })
+        .collect::<Vec<_>>();
+    if videos.is_empty() {
+        return Err(AppError::M3u8Parse("No variants found".into()));
+    }
+    videos.sort_by(|a, b| {
+        b.option
+            .bandwidth
+            .cmp(&a.option.bandwidth)
+            .then_with(|| a.option.label.cmp(&b.option.label))
+    });
+
+    let audios = master
+        .alternatives
+        .iter()
+        .filter_map(|media| build_alternative_track_option(base_url, media, HlsTrackType::Audio))
+        .collect::<Vec<_>>();
+    let subtitles = master
+        .alternatives
+        .iter()
+        .filter_map(|media| build_alternative_track_option(base_url, media, HlsTrackType::Subtitle))
+        .collect::<Vec<_>>();
+
+    let default_video = videos
+        .first()
+        .cloned()
+        .ok_or_else(|| AppError::M3u8Parse("No variants found".into()))?;
+    let default_audio = default_audio_track_id(&tracks_for_group(
+        &audios,
+        default_video.option.audio_group_id.as_deref(),
+    ));
+    let inspection = InspectHlsTracksResult {
+        kind: HlsPlaylistKind::Master,
+        requires_selection: videos.len() > 1 || audios.len() > 1 || !subtitles.is_empty(),
+        video_tracks: videos.iter().map(|track| track.option.clone()).collect(),
+        audio_tracks: audios.iter().map(|track| track.option.clone()).collect(),
+        subtitle_tracks: subtitles.iter().map(|track| track.option.clone()).collect(),
+        default_selection: HlsTrackSelection {
+            video_id: Some(default_video.option.id.clone()),
+            audio_id: default_audio,
+            subtitle_id: None,
+        },
+    };
+
+    Ok(MasterTrackCatalog {
+        inspection,
+        videos,
+        audios,
+        subtitles,
+    })
+}
+
+fn build_alternative_track_option(
+    base_url: &Url,
+    media: &m3u8_rs::AlternativeMedia,
+    requested_type: HlsTrackType,
+) -> Option<MasterAlternativeTrack> {
+    let matches_type = match requested_type {
+        HlsTrackType::Audio => media.media_type == m3u8_rs::AlternativeMediaType::Audio,
+        HlsTrackType::Subtitle => media.media_type == m3u8_rs::AlternativeMediaType::Subtitles,
+        HlsTrackType::Video => false,
+    };
+    if !matches_type {
+        return None;
+    }
+
+    let uri = media.uri.as_ref()?;
+    let resolved_uri = resolve_url(base_url, uri);
+    let id = build_alternative_track_id(
+        requested_type,
+        &media.group_id,
+        &media.name,
+        media.language.as_deref(),
+        &resolved_uri,
+    );
+
+    Some(MasterAlternativeTrack {
+        uri: resolved_uri,
+        option: HlsTrackOption {
+            id,
+            track_type: requested_type,
+            label: build_alternative_track_label(media),
+            name: Some(media.name.clone()),
+            language: media.language.clone(),
+            group_id: Some(media.group_id.clone()),
+            audio_group_id: None,
+            subtitle_group_id: None,
+            bandwidth: None,
+            resolution: None,
+            codecs: None,
+            is_default: media.default,
+            is_autoselect: media.autoselect,
+            is_forced: media.forced,
+        },
+    })
+}
+
+fn build_video_track_id(
+    uri: &str,
+    bandwidth: u64,
+    resolution: Option<&m3u8_rs::Resolution>,
+    codecs: Option<&str>,
+) -> String {
+    let resolution = resolution.map(ToString::to_string).unwrap_or_default();
+    let codecs = codecs.unwrap_or_default();
+    format!(
+        "video:{}|{}|{}|{}",
+        comparable_uri_path(uri),
+        bandwidth,
+        resolution,
+        codecs
+    )
+}
+
+fn build_alternative_track_id(
+    track_type: HlsTrackType,
+    group_id: &str,
+    name: &str,
+    language: Option<&str>,
+    uri: &str,
+) -> String {
+    let track_type = match track_type {
+        HlsTrackType::Audio => "audio",
+        HlsTrackType::Subtitle => "subtitle",
+        HlsTrackType::Video => "video",
+    };
+    format!(
+        "{}:{}|{}|{}|{}",
+        track_type,
+        group_id,
+        name,
+        language.unwrap_or_default(),
+        comparable_uri_path(uri)
+    )
+}
+
+fn build_video_track_label(variant: &m3u8_rs::VariantStream) -> String {
+    let mut parts = Vec::new();
+    if let Some(resolution) = variant.resolution.as_ref() {
+        parts.push(resolution.to_string());
+    }
+    parts.push(format!("{:.0} kbps", variant.bandwidth as f64 / 1000.0));
+    if let Some(codecs) = variant.codecs.as_ref() {
+        parts.push(codecs.clone());
+    }
+    parts.join(" | ")
+}
+
+fn build_alternative_track_label(media: &m3u8_rs::AlternativeMedia) -> String {
+    let mut parts = vec![media.name.clone()];
+    if let Some(language) = media.language.as_ref() {
+        parts.push(language.clone());
+    }
+
+    let mut flags = Vec::new();
+    if media.default {
+        flags.push("默认");
+    }
+    if media.autoselect {
+        flags.push("自动");
+    }
+    if media.forced {
+        flags.push("强制");
+    }
+    if !flags.is_empty() {
+        parts.push(flags.join("/"));
+    }
+
+    parts.join(" | ")
+}
+
+fn default_audio_track_id(tracks: &[MasterAlternativeTrack]) -> Option<String> {
+    tracks
+        .iter()
+        .find(|track| track.option.is_default)
+        .or_else(|| tracks.iter().find(|track| track.option.is_autoselect))
+        .or_else(|| tracks.first())
+        .map(|track| track.option.id.clone())
+}
+
+fn tracks_for_group(
+    tracks: &[MasterAlternativeTrack],
+    group_id: Option<&str>,
+) -> Vec<MasterAlternativeTrack> {
+    let Some(group_id) = group_id else {
+        return Vec::new();
+    };
+
+    tracks
+        .iter()
+        .filter(|track| track.option.group_id.as_deref() == Some(group_id))
+        .cloned()
+        .collect()
+}
+
+fn resolve_selected_alternative_track(
+    available_tracks: &[MasterAlternativeTrack],
+    selected_id: Option<&str>,
+    default_id: Option<&str>,
+    track_name: &str,
+) -> Result<Option<MasterAlternativeTrack>, AppError> {
+    if available_tracks.is_empty() {
+        if selected_id.is_some() {
+            return Err(AppError::InvalidInput(format!(
+                "所选{}轨道已不存在，请重新解析后再下载",
+                track_name
+            )));
+        }
+        return Ok(None);
+    }
+
+    let target_id = selected_id.or(default_id).or_else(|| {
+        available_tracks
+            .first()
+            .map(|track| track.option.id.as_str())
+    });
+
+    let Some(target_id) = target_id else {
+        return Ok(None);
+    };
+
+    available_tracks
+        .iter()
+        .find(|track| track.option.id == target_id)
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "所选{}轨道已不存在，请重新解析后再下载",
+                track_name
+            ))
+        })
+}
+
+fn resolve_selected_optional_track(
+    available_tracks: &[MasterAlternativeTrack],
+    selected_id: Option<&str>,
+    track_name: &str,
+) -> Result<Option<MasterAlternativeTrack>, AppError> {
+    let Some(selected_id) = selected_id else {
+        return Ok(None);
+    };
+
+    available_tracks
+        .iter()
+        .find(|track| track.option.id == selected_id)
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "所选{}轨道已不存在，请重新解析后再下载",
+                track_name
+            ))
+        })
+}
+
+fn parse_media_playlist_segments(
+    base_url: &Url,
+    playlist: &m3u8_rs::MediaPlaylist,
+) -> Result<Vec<SegmentInfo>, AppError> {
+    let media_sequence = playlist.media_sequence;
+    let mut current_key: Option<ParsedEncryptionState> = None;
+    let mut previous_media_byte_range: Option<(String, u64)> = None;
+    let mut segments = Vec::with_capacity(playlist.segments.len());
+
+    for (index, segment) in playlist.segments.iter().enumerate() {
+        update_encryption_state(&mut current_key, base_url, segment.key.as_ref())?;
+        let encryption = current_key.as_ref().map(to_encryption_info);
+        let resolved_uri = resolve_url(base_url, &segment.uri);
+
+        segments.push(SegmentInfo {
+            index,
+            uri: resolved_uri.clone(),
+            duration: segment.duration,
+            sequence_number: media_sequence + index as u64,
+            byte_range: resolve_explicit_byte_range(
+                &resolved_uri,
+                segment.byte_range.as_ref(),
+                &mut previous_media_byte_range,
+            ),
+            encryption,
+        });
+    }
+
+    Ok(segments)
+}
+
+#[derive(Debug, Clone)]
+struct BundleTrackPlanBuild {
+    playlist_files: Vec<BundlePlaylistFile>,
+    entries: Vec<BundleDownloadEntry>,
+}
+
+impl BundleTrackPlanBuild {
+    fn extend(&mut self, other: BundleTrackPlanBuild) {
+        let next_index = self.entries.len();
+        self.playlist_files.extend(other.playlist_files);
+        self.entries.extend(other.entries.into_iter().enumerate().map(|(offset, mut entry)| {
+            entry.index = next_index + offset;
+            entry
+        }));
+    }
+}
+
+fn build_bundle_track_plan(
+    fetched: &FetchedResolvedMediaPlaylist,
+    subdir: &str,
+) -> Result<BundleTrackPlanBuild, AppError> {
+    let mut current_key: Option<ParsedEncryptionState> = None;
+    let mut current_map: Option<BundleMapState> = None;
+    let mut map_cache = HashMap::<BundleMapCacheKey, BundleMapState>::new();
+    let mut last_emitted_map: Option<String> = None;
+    let mut previous_map_byte_range: Option<(String, u64)> = None;
+    let mut previous_media_byte_range: Option<(String, u64)> = None;
+    let mut map_counter = 0usize;
+    let mut entries = Vec::new();
+    let mut local_segments = Vec::with_capacity(fetched.playlist.segments.len());
+
+    for (segment_index, segment) in fetched.playlist.segments.iter().enumerate() {
+        update_encryption_state(&mut current_key, &fetched.base_url, segment.key.as_ref())?;
+        let encryption = current_key.as_ref().map(to_encryption_info);
+        let sequence_number = fetched.playlist.media_sequence + segment_index as u64;
+
+        if let Some(map) = segment.map.as_ref() {
+            let resolved_map_uri = resolve_url(&fetched.base_url, &map.uri);
+            let byte_range = resolve_explicit_byte_range(
+                &resolved_map_uri,
+                map.byte_range.as_ref(),
+                &mut previous_map_byte_range,
+            );
+            let cache_key = BundleMapCacheKey {
+                uri: resolved_map_uri.clone(),
+                byte_range: byte_range.clone(),
+            };
+            let map_state = if let Some(existing) = map_cache.get(&cache_key) {
+                existing.clone()
+            } else {
+                map_counter += 1;
+                let local_file_name = format!(
+                    "init_{:06}.{}",
+                    map_counter,
+                    infer_file_extension(&resolved_map_uri, "bin")
+                );
+                let created = BundleMapState {
+                    local_file_name: local_file_name.clone(),
+                };
+                entries.push(BundleDownloadEntry {
+                    index: entries.len(),
+                    uri: resolved_map_uri,
+                    duration: 0.0,
+                    sequence_number,
+                    byte_range,
+                    encryption: encryption.clone(),
+                    relative_path: PathBuf::from(subdir).join(local_file_name),
+                });
+                map_cache.insert(cache_key, created.clone());
+                created
+            };
+            current_map = Some(map_state);
+        }
+
+        let local_segment_name = format!(
+            "seg_{:06}.{}",
+            segment_index + 1,
+            infer_file_extension(&segment.uri, "bin")
+        );
+        let resolved_segment_uri = resolve_url(&fetched.base_url, &segment.uri);
+        entries.push(BundleDownloadEntry {
+            index: entries.len(),
+            uri: resolved_segment_uri.clone(),
+            duration: segment.duration,
+            sequence_number,
+            byte_range: resolve_explicit_byte_range(
+                &resolved_segment_uri,
+                segment.byte_range.as_ref(),
+                &mut previous_media_byte_range,
+            ),
+            encryption,
+            relative_path: PathBuf::from(subdir).join(&local_segment_name),
+        });
+
+        let map_uri = current_map.as_ref().map(|map| map.local_file_name.clone());
+        let mut local_segment = m3u8_rs::MediaSegment {
+            uri: local_segment_name,
+            duration: segment.duration,
+            title: segment.title.clone(),
+            map: None,
+            ..Default::default()
+        };
+        if let Some(map_uri) = map_uri {
+            if last_emitted_map.as_deref() != Some(map_uri.as_str()) {
+                local_segment.map = Some(m3u8_rs::Map {
+                    uri: map_uri.clone(),
+                    ..Default::default()
+                });
+                last_emitted_map = Some(map_uri);
+            }
+        } else {
+            last_emitted_map = None;
+        }
+        local_segments.push(local_segment);
+    }
+
+    let target_duration = local_segments.iter().fold(1u64, |max_duration, segment| {
+        max_duration.max(segment.duration.ceil().max(1.0) as u64)
+    });
+    let local_playlist = m3u8_rs::MediaPlaylist {
+        version: Some(6),
+        target_duration,
+        media_sequence: 0,
+        segments: local_segments,
+        discontinuity_sequence: 0,
+        end_list: true,
+        playlist_type: Some(m3u8_rs::MediaPlaylistType::Vod),
+        i_frames_only: false,
+        start: None,
+        independent_segments: fetched.playlist.independent_segments,
+        unknown_tags: Vec::new(),
+    };
+
+    Ok(BundleTrackPlanBuild {
+        playlist_files: vec![BundlePlaylistFile {
+            relative_path: PathBuf::from(subdir).join("index.m3u8"),
+            content: media_playlist_to_string(&local_playlist)?,
+        }],
+        entries,
+    })
+}
+
+fn media_playlist_to_string(playlist: &m3u8_rs::MediaPlaylist) -> Result<String, AppError> {
+    let mut bytes = Vec::new();
+    playlist
+        .write_to(&mut bytes)
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    String::from_utf8(bytes).map_err(|error| AppError::Internal(error.to_string()))
+}
+
+fn update_encryption_state(
+    current_key: &mut Option<ParsedEncryptionState>,
+    base_url: &Url,
+    key: Option<&m3u8_rs::Key>,
+) -> Result<(), AppError> {
+    let Some(key) = key else {
+        return Ok(());
+    };
+
+    match key.method {
+        m3u8_rs::KeyMethod::AES128 => {
+            let key_uri = key
+                .uri
+                .as_ref()
+                .ok_or_else(|| AppError::M3u8Parse("AES-128 key missing URI".into()))?;
+            *current_key = Some(ParsedEncryptionState {
+                method: "AES-128".to_string(),
+                key_uri: resolve_url(base_url, key_uri),
+                iv: key.iv.clone(),
+            });
+        }
+        m3u8_rs::KeyMethod::None => {
+            *current_key = None;
+        }
+        _ => {
+            return Err(AppError::M3u8Parse(format!(
+                "Unsupported encryption method: {:?}",
+                key.method
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn to_encryption_info(state: &ParsedEncryptionState) -> EncryptionInfo {
+    EncryptionInfo {
+        method: state.method.clone(),
+        key_uri: state.key_uri.clone(),
+        iv: state.iv.clone(),
+        key_bytes: Vec::new(),
+    }
+}
+
+fn resolve_explicit_byte_range(
+    uri: &str,
+    byte_range: Option<&m3u8_rs::ByteRange>,
+    previous_state: &mut Option<(String, u64)>,
+) -> Option<ByteRangeSpec> {
+    let Some(byte_range) = byte_range else {
+        *previous_state = None;
+        return None;
+    };
+
+    let offset = byte_range.offset.unwrap_or_else(|| {
+        previous_state
+            .as_ref()
+            .filter(|(previous_uri, _)| previous_uri == uri)
+            .map(|(_, next_offset)| *next_offset)
+            .unwrap_or(0)
+    });
+
+    *previous_state = Some((uri.to_string(), offset.saturating_add(byte_range.length)));
+
+    Some(ByteRangeSpec {
+        length: byte_range.length,
+        offset: Some(offset),
+    })
+}
+
+fn comparable_uri_path(uri: &str) -> String {
+    if let Ok(parsed) = url::Url::parse(uri) {
+        parsed.path().to_string()
+    } else {
+        uri.split('?').next().unwrap_or(uri).to_string()
+    }
+}
+
+fn infer_file_extension(uri: &str, fallback: &str) -> String {
+    let path = if let Ok(parsed) = url::Url::parse(uri) {
+        parsed.path().to_string()
+    } else {
+        uri.split(['?', '#']).next().unwrap_or(uri).to_string()
+    };
+
+    Path::new(&path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 fn looks_like_html_response(bytes: &[u8], content_type: Option<&str>) -> bool {
@@ -355,6 +1133,44 @@ pub async fn fetch_encryption_keys(
             .to_string();
         }
     }
+    Ok(())
+}
+
+pub async fn fetch_bundle_encryption_keys(
+    client: &reqwest::Client,
+    entries: &mut [BundleDownloadEntry],
+    headers: &RequestHeaders,
+) -> Result<(), AppError> {
+    let mut key_cache: HashMap<String, Vec<u8>> = HashMap::new();
+
+    for entry in entries.iter_mut() {
+        if let Some(ref mut enc) = entry.encryption {
+            if !key_cache.contains_key(&enc.key_uri) {
+                let resp = build_request_with_headers(client, &enc.key_uri, headers)
+                    .timeout(M3U8_METADATA_TIMEOUT)
+                    .send()
+                    .await?
+                    .error_for_status()?;
+                let bytes = resp.bytes().await?;
+                if !matches!(bytes.len(), 16 | 24 | 32) {
+                    return Err(AppError::Decryption(format!(
+                        "AES key must be 16, 24, or 32 bytes, got {}",
+                        bytes.len()
+                    )));
+                }
+                key_cache.insert(enc.key_uri.clone(), bytes.to_vec());
+            }
+            enc.key_bytes = key_cache[&enc.key_uri].clone();
+            enc.method = match enc.key_bytes.len() {
+                16 => "AES-128",
+                24 => "AES-192",
+                32 => "AES-256",
+                _ => enc.method.as_str(),
+            }
+            .to_string();
+        }
+    }
+
     Ok(())
 }
 
@@ -440,6 +1256,16 @@ pub fn segment_file_path(temp_dir: &Path, segment_index: usize) -> PathBuf {
 
 fn partial_segment_file_path(temp_dir: &Path, segment_index: usize) -> PathBuf {
     temp_dir.join(format!("seg_{:06}.ts.part", segment_index))
+}
+
+fn part_path_for_downloaded_file(path: &Path) -> PathBuf {
+    let Some(file_name) = path.file_name() else {
+        return path.with_extension("part");
+    };
+
+    let mut partial_name = OsString::from(file_name);
+    partial_name.push(".part");
+    path.with_file_name(partial_name)
 }
 
 fn split_filename_and_extension(filename: &str) -> (String, Option<String>) {
@@ -1164,6 +1990,466 @@ pub async fn run_download(
     Ok(DownloadRunOutcome::Completed(final_path))
 }
 
+async fn write_bundle_playlist_files(
+    bundle_dir: &Path,
+    playlist_files: &[BundlePlaylistFile],
+) -> Result<(), AppError> {
+    for playlist_file in playlist_files {
+        let path = bundle_dir.join(&playlist_file.relative_path);
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(path, playlist_file.content.as_bytes()).await?;
+    }
+
+    Ok(())
+}
+
+async fn restore_bundle_download_state(
+    bundle_dir: &Path,
+    entries: &[BundleDownloadEntry],
+    recorded_completed_segment_indices: &[usize],
+    recorded_failed_segment_indices: &[usize],
+) -> Result<(BTreeSet<usize>, BTreeSet<usize>, u64), AppError> {
+    let mut completed_segment_indices = BTreeSet::new();
+    let mut failed_segment_indices = recorded_failed_segment_indices
+        .iter()
+        .copied()
+        .filter(|value| *value > 0 && *value <= entries.len())
+        .collect::<BTreeSet<_>>();
+    let mut total_bytes = 0u64;
+    let recorded: BTreeSet<usize> = recorded_completed_segment_indices.iter().copied().collect();
+
+    for entry in entries {
+        let completed_path = entry.output_path(bundle_dir);
+        let partial_path = part_path_for_downloaded_file(&completed_path);
+        if partial_path.exists() {
+            let _ = tokio::fs::remove_file(&partial_path).await;
+        }
+
+        if completed_path.exists() {
+            if !recorded.is_empty() && !recorded.contains(&(entry.index + 1)) {
+                // Trust on-disk files even if the persisted record is stale.
+            }
+            total_bytes += tokio::fs::metadata(&completed_path).await?.len();
+            completed_segment_indices.insert(entry.index + 1);
+            failed_segment_indices.remove(&(entry.index + 1));
+        }
+    }
+
+    Ok((
+        completed_segment_indices,
+        failed_segment_indices,
+        total_bytes,
+    ))
+}
+
+pub async fn run_hls_bundle_download(
+    app_handle: AppHandle,
+    downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
+    client: Arc<RwLock<reqwest::Client>>,
+    rate_limiter: Arc<DownloadRateLimiter>,
+    task_id: DownloadId,
+    bundle_dir: PathBuf,
+    playlist_files: Vec<BundlePlaylistFile>,
+    entries: Vec<BundleDownloadEntry>,
+    headers: Arc<RequestHeaders>,
+    cancel_token: CancellationToken,
+    max_concurrent: Arc<Mutex<usize>>,
+) -> Result<DownloadRunOutcome, AppError> {
+    let total = entries.len();
+    tokio::fs::create_dir_all(&bundle_dir).await?;
+    write_bundle_playlist_files(&bundle_dir, &playlist_files).await?;
+
+    let (existing_completed_segment_indices, existing_failed_segment_indices) = {
+        let tasks = downloads.lock().await;
+        tasks
+            .get(&task_id)
+            .map(|task| {
+                (
+                    task.completed_segment_indices.clone(),
+                    task.failed_segment_indices.clone(),
+                )
+            })
+            .unwrap_or_default()
+    };
+    let (restored_completed_segment_indices, restored_failed_segment_indices, restored_total_bytes) =
+        restore_bundle_download_state(
+            &bundle_dir,
+            &entries,
+            &existing_completed_segment_indices,
+            &existing_failed_segment_indices,
+        )
+        .await?;
+
+    let semaphore = Arc::new(Semaphore::new(MAX_DOWNLOAD_CONCURRENCY));
+    let completed = Arc::new(AtomicUsize::new(restored_completed_segment_indices.len()));
+    let total_bytes = Arc::new(AtomicU64::new(restored_total_bytes));
+    let speed_bytes_per_sec = Arc::new(AtomicU64::new(0));
+    let completed_segment_indices = Arc::new(Mutex::new(restored_completed_segment_indices));
+    let failed_segment_indices = Arc::new(Mutex::new(restored_failed_segment_indices));
+    let speed_report_cancel = CancellationToken::new();
+    let concurrency_limit_cancel = CancellationToken::new();
+    let persist_throttle = Arc::new(Mutex::new(PersistThrottleState {
+        last_saved_at: Instant::now(),
+        last_failed_segment_count: existing_failed_segment_indices.len(),
+    }));
+    let initial_concurrency = normalize_download_concurrency(*max_concurrent.lock().await);
+    let mut held_permits = Vec::with_capacity(MAX_DOWNLOAD_CONCURRENCY - initial_concurrency);
+    rebalance_concurrency_permits(&semaphore, &mut held_permits, initial_concurrency)?;
+
+    emit_progress(
+        &app_handle,
+        &downloads,
+        RuntimeProgressSnapshot {
+            id: task_id.clone(),
+            status: DownloadStatus::Downloading,
+            completed_segments: completed.load(Ordering::Relaxed),
+            total_segments: total,
+            completed_segment_indices: snapshot_segments(&completed_segment_indices).await,
+            failed_segment_indices: snapshot_segments(&failed_segment_indices).await,
+            total_bytes: total_bytes.load(Ordering::Relaxed),
+            speed_bytes_per_sec: 0,
+            updated_at: Utc::now().to_rfc3339(),
+        },
+    )
+    .await;
+
+    let speed_reporter = {
+        let app_handle = app_handle.clone();
+        let downloads = downloads.clone();
+        let task_id = task_id.clone();
+        let completed = completed.clone();
+        let total_bytes = total_bytes.clone();
+        let speed_bytes_per_sec = speed_bytes_per_sec.clone();
+        let completed_segment_indices = completed_segment_indices.clone();
+        let failed_segment_indices = failed_segment_indices.clone();
+        let speed_report_cancel = speed_report_cancel.clone();
+        let restored_total_bytes = restored_total_bytes;
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut last_bytes = restored_total_bytes;
+
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = speed_report_cancel.cancelled() => break,
+                    _ = interval.tick() => {
+                        let downloaded_bytes = total_bytes.load(Ordering::Relaxed);
+                        let speed = downloaded_bytes.saturating_sub(last_bytes);
+                        last_bytes = downloaded_bytes;
+                        speed_bytes_per_sec.store(speed, Ordering::Relaxed);
+
+                        let done = completed.load(Ordering::Relaxed);
+                        let completed_segments_list = snapshot_segments(&completed_segment_indices).await;
+                        let failed_segments_list = snapshot_segments(&failed_segment_indices).await;
+                        emit_progress(
+                            &app_handle,
+                            &downloads,
+                            RuntimeProgressSnapshot {
+                                id: task_id.clone(),
+                                status: DownloadStatus::Downloading,
+                                completed_segments: done,
+                                total_segments: total,
+                                completed_segment_indices: completed_segments_list,
+                                failed_segment_indices: failed_segments_list,
+                                total_bytes: downloaded_bytes,
+                                speed_bytes_per_sec: speed,
+                                updated_at: Utc::now().to_rfc3339(),
+                            },
+                        )
+                        .await;
+                    }
+                }
+            }
+        })
+    };
+
+    let concurrency_limiter = {
+        let semaphore = semaphore.clone();
+        let max_concurrent = max_concurrent.clone();
+        let concurrency_limit_cancel = concurrency_limit_cancel.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(250));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut held_permits = held_permits;
+
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = concurrency_limit_cancel.cancelled() => break,
+                    _ = interval.tick() => {
+                        let target_concurrency =
+                            normalize_download_concurrency(*max_concurrent.lock().await);
+                        if rebalance_concurrency_permits(
+                            &semaphore,
+                            &mut held_permits,
+                            target_concurrency,
+                        )
+                        .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+    };
+
+    let restored_completed_segments = snapshot_segments(&completed_segment_indices).await;
+    let pending_indices = entries
+        .iter()
+        .filter(|entry| !restored_completed_segments.contains(&(entry.index + 1)))
+        .map(|entry| entry.index)
+        .collect::<Vec<_>>();
+    let next_pending = Arc::new(AtomicUsize::new(0));
+    let entries = Arc::new(entries);
+    let pending_indices = Arc::new(pending_indices);
+    let worker_count = MAX_DOWNLOAD_CONCURRENCY.min(total.max(1));
+    let mut worker_handles = Vec::with_capacity(worker_count);
+
+    for _ in 0..worker_count {
+        worker_handles.push(tokio::spawn(bundle_download_worker_loop(
+            semaphore.clone(),
+            client.clone(),
+            rate_limiter.clone(),
+            headers.clone(),
+            bundle_dir.clone(),
+            entries.clone(),
+            pending_indices.clone(),
+            next_pending.clone(),
+            completed.clone(),
+            total_bytes.clone(),
+            speed_bytes_per_sec.clone(),
+            completed_segment_indices.clone(),
+            failed_segment_indices.clone(),
+            downloads.clone(),
+            app_handle.clone(),
+            task_id.clone(),
+            cancel_token.clone(),
+            total,
+            persist_throttle.clone(),
+        )));
+    }
+
+    let mut first_error = None;
+    for handle in worker_handles {
+        match handle.await {
+            Ok(Ok(())) | Ok(Err(AppError::Cancelled)) => {}
+            Ok(Err(error)) => {
+                if first_error.is_none() {
+                    cancel_token.cancel();
+                    first_error = Some(error);
+                }
+            }
+            Err(error) => {
+                if first_error.is_none() {
+                    cancel_token.cancel();
+                    first_error = Some(AppError::Internal(format!(
+                        "Bundle download worker task join error: {}",
+                        error
+                    )));
+                }
+            }
+        }
+    }
+
+    speed_report_cancel.cancel();
+    concurrency_limit_cancel.cancel();
+    let _ = speed_reporter.await;
+    let _ = concurrency_limiter.await;
+
+    if let Some(error) = first_error {
+        let _ = tokio::fs::remove_dir_all(&bundle_dir).await;
+        return Err(error);
+    }
+
+    if cancel_token.is_cancelled() {
+        let status = current_task_status(&downloads, &task_id).await;
+        if !matches!(status, Some(DownloadStatus::Paused)) {
+            let _ = tokio::fs::remove_dir_all(&bundle_dir).await;
+        }
+        return Err(AppError::Cancelled);
+    }
+
+    let completed_segments_list = snapshot_segments(&completed_segment_indices).await;
+    let failed_segments_list = snapshot_segments(&failed_segment_indices).await;
+    if !failed_segments_list.is_empty() {
+        speed_bytes_per_sec.store(0, Ordering::Relaxed);
+        emit_progress(
+            &app_handle,
+            &downloads,
+            RuntimeProgressSnapshot {
+                id: task_id.clone(),
+                status: DownloadStatus::Downloading,
+                completed_segments: completed.load(Ordering::Relaxed),
+                total_segments: total,
+                completed_segment_indices: completed_segments_list,
+                failed_segment_indices: failed_segments_list,
+                total_bytes: total_bytes.load(Ordering::Relaxed),
+                speed_bytes_per_sec: 0,
+                updated_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await;
+        return Ok(DownloadRunOutcome::Incomplete);
+    }
+
+    Ok(DownloadRunOutcome::Completed(bundle_dir))
+}
+
+async fn bundle_download_worker_loop(
+    semaphore: Arc<Semaphore>,
+    client: Arc<RwLock<reqwest::Client>>,
+    rate_limiter: Arc<DownloadRateLimiter>,
+    headers: Arc<RequestHeaders>,
+    bundle_dir: PathBuf,
+    entries: Arc<Vec<BundleDownloadEntry>>,
+    pending_indices: Arc<Vec<usize>>,
+    next_pending: Arc<AtomicUsize>,
+    completed: Arc<AtomicUsize>,
+    total_bytes: Arc<AtomicU64>,
+    speed_bytes_per_sec: Arc<AtomicU64>,
+    completed_segment_indices: Arc<Mutex<BTreeSet<usize>>>,
+    failed_segment_indices: Arc<Mutex<BTreeSet<usize>>>,
+    downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
+    app_handle: AppHandle,
+    task_id: DownloadId,
+    cancel: CancellationToken,
+    total_segments: usize,
+    persist_throttle: Arc<Mutex<PersistThrottleState>>,
+) -> Result<(), AppError> {
+    loop {
+        if cancel.is_cancelled() {
+            return Err(AppError::Cancelled);
+        }
+
+        let pending_position = next_pending.fetch_add(1, Ordering::Relaxed);
+        let Some(entry_index) = pending_indices.get(pending_position).copied() else {
+            return Ok(());
+        };
+
+        let permit = tokio::select! {
+            _ = cancel.cancelled() => return Err(AppError::Cancelled),
+            permit = semaphore.acquire() => permit
+                .map_err(|_| AppError::Internal("下载并发控制已关闭".to_string()))?,
+        };
+
+        let entry = match entries.get(entry_index).cloned() {
+            Some(entry) => entry,
+            None => {
+                drop(permit);
+                return Err(AppError::Internal(format!(
+                    "Missing bundle entry metadata for index {}",
+                    entry_index
+                )));
+            }
+        };
+        let output_path = entry.output_path(&bundle_dir);
+        if let Some(parent) = output_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let outcome = download_segment_with_retry(
+            client.clone(),
+            rate_limiter.clone(),
+            headers.clone(),
+            &entry.uri,
+            &output_path,
+            entry.byte_range.as_ref(),
+            entry.encryption.as_ref(),
+            entry.sequence_number,
+            3,
+            &cancel,
+        )
+        .await;
+
+        drop(permit);
+
+        match outcome {
+            Ok(SegmentDownloadOutcome::Downloaded(file_size)) => {
+                total_bytes.fetch_add(file_size, Ordering::Relaxed);
+                completed_segment_indices
+                    .lock()
+                    .await
+                    .insert(entry.index + 1);
+                failed_segment_indices
+                    .lock()
+                    .await
+                    .remove(&(entry.index + 1));
+                let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                let downloaded_bytes = total_bytes.load(Ordering::Relaxed);
+                let speed = speed_bytes_per_sec.load(Ordering::Relaxed);
+                let completed_segments_list = snapshot_segments(&completed_segment_indices).await;
+                let failed_segments_list = snapshot_segments(&failed_segment_indices).await;
+
+                emit_progress(
+                    &app_handle,
+                    &downloads,
+                    RuntimeProgressSnapshot {
+                        id: task_id.clone(),
+                        status: DownloadStatus::Downloading,
+                        completed_segments: done,
+                        total_segments,
+                        completed_segment_indices: completed_segments_list,
+                        failed_segment_indices: failed_segments_list,
+                        total_bytes: downloaded_bytes,
+                        speed_bytes_per_sec: speed,
+                        updated_at: Utc::now().to_rfc3339(),
+                    },
+                )
+                .await;
+                maybe_persist_task_progress(
+                    &app_handle,
+                    &downloads,
+                    &task_id,
+                    &persist_throttle,
+                    false,
+                )
+                .await;
+            }
+            Ok(SegmentDownloadOutcome::Skipped) => {
+                failed_segment_indices.lock().await.insert(entry.index + 1);
+                let done = completed.load(Ordering::Relaxed);
+                let downloaded_bytes = total_bytes.load(Ordering::Relaxed);
+                let completed_segments_list = snapshot_segments(&completed_segment_indices).await;
+                let failed_segments_list = snapshot_segments(&failed_segment_indices).await;
+
+                emit_progress(
+                    &app_handle,
+                    &downloads,
+                    RuntimeProgressSnapshot {
+                        id: task_id.clone(),
+                        status: DownloadStatus::Downloading,
+                        completed_segments: done,
+                        total_segments,
+                        completed_segment_indices: completed_segments_list,
+                        failed_segment_indices: failed_segments_list,
+                        total_bytes: downloaded_bytes,
+                        speed_bytes_per_sec: 0,
+                        updated_at: Utc::now().to_rfc3339(),
+                    },
+                )
+                .await;
+                maybe_persist_task_progress(
+                    &app_handle,
+                    &downloads,
+                    &task_id,
+                    &persist_throttle,
+                    true,
+                )
+                .await;
+            }
+            Err(AppError::Cancelled) => return Err(AppError::Cancelled),
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn rebalance_concurrency_permits(
     semaphore: &Arc<Semaphore>,
     held_permits: &mut Vec<OwnedSemaphorePermit>,
@@ -1245,6 +2531,7 @@ async fn download_worker_loop(
             headers.clone(),
             &segment.uri,
             &segment_path,
+            segment.byte_range.as_ref(),
             segment.encryption.as_ref(),
             segment.sequence_number,
             3,
@@ -1353,6 +2640,7 @@ async fn download_segment_with_retry(
     headers: Arc<RequestHeaders>,
     url: &str,
     path: &Path,
+    byte_range: Option<&ByteRangeSpec>,
     encryption: Option<&EncryptionInfo>,
     sequence_number: u64,
     max_retries: u32,
@@ -1369,6 +2657,7 @@ async fn download_segment_with_retry(
             headers.clone(),
             url,
             path,
+            byte_range,
             encryption,
             sequence_number,
             cancel,
@@ -1386,7 +2675,7 @@ async fn download_segment_with_retry(
                 attempts += 1;
                 if attempts >= max_retries {
                     let _ = tokio::fs::remove_file(path).await;
-                    let _ = tokio::fs::remove_file(path.with_extension("ts.part")).await;
+                    let _ = tokio::fs::remove_file(part_path_for_downloaded_file(path)).await;
                     eprintln!(
                         "[m3u8quicker] skip segment after {} failed attempts url={} error={}",
                         attempts, url, e
@@ -1405,17 +2694,35 @@ async fn download_segment(
     headers: Arc<RequestHeaders>,
     url: &str,
     path: &Path,
+    byte_range: Option<&ByteRangeSpec>,
     encryption: Option<&EncryptionInfo>,
     sequence_number: u64,
     cancel: &CancellationToken,
 ) -> Result<(), AppError> {
-    let part_path = path.with_extension("ts.part");
+    let part_path = part_path_for_downloaded_file(path);
     if part_path.exists() {
         let _ = tokio::fs::remove_file(&part_path).await;
     }
 
     let active_client = client.read().await.clone();
-    let response = build_request_with_headers(&active_client, url, headers.as_ref())
+    let mut request = build_request_with_headers(&active_client, url, headers.as_ref());
+    if let Some(byte_range) = byte_range {
+        let range_value = match byte_range.offset {
+            Some(offset) if byte_range.length > 0 => {
+                format!(
+                    "bytes={}-{}",
+                    offset,
+                    offset + byte_range.length.saturating_sub(1)
+                )
+            }
+            Some(offset) => format!("bytes={}-{}", offset, offset),
+            None if byte_range.length > 0 => format!("bytes=0-{}", byte_range.length - 1),
+            None => "bytes=0-0".to_string(),
+        };
+        request = request.header(header::RANGE, range_value);
+    }
+
+    let response = request
         .send()
         .await?
         .error_for_status()?;
@@ -1949,6 +3256,132 @@ mod tests {
 
         assert!(!partial_path.exists());
         remove_temp_dir(&temp_root);
+    }
+
+    #[test]
+    fn build_master_track_catalog_prefers_highest_video_and_default_audio() {
+        let base_url = Url::parse("https://example.com/master.m3u8").expect("base url");
+        let playlist = r#"#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",LANGUAGE="ja",NAME="Japanese",DEFAULT=NO,AUTOSELECT=YES,URI="audio/ja.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",LANGUAGE="en",NAME="English",DEFAULT=YES,AUTOSELECT=YES,URI="audio/en.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="en",NAME="English",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,URI="subs/en.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,AUDIO="audio",SUBTITLES="subs",CODECS="avc1.4d401e,mp4a.40.2"
+low/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1600000,RESOLUTION=1280x720,AUDIO="audio",SUBTITLES="subs",CODECS="avc1.4d401f,mp4a.40.2"
+high/index.m3u8
+"#;
+
+        let parsed = m3u8_rs::parse_playlist_res(playlist.as_bytes()).expect("parse master");
+        let m3u8_rs::Playlist::MasterPlaylist(master) = parsed else {
+            panic!("expected master playlist");
+        };
+        let catalog = build_master_track_catalog(&base_url, &master).expect("catalog");
+
+        assert!(catalog.inspection.requires_selection);
+        assert_eq!(catalog.inspection.video_tracks.len(), 2);
+        assert_eq!(catalog.inspection.audio_tracks.len(), 2);
+        assert_eq!(catalog.inspection.subtitle_tracks.len(), 1);
+        assert_eq!(
+            catalog.inspection.default_selection.video_id,
+            Some(catalog.inspection.video_tracks[0].id.clone())
+        );
+        assert_eq!(
+            catalog.inspection.default_selection.audio_id,
+            Some(catalog.inspection.audio_tracks[1].id.clone())
+        );
+        assert_eq!(catalog.inspection.default_selection.subtitle_id, None);
+        assert_eq!(catalog.inspection.video_tracks[0].resolution.as_deref(), Some("1280x720"));
+    }
+
+    #[test]
+    fn build_bundle_track_plan_writes_local_map_and_segments() {
+        let base_url = Url::parse("https://example.com/video/index.m3u8").expect("base url");
+        let playlist = r#"#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-TARGETDURATION:4
+#EXT-X-MAP:URI="init.mp4"
+#EXTINF:4.000,
+seg-1.m4s
+#EXTINF:4.000,
+seg-2.m4s
+#EXT-X-ENDLIST
+"#;
+
+        let parsed = m3u8_rs::parse_playlist_res(playlist.as_bytes()).expect("parse media");
+        let m3u8_rs::Playlist::MediaPlaylist(media) = parsed else {
+            panic!("expected media playlist");
+        };
+        let plan = build_bundle_track_plan(
+            &FetchedResolvedMediaPlaylist {
+                base_url,
+                playlist: media,
+            },
+            "video",
+        )
+        .expect("bundle plan");
+
+        assert_eq!(plan.entries.len(), 3);
+        assert_eq!(plan.entries[0].duration, 0.0);
+        assert_eq!(
+            plan.entries[0].relative_path,
+            PathBuf::from("video").join("init_000001.mp4")
+        );
+        assert_eq!(
+            plan.entries[1].relative_path,
+            PathBuf::from("video").join("seg_000001.m4s")
+        );
+        assert!(
+            plan.playlist_files[0]
+                .content
+                .contains("#EXT-X-MAP:URI=\"init_000001.mp4\"")
+        );
+        assert!(plan.playlist_files[0].content.contains("seg_000001.m4s"));
+        assert!(plan.playlist_files[0].content.contains("seg_000002.m4s"));
+    }
+
+    #[test]
+    fn parse_media_playlist_segments_expands_implicit_byte_ranges() {
+        let base_url = Url::parse("https://example.com/video/index.m3u8").expect("base url");
+        let playlist = r#"#EXTM3U
+#EXT-X-TARGETDURATION:4
+#EXTINF:4.000,
+#EXT-X-BYTERANGE:100@10
+seg.ts
+#EXTINF:4.000,
+#EXT-X-BYTERANGE:50
+seg.ts
+#EXT-X-ENDLIST
+"#;
+
+        let parsed = m3u8_rs::parse_playlist_res(playlist.as_bytes()).expect("parse media");
+        let m3u8_rs::Playlist::MediaPlaylist(media) = parsed else {
+            panic!("expected media playlist");
+        };
+        let segments = parse_media_playlist_segments(&base_url, &media).expect("segments");
+
+        assert_eq!(
+            segments[0].byte_range,
+            Some(ByteRangeSpec {
+                length: 100,
+                offset: Some(10),
+            })
+        );
+        assert_eq!(
+            segments[1].byte_range,
+            Some(ByteRangeSpec {
+                length: 50,
+                offset: Some(110),
+            })
+        );
+    }
+
+    #[test]
+    fn infer_file_extension_ignores_query_on_relative_uri() {
+        assert_eq!(
+            infer_file_extension("subtitles/en.vtt?segment=28&duration=30", "bin"),
+            "vtt"
+        );
+        assert_eq!(infer_file_extension("media/seg.m4s#frag", "bin"), "m4s");
     }
 
     fn unique_temp_path(name: &str) -> PathBuf {

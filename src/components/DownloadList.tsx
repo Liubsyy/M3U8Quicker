@@ -455,7 +455,9 @@ export function DownloadList({
             const canPlay = canOpenInProgressPlayback(record);
             const playTooltip = canPlay
               ? "播放"
-              : "当前格式暂不支持边下边播";
+              : record.playback_available
+                ? "当前格式暂不支持边下边播"
+                : "多轨下载暂不支持播放";
 
             return (
               showActions.includes("play") &&
@@ -469,6 +471,7 @@ export function DownloadList({
                     icon={<VideoCameraOutlined />}
                     onClick={() => onPlay(record)}
                     size="small"
+                    disabled={!canPlay}
                   />
                 </Tooltip>
               )

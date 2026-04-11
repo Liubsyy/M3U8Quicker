@@ -26,6 +26,71 @@ pub enum DownloadMode {
     Direct,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HlsOutputMode {
+    #[default]
+    SingleStream,
+    MultiTrackBundle,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HlsPlaylistKind {
+    Media,
+    Master,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HlsTrackType {
+    Video,
+    Audio,
+    Subtitle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct HlsTrackSelection {
+    pub video_id: Option<String>,
+    pub audio_id: Option<String>,
+    pub subtitle_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HlsTrackOption {
+    pub id: String,
+    pub track_type: HlsTrackType,
+    pub label: String,
+    pub name: Option<String>,
+    pub language: Option<String>,
+    pub group_id: Option<String>,
+    pub audio_group_id: Option<String>,
+    pub subtitle_group_id: Option<String>,
+    pub bandwidth: Option<u64>,
+    pub resolution: Option<String>,
+    pub codecs: Option<String>,
+    pub is_default: bool,
+    pub is_autoselect: bool,
+    pub is_forced: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InspectHlsTracksParams {
+    pub url: String,
+    pub extra_headers: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InspectHlsTracksResult {
+    pub kind: HlsPlaylistKind,
+    pub requires_selection: bool,
+    pub video_tracks: Vec<HlsTrackOption>,
+    pub audio_tracks: Vec<HlsTrackOption>,
+    pub subtitle_tracks: Vec<HlsTrackOption>,
+    pub default_selection: HlsTrackSelection,
+}
+
 impl Default for FileType {
     fn default() -> Self {
         FileType::Hls
@@ -76,6 +141,10 @@ pub struct DownloadTask {
     #[serde(default)]
     pub file_type: FileType,
     #[serde(default)]
+    pub hls_output_mode: HlsOutputMode,
+    #[serde(default)]
+    pub hls_selection: Option<HlsTrackSelection>,
+    #[serde(default)]
     pub encryption_method: Option<String>,
     pub output_dir: String,
     #[serde(default)]
@@ -97,6 +166,8 @@ pub struct DownloadTask {
     pub completed_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
+    #[serde(default = "default_playback_available")]
+    pub playback_available: bool,
     pub file_path: Option<String>,
 }
 
@@ -139,6 +210,8 @@ pub struct CreateDownloadParams {
     pub download_mode: Option<DownloadMode>,
     #[serde(default)]
     pub file_type: Option<FileType>,
+    #[serde(default)]
+    pub hls_selection: Option<HlsTrackSelection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,12 +289,19 @@ pub struct EncryptionInfo {
     pub key_bytes: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ByteRangeSpec {
+    pub length: u64,
+    pub offset: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SegmentInfo {
     pub index: usize,
     pub uri: String,
     pub duration: f32,
     pub sequence_number: u64,
+    pub byte_range: Option<ByteRangeSpec>,
     pub encryption: Option<EncryptionInfo>,
 }
 
@@ -251,6 +331,10 @@ pub struct DownloadTaskSummary {
     pub filename: String,
     #[serde(default)]
     pub file_type: FileType,
+    #[serde(default)]
+    pub hls_output_mode: HlsOutputMode,
+    #[serde(default)]
+    pub hls_selection: Option<HlsTrackSelection>,
     pub encryption_method: Option<String>,
     pub output_dir: String,
     pub status: DownloadStatus,
@@ -262,7 +346,13 @@ pub struct DownloadTaskSummary {
     pub created_at: String,
     pub completed_at: Option<String>,
     pub updated_at: String,
+    #[serde(default = "default_playback_available")]
+    pub playback_available: bool,
     pub file_path: Option<String>,
+}
+
+fn default_playback_available() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

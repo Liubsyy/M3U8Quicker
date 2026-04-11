@@ -35,6 +35,16 @@ const DIRECT_DOWNLOAD_EXTENSIONS: &[(&str, FileType)] = &[
 ];
 
 #[tauri::command]
+pub async fn inspect_hls_tracks(
+    state: State<'_, AppState>,
+    params: InspectHlsTracksParams,
+) -> Result<InspectHlsTracksResult, AppError> {
+    let client = state.http_client.read().await.clone();
+    let request_headers = parse_request_headers(params.extra_headers.as_deref())?;
+    downloader::inspect_hls_tracks(&client, &params.url, &request_headers).await
+}
+
+#[tauri::command]
 pub async fn create_download(
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -83,6 +93,8 @@ pub async fn create_download(
             url: params.url.clone(),
             filename: filename.clone(),
             file_type,
+            hls_output_mode: HlsOutputMode::SingleStream,
+            hls_selection: None,
             encryption_method: None,
             output_dir: output_dir.clone(),
             extra_headers: params.extra_headers.clone(),
@@ -98,6 +110,7 @@ pub async fn create_download(
             created_at,
             completed_at: None,
             updated_at: Some(created_at),
+            playback_available: true,
             file_path: None,
         };
 
@@ -121,54 +134,114 @@ pub async fn create_download(
 
         Ok(persistence::task_to_summary(&task))
     } else {
-        let mut segments: Vec<crate::models::SegmentInfo> =
-            downloader::resolve_m3u8(&client, &params.url, &request_headers).await?;
-        downloader::fetch_encryption_keys(&client, &mut segments, &request_headers).await?;
-
-        let task = DownloadTask {
-            id: id.clone(),
-            url: params.url.clone(),
-            filename: filename.clone(),
-            file_type: FileType::Hls,
-            encryption_method: detect_encryption_method(&segments),
-            output_dir: output_dir.clone(),
-            extra_headers: params.extra_headers.clone(),
-            status: DownloadStatus::Downloading,
-            total_segments: segments.len(),
-            completed_segments: 0,
-            completed_segment_indices: Vec::new(),
-            failed_segment_indices: Vec::new(),
-            segment_uris: segment_uris(&segments),
-            segment_durations: segment_durations(&segments),
-            total_bytes: 0,
-            speed_bytes_per_sec: 0,
-            created_at,
-            completed_at: None,
-            updated_at: Some(created_at),
-            file_path: None,
-        };
-
-        {
-            let mut downloads = state.downloads.lock().await;
-            downloads.insert(id.clone(), task.clone());
-        }
-        persistence::save_task(&app_handle, &task).await?;
-
-        start_download_worker(
-            app_handle.clone(),
-            state.downloads.clone(),
-            state.cancel_tokens.clone(),
-            state.playback_sessions.clone(),
-            state.download_priorities.clone(),
-            state.http_client.clone(),
-            task.clone(),
-            segments,
-            request_headers,
-            state.max_concurrent_segments.clone(),
+        match downloader::prepare_hls_download(
+            &client,
+            &params.url,
+            &request_headers,
+            params.hls_selection.as_ref(),
         )
-        .await;
+        .await?
+        {
+            downloader::PreparedHlsDownload::Single(prepared) => {
+                let task = DownloadTask {
+                    id: id.clone(),
+                    url: params.url.clone(),
+                    filename: filename.clone(),
+                    file_type: FileType::Hls,
+                    hls_output_mode: HlsOutputMode::SingleStream,
+                    hls_selection: prepared.selection.clone(),
+                    encryption_method: detect_encryption_method(&prepared.segments),
+                    output_dir: output_dir.clone(),
+                    extra_headers: params.extra_headers.clone(),
+                    status: DownloadStatus::Downloading,
+                    total_segments: prepared.segments.len(),
+                    completed_segments: 0,
+                    completed_segment_indices: Vec::new(),
+                    failed_segment_indices: Vec::new(),
+                    segment_uris: segment_uris(&prepared.segments),
+                    segment_durations: segment_durations(&prepared.segments),
+                    total_bytes: 0,
+                    speed_bytes_per_sec: 0,
+                    created_at,
+                    completed_at: None,
+                    updated_at: Some(created_at),
+                    playback_available: true,
+                    file_path: None,
+                };
 
-        Ok(persistence::task_to_summary(&task))
+                {
+                    let mut downloads = state.downloads.lock().await;
+                    downloads.insert(id.clone(), task.clone());
+                }
+                persistence::save_task(&app_handle, &task).await?;
+
+                start_download_worker(
+                    app_handle.clone(),
+                    state.downloads.clone(),
+                    state.cancel_tokens.clone(),
+                    state.playback_sessions.clone(),
+                    state.download_priorities.clone(),
+                    state.http_client.clone(),
+                    task.clone(),
+                    prepared.segments,
+                    request_headers,
+                    state.max_concurrent_segments.clone(),
+                )
+                .await;
+
+                Ok(persistence::task_to_summary(&task))
+            }
+            downloader::PreparedHlsDownload::Bundle(prepared) => {
+                let bundle_dir =
+                    resolve_bundle_output_dir(Path::new(&output_dir), &filename).to_string_lossy().to_string();
+                let task = DownloadTask {
+                    id: id.clone(),
+                    url: params.url.clone(),
+                    filename: filename.clone(),
+                    file_type: FileType::Hls,
+                    hls_output_mode: HlsOutputMode::MultiTrackBundle,
+                    hls_selection: Some(prepared.selection.clone()),
+                    encryption_method: prepared.encryption_method(),
+                    output_dir: output_dir.clone(),
+                    extra_headers: params.extra_headers.clone(),
+                    status: DownloadStatus::Downloading,
+                    total_segments: prepared.total_units(),
+                    completed_segments: 0,
+                    completed_segment_indices: Vec::new(),
+                    failed_segment_indices: Vec::new(),
+                    segment_uris: prepared.source_uris(),
+                    segment_durations: prepared.durations(),
+                    total_bytes: 0,
+                    speed_bytes_per_sec: 0,
+                    created_at,
+                    completed_at: None,
+                    updated_at: Some(created_at),
+                    playback_available: false,
+                    file_path: Some(bundle_dir.clone()),
+                };
+
+                {
+                    let mut downloads = state.downloads.lock().await;
+                    downloads.insert(id.clone(), task.clone());
+                }
+                persistence::save_task(&app_handle, &task).await?;
+
+                start_hls_bundle_download_worker(
+                    app_handle.clone(),
+                    state.downloads.clone(),
+                    state.cancel_tokens.clone(),
+                    state.http_client.clone(),
+                    task.clone(),
+                    PathBuf::from(bundle_dir),
+                    prepared,
+                    request_headers,
+                    state.max_concurrent_segments.clone(),
+                )
+                .await;
+
+                Ok(persistence::task_to_summary(&task))
+            }
+        }
     }
 }
 
@@ -301,47 +374,117 @@ pub async fn resume_download(
     }
 
     let client = state.http_client.read().await.clone();
-    let mut segments = downloader::resolve_m3u8(&client, &task.url, &request_headers).await?;
-    validate_segment_layout(&task, &segments)?;
-    downloader::fetch_encryption_keys(&client, &mut segments, &request_headers).await?;
-
-    let updated_task = {
-        let mut downloads = state.downloads.lock().await;
-        downloads.entry(id.clone()).or_insert_with(|| task.clone());
-        let task = downloads
-            .get_mut(&id)
-            .ok_or_else(|| AppError::InvalidInput(format!("Download {} not found", id)))?;
-        task.status = DownloadStatus::Downloading;
-        task.speed_bytes_per_sec = 0;
-        task.completed_at = None;
-        task.file_path = None;
-        task.total_segments = segments.len();
-        task.segment_uris = segment_uris(&segments);
-        task.segment_durations = segment_durations(&segments);
-        task.encryption_method = detect_encryption_method(&segments);
-        task.touch();
-        task.clone()
-    };
-
-    persistence::save_task(&app_handle, &updated_task).await?;
-    let progress = task_to_progress(&updated_task);
-    let _ = app_handle.emit("download-progress", &progress);
-
-    start_download_worker(
-        app_handle.clone(),
-        state.downloads.clone(),
-        state.cancel_tokens.clone(),
-        state.playback_sessions.clone(),
-        state.download_priorities.clone(),
-        state.http_client.clone(),
-        updated_task.clone(),
-        segments,
-        request_headers,
-        state.max_concurrent_segments.clone(),
+    match downloader::prepare_hls_download(
+        &client,
+        &task.url,
+        &request_headers,
+        task.hls_selection.as_ref(),
     )
-    .await;
+    .await?
+    {
+        downloader::PreparedHlsDownload::Single(prepared) => {
+            if task.hls_output_mode != HlsOutputMode::SingleStream {
+                return Err(AppError::InvalidInput(
+                    "检测到远端轨道结构已变化，请重新创建下载任务".to_string(),
+                ));
+            }
+            validate_segment_layout(&task, &prepared.segments)?;
 
-    Ok(persistence::task_to_summary(&updated_task))
+            let updated_task = {
+                let mut downloads = state.downloads.lock().await;
+                downloads.entry(id.clone()).or_insert_with(|| task.clone());
+                let task = downloads
+                    .get_mut(&id)
+                    .ok_or_else(|| AppError::InvalidInput(format!("Download {} not found", id)))?;
+                task.status = DownloadStatus::Downloading;
+                task.speed_bytes_per_sec = 0;
+                task.completed_at = None;
+                task.file_path = None;
+                task.total_segments = prepared.segments.len();
+                task.segment_uris = segment_uris(&prepared.segments);
+                task.segment_durations = segment_durations(&prepared.segments);
+                task.encryption_method = detect_encryption_method(&prepared.segments);
+                task.hls_selection = prepared.selection.clone();
+                task.hls_output_mode = HlsOutputMode::SingleStream;
+                task.playback_available = true;
+                task.touch();
+                task.clone()
+            };
+
+            persistence::save_task(&app_handle, &updated_task).await?;
+            let progress = task_to_progress(&updated_task);
+            let _ = app_handle.emit("download-progress", &progress);
+
+            start_download_worker(
+                app_handle.clone(),
+                state.downloads.clone(),
+                state.cancel_tokens.clone(),
+                state.playback_sessions.clone(),
+                state.download_priorities.clone(),
+                state.http_client.clone(),
+                updated_task.clone(),
+                prepared.segments,
+                request_headers,
+                state.max_concurrent_segments.clone(),
+            )
+            .await;
+
+            Ok(persistence::task_to_summary(&updated_task))
+        }
+        downloader::PreparedHlsDownload::Bundle(prepared) => {
+            if task.hls_output_mode != HlsOutputMode::MultiTrackBundle {
+                return Err(AppError::InvalidInput(
+                    "检测到远端轨道结构已变化，请重新创建下载任务".to_string(),
+                ));
+            }
+            validate_bundle_layout(&task, &prepared.source_uris())?;
+            let bundle_dir = task
+                .file_path
+                .clone()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| resolve_bundle_output_dir(Path::new(&task.output_dir), &task.filename));
+
+            let updated_task = {
+                let mut downloads = state.downloads.lock().await;
+                downloads.entry(id.clone()).or_insert_with(|| task.clone());
+                let task = downloads
+                    .get_mut(&id)
+                    .ok_or_else(|| AppError::InvalidInput(format!("Download {} not found", id)))?;
+                task.status = DownloadStatus::Downloading;
+                task.speed_bytes_per_sec = 0;
+                task.completed_at = None;
+                task.file_path = Some(bundle_dir.to_string_lossy().to_string());
+                task.total_segments = prepared.total_units();
+                task.segment_uris = prepared.source_uris();
+                task.segment_durations = prepared.durations();
+                task.encryption_method = prepared.encryption_method();
+                task.hls_selection = Some(prepared.selection.clone());
+                task.hls_output_mode = HlsOutputMode::MultiTrackBundle;
+                task.playback_available = false;
+                task.touch();
+                task.clone()
+            };
+
+            persistence::save_task(&app_handle, &updated_task).await?;
+            let progress = task_to_progress(&updated_task);
+            let _ = app_handle.emit("download-progress", &progress);
+
+            start_hls_bundle_download_worker(
+                app_handle.clone(),
+                state.downloads.clone(),
+                state.cancel_tokens.clone(),
+                state.http_client.clone(),
+                updated_task.clone(),
+                bundle_dir,
+                prepared,
+                request_headers,
+                state.max_concurrent_segments.clone(),
+            )
+            .await;
+
+            Ok(persistence::task_to_summary(&updated_task))
+        }
+    }
 }
 
 #[tauri::command]
@@ -417,48 +560,119 @@ pub async fn retry_failed_segments(
 
     let client = state.http_client.read().await.clone();
     let request_headers = parse_request_headers(task.extra_headers.as_deref())?;
-    let mut segments = downloader::resolve_m3u8(&client, &task.url, &request_headers).await?;
-    validate_segment_layout(&task, &segments)?;
-    downloader::fetch_encryption_keys(&client, &mut segments, &request_headers).await?;
-
-    let updated_task = {
-        let mut downloads = state.downloads.lock().await;
-        downloads.entry(id.clone()).or_insert_with(|| task.clone());
-        let task = downloads
-            .get_mut(&id)
-            .ok_or_else(|| AppError::InvalidInput(format!("Download {} not found", id)))?;
-        task.status = DownloadStatus::Downloading;
-        task.speed_bytes_per_sec = 0;
-        task.completed_at = None;
-        task.file_path = None;
-        task.failed_segment_indices.clear();
-        task.total_segments = segments.len();
-        task.segment_uris = segment_uris(&segments);
-        task.segment_durations = segment_durations(&segments);
-        task.encryption_method = detect_encryption_method(&segments);
-        task.touch();
-        task.clone()
-    };
-
-    persistence::save_task(&app_handle, &updated_task).await?;
-    let progress = task_to_progress(&updated_task);
-    let _ = app_handle.emit("download-progress", &progress);
-
-    start_download_worker(
-        app_handle.clone(),
-        state.downloads.clone(),
-        state.cancel_tokens.clone(),
-        state.playback_sessions.clone(),
-        state.download_priorities.clone(),
-        state.http_client.clone(),
-        updated_task.clone(),
-        segments,
-        request_headers,
-        state.max_concurrent_segments.clone(),
+    match downloader::prepare_hls_download(
+        &client,
+        &task.url,
+        &request_headers,
+        task.hls_selection.as_ref(),
     )
-    .await;
+    .await?
+    {
+        downloader::PreparedHlsDownload::Single(prepared) => {
+            if task.hls_output_mode != HlsOutputMode::SingleStream {
+                return Err(AppError::InvalidInput(
+                    "检测到远端轨道结构已变化，请重新创建下载任务".to_string(),
+                ));
+            }
+            validate_segment_layout(&task, &prepared.segments)?;
 
-    Ok(persistence::task_to_summary(&updated_task))
+            let updated_task = {
+                let mut downloads = state.downloads.lock().await;
+                downloads.entry(id.clone()).or_insert_with(|| task.clone());
+                let task = downloads
+                    .get_mut(&id)
+                    .ok_or_else(|| AppError::InvalidInput(format!("Download {} not found", id)))?;
+                task.status = DownloadStatus::Downloading;
+                task.speed_bytes_per_sec = 0;
+                task.completed_at = None;
+                task.file_path = None;
+                task.failed_segment_indices.clear();
+                task.total_segments = prepared.segments.len();
+                task.segment_uris = segment_uris(&prepared.segments);
+                task.segment_durations = segment_durations(&prepared.segments);
+                task.encryption_method = detect_encryption_method(&prepared.segments);
+                task.hls_selection = prepared.selection.clone();
+                task.hls_output_mode = HlsOutputMode::SingleStream;
+                task.playback_available = true;
+                task.touch();
+                task.clone()
+            };
+
+            persistence::save_task(&app_handle, &updated_task).await?;
+            let progress = task_to_progress(&updated_task);
+            let _ = app_handle.emit("download-progress", &progress);
+
+            start_download_worker(
+                app_handle.clone(),
+                state.downloads.clone(),
+                state.cancel_tokens.clone(),
+                state.playback_sessions.clone(),
+                state.download_priorities.clone(),
+                state.http_client.clone(),
+                updated_task.clone(),
+                prepared.segments,
+                request_headers,
+                state.max_concurrent_segments.clone(),
+            )
+            .await;
+
+            Ok(persistence::task_to_summary(&updated_task))
+        }
+        downloader::PreparedHlsDownload::Bundle(prepared) => {
+            if task.hls_output_mode != HlsOutputMode::MultiTrackBundle {
+                return Err(AppError::InvalidInput(
+                    "检测到远端轨道结构已变化，请重新创建下载任务".to_string(),
+                ));
+            }
+            validate_bundle_layout(&task, &prepared.source_uris())?;
+            let bundle_dir = task
+                .file_path
+                .clone()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| resolve_bundle_output_dir(Path::new(&task.output_dir), &task.filename));
+
+            let updated_task = {
+                let mut downloads = state.downloads.lock().await;
+                downloads.entry(id.clone()).or_insert_with(|| task.clone());
+                let task = downloads
+                    .get_mut(&id)
+                    .ok_or_else(|| AppError::InvalidInput(format!("Download {} not found", id)))?;
+                task.status = DownloadStatus::Downloading;
+                task.speed_bytes_per_sec = 0;
+                task.completed_at = None;
+                task.file_path = Some(bundle_dir.to_string_lossy().to_string());
+                task.failed_segment_indices.clear();
+                task.total_segments = prepared.total_units();
+                task.segment_uris = prepared.source_uris();
+                task.segment_durations = prepared.durations();
+                task.encryption_method = prepared.encryption_method();
+                task.hls_selection = Some(prepared.selection.clone());
+                task.hls_output_mode = HlsOutputMode::MultiTrackBundle;
+                task.playback_available = false;
+                task.touch();
+                task.clone()
+            };
+
+            persistence::save_task(&app_handle, &updated_task).await?;
+            let progress = task_to_progress(&updated_task);
+            let _ = app_handle.emit("download-progress", &progress);
+
+            start_hls_bundle_download_worker(
+                app_handle.clone(),
+                state.downloads.clone(),
+                state.cancel_tokens.clone(),
+                state.http_client.clone(),
+                updated_task.clone(),
+                bundle_dir,
+                prepared,
+                request_headers,
+                state.max_concurrent_segments.clone(),
+            )
+            .await;
+
+            Ok(persistence::task_to_summary(&updated_task))
+        }
+    }
 }
 
 #[tauri::command]
@@ -610,12 +824,17 @@ pub async fn remove_download(
                 &task.filename,
             )
             .await;
-        } else {
+        } else if task.hls_output_mode == HlsOutputMode::SingleStream {
             let _ = downloader::cleanup_temp_dir(&PathBuf::from(&task.output_dir), &task.id).await;
         }
         if delete_file {
             if let Some(path) = &task.file_path {
-                let _ = tokio::fs::remove_file(path).await;
+                let file_path = PathBuf::from(path);
+                if file_path.is_dir() {
+                    let _ = tokio::fs::remove_dir_all(file_path).await;
+                } else {
+                    let _ = tokio::fs::remove_file(file_path).await;
+                }
             }
         }
     }
@@ -813,6 +1032,12 @@ pub async fn open_download_playback_session(
 ) -> Result<OpenPlaybackSessionResponse, AppError> {
     playback::playback_log(&format!("open playback session requested task_id={}", id));
     let task = get_or_load_task(&app_handle, &state, &id).await?;
+
+    if !task.playback_available {
+        return Err(AppError::InvalidInput(
+            "多轨下载暂不支持播放".to_string(),
+        ));
+    }
 
     if !playback::task_can_open_playback(&task) {
         return Err(AppError::InvalidInput(
@@ -1097,7 +1322,19 @@ async fn ensure_task_playback_ready(
 
     let client = state.http_client.read().await.clone();
     let request_headers = parse_request_headers(task.extra_headers.as_deref())?;
-    let segments = downloader::resolve_m3u8(&client, &task.url, &request_headers).await?;
+    let segments = match downloader::prepare_hls_download(
+        &client,
+        &task.url,
+        &request_headers,
+        task.hls_selection.as_ref(),
+    )
+    .await?
+    {
+        downloader::PreparedHlsDownload::Single(prepared) => prepared.segments,
+        downloader::PreparedHlsDownload::Bundle(_) => {
+            return Err(AppError::InvalidInput("多轨下载暂不支持播放".to_string()))
+        }
+    };
     validate_segment_layout(&task, &segments)?;
     playback::playback_log(&format!(
         "reloaded playback metadata task_id={} segments={}",
@@ -1125,6 +1362,10 @@ async fn ensure_task_playback_ready(
 }
 
 fn playback_target_for_task(task: &DownloadTask) -> Result<(PlaybackSourceKind, String), AppError> {
+    if !task.playback_available {
+        return Err(AppError::InvalidInput("多轨下载暂不支持播放".to_string()));
+    }
+
     match task.status {
         DownloadStatus::Completed => {
             let file_path = task
@@ -1221,9 +1462,18 @@ fn comparable_segment_path(uri: &str) -> String {
 }
 
 fn validate_segment_layout(task: &DownloadTask, segments: &[SegmentInfo]) -> Result<(), AppError> {
-    let current_uris = segment_uris(segments)
-        .into_iter()
-        .map(|uri| comparable_segment_path(&uri))
+    let current_uris = segment_uris(segments);
+    validate_uri_layout(task, &current_uris)
+}
+
+fn validate_bundle_layout(task: &DownloadTask, current_uris: &[String]) -> Result<(), AppError> {
+    validate_uri_layout(task, current_uris)
+}
+
+fn validate_uri_layout(task: &DownloadTask, current_uris: &[String]) -> Result<(), AppError> {
+    let current_uris = current_uris
+        .iter()
+        .map(|uri| comparable_segment_path(uri))
         .collect::<Vec<_>>();
     let stored_uris = task
         .segment_uris
@@ -1237,6 +1487,11 @@ fn validate_segment_layout(task: &DownloadTask, segments: &[SegmentInfo]) -> Res
         ));
     }
     Ok(())
+}
+
+fn resolve_bundle_output_dir(output_dir: &Path, filename: &str) -> PathBuf {
+    let candidate = output_dir.join(format!("{}_tracks", filename));
+    downloader::resolve_available_file_path(&candidate)
 }
 
 fn task_to_progress(task: &DownloadTask) -> DownloadProgressEvent {
@@ -1598,6 +1853,128 @@ async fn start_download_worker(
         if matches!(final_status, Some(DownloadStatus::Completed)) {
             let app_state = app_handle.state::<AppState>();
             maybe_cleanup_completed_temp_dir(&app_handle, &app_state, &task_id).await;
+        }
+    });
+}
+
+async fn start_hls_bundle_download_worker(
+    app_handle: AppHandle,
+    state_downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
+    state_cancel_tokens: Arc<Mutex<HashMap<DownloadId, CancellationToken>>>,
+    client: Arc<RwLock<reqwest::Client>>,
+    task: DownloadTask,
+    bundle_dir: PathBuf,
+    prepared: downloader::PreparedBundleHlsDownload,
+    request_headers: RequestHeaders,
+    max_concurrent: Arc<Mutex<usize>>,
+) {
+    let task_id = task.id.clone();
+    let cancel_token = CancellationToken::new();
+    let rate_limiter = app_handle.state::<AppState>().download_rate_limiter.clone();
+
+    {
+        let mut tokens = state_cancel_tokens.lock().await;
+        tokens.insert(task_id.clone(), cancel_token.clone());
+    }
+
+    tokio::spawn(async move {
+        let result = downloader::run_hls_bundle_download(
+            app_handle.clone(),
+            state_downloads.clone(),
+            client,
+            rate_limiter,
+            task_id.clone(),
+            bundle_dir.clone(),
+            prepared.playlist_files,
+            prepared.entries,
+            Arc::new(request_headers),
+            cancel_token,
+            max_concurrent,
+        )
+        .await;
+
+        let mut should_save = false;
+        let mut progress_to_emit = None;
+        let mut remove_from_runtime = false;
+
+        {
+            let mut downloads = state_downloads.lock().await;
+            if let Some(task) = downloads.get_mut(&task_id) {
+                match result {
+                    Ok(downloader::DownloadRunOutcome::Completed(_)) => {
+                        let completed_at = Utc::now();
+                        task.status = DownloadStatus::Completed;
+                        task.completed_at = Some(completed_at);
+                        task.updated_at = Some(completed_at);
+                        task.completed_segments = task.total_segments;
+                        task.speed_bytes_per_sec = 0;
+                        task.file_path = Some(bundle_dir.to_string_lossy().to_string());
+                        progress_to_emit = Some(task_to_progress(task));
+                        should_save = true;
+                        remove_from_runtime = true;
+                    }
+                    Ok(downloader::DownloadRunOutcome::Incomplete) => {
+                        task.speed_bytes_per_sec = 0;
+                        task.touch();
+                        progress_to_emit = Some(task_to_progress(task));
+                        should_save = true;
+                    }
+                    Err(AppError::Cancelled) => {
+                        task.speed_bytes_per_sec = 0;
+                        if task.status == DownloadStatus::Paused
+                            || task.status == DownloadStatus::Cancelled
+                        {
+                            task.touch();
+                            progress_to_emit = Some(task_to_progress(task));
+                            should_save = true;
+                        } else {
+                            task.status = DownloadStatus::Cancelled;
+                            task.touch();
+                            progress_to_emit = Some(task_to_progress(task));
+                            should_save = true;
+                            remove_from_runtime = true;
+                        }
+                    }
+                    Err(error) => {
+                        if task.status != DownloadStatus::Cancelled {
+                            task.status = DownloadStatus::Failed(error.to_string());
+                        }
+                        task.speed_bytes_per_sec = 0;
+                        task.touch();
+                        progress_to_emit = Some(task_to_progress(task));
+                        should_save = true;
+                        remove_from_runtime = true;
+                    }
+                }
+            }
+        }
+
+        if let Some(progress) = progress_to_emit {
+            let _ = app_handle.emit("download-progress", &progress);
+        }
+        if should_save {
+            let task = {
+                let downloads = state_downloads.lock().await;
+                downloads.get(&task_id).cloned()
+            };
+
+            if let Some(task) = task {
+                let _ = persistence::save_task(&app_handle, &task).await;
+            }
+        }
+        if remove_from_runtime {
+            let mut downloads = state_downloads.lock().await;
+            downloads.remove(&task_id);
+        }
+
+        let final_status = {
+            let downloads = state_downloads.lock().await;
+            downloads.get(&task_id).map(|task| task.status.clone())
+        };
+
+        if !matches!(final_status, Some(DownloadStatus::Downloading)) {
+            let mut tokens = state_cancel_tokens.lock().await;
+            tokens.remove(&task_id);
         }
     });
 }
@@ -2194,6 +2571,8 @@ mod tests {
             url: "https://example.com/video.m3u8".to_string(),
             filename: "video".to_string(),
             file_type: FileType::Hls,
+            hls_output_mode: HlsOutputMode::SingleStream,
+            hls_selection: None,
             encryption_method: None,
             output_dir: "D:\\Download".to_string(),
             extra_headers: None,
@@ -2209,6 +2588,7 @@ mod tests {
             created_at: Utc::now(),
             completed_at: None,
             updated_at: None,
+            playback_available: true,
             file_path: None,
         }
     }
@@ -2222,6 +2602,7 @@ mod tests {
                 uri: uri.to_string(),
                 duration: 5.0,
                 sequence_number: index as u64,
+                byte_range: None,
                 encryption: None,
             })
             .collect()
@@ -2272,6 +2653,7 @@ mod tests {
             extra_headers: None,
             download_mode: Some(DownloadMode::Direct),
             file_type: None,
+            hls_selection: None,
         };
 
         assert_eq!(
@@ -2289,6 +2671,7 @@ mod tests {
             extra_headers: None,
             download_mode: Some(DownloadMode::Hls),
             file_type: None,
+            hls_selection: None,
         };
 
         assert_eq!(
@@ -2306,6 +2689,7 @@ mod tests {
             extra_headers: None,
             download_mode: None,
             file_type: Some(FileType::Mp4),
+            hls_selection: None,
         };
 
         assert_eq!(
@@ -2323,6 +2707,7 @@ mod tests {
             extra_headers: None,
             download_mode: Some(DownloadMode::Direct),
             file_type: None,
+            hls_selection: None,
         };
 
         assert!(resolve_create_download_file_type(&params).is_err());
@@ -2357,6 +2742,18 @@ mod tests {
         assert!(error
             .to_string()
             .contains("当前格式暂不支持边下边播，请等待下载完成后再播放"));
+    }
+
+    #[test]
+    fn playback_target_for_task_rejects_multi_track_downloads() {
+        let mut task = build_task(Vec::new());
+        task.playback_available = false;
+        task.hls_output_mode = HlsOutputMode::MultiTrackBundle;
+        task.file_path = Some("D:\\Download\\video_tracks".to_string());
+
+        let error = playback_target_for_task(&task).expect_err("multi-track playback should fail");
+
+        assert!(error.to_string().contains("多轨下载暂不支持播放"));
     }
 
     #[test]

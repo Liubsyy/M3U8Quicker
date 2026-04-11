@@ -370,6 +370,10 @@ pub fn file_path(task_id: &str) -> String {
 }
 
 pub fn task_can_open_playback(task: &DownloadTask) -> bool {
+    if !task.playback_available {
+        return false;
+    }
+
     matches!(
         task.status,
         DownloadStatus::Downloading | DownloadStatus::Paused | DownloadStatus::Completed
@@ -1063,6 +1067,8 @@ mod tests {
             url: "https://example.com/video.m3u8".to_string(),
             filename: "video".to_string(),
             file_type: FileType::Hls,
+            hls_output_mode: crate::models::HlsOutputMode::SingleStream,
+            hls_selection: None,
             encryption_method: None,
             output_dir: "D:\\Downloads".to_string(),
             extra_headers: None,
@@ -1082,6 +1088,7 @@ mod tests {
             created_at: Utc::now(),
             completed_at: None,
             updated_at: None,
+            playback_available: true,
             file_path: None,
         }
     }

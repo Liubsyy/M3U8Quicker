@@ -9,6 +9,8 @@ import type {
   DownloadTaskPage,
   DownloadTaskSegmentState,
   DownloadTaskSummary,
+  InspectHlsTracksParams,
+  InspectHlsTracksResult,
   OpenPlaybackSessionResponse,
   ResumeDownloadCheckResult,
 } from "../types";
@@ -18,6 +20,12 @@ export async function createDownload(
   params: CreateDownloadParams
 ): Promise<DownloadTaskSummary> {
   return invoke<DownloadTaskSummary>("create_download", { params });
+}
+
+export async function inspectHlsTracks(
+  params: InspectHlsTracksParams
+): Promise<InspectHlsTracksResult> {
+  return invoke<InspectHlsTracksResult>("inspect_hls_tracks", { params });
 }
 
 export async function cancelDownload(id: string): Promise<void> {

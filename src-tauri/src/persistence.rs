@@ -161,6 +161,8 @@ pub fn task_to_summary(task: &DownloadTask) -> DownloadTaskSummary {
         id: task.id.clone(),
         filename: task.filename.clone(),
         file_type: task.file_type,
+        hls_output_mode: task.hls_output_mode,
+        hls_selection: task.hls_selection.clone(),
         encryption_method: task.encryption_method.clone(),
         output_dir: task.output_dir.clone(),
         status: task.status.clone(),
@@ -172,6 +174,7 @@ pub fn task_to_summary(task: &DownloadTask) -> DownloadTaskSummary {
         created_at: task.created_at.to_rfc3339(),
         completed_at: task.completed_at.map(|value| value.to_rfc3339()),
         updated_at: task.last_updated_at().to_rfc3339(),
+        playback_available: task.playback_available,
         file_path: task.file_path.clone(),
     }
 }
@@ -211,6 +214,8 @@ fn task_from_parts(
         url: detail.url,
         filename: summary.filename,
         file_type: summary.file_type,
+        hls_output_mode: summary.hls_output_mode,
+        hls_selection: summary.hls_selection,
         encryption_method: summary.encryption_method,
         output_dir: summary.output_dir,
         extra_headers: detail.extra_headers,
@@ -230,6 +235,7 @@ fn task_from_parts(
             .map(parse_datetime)
             .transpose()?,
         updated_at: Some(parse_datetime(&summary.updated_at)?),
+        playback_available: summary.playback_available,
         file_path: summary.file_path,
     })
 }
