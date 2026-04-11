@@ -258,6 +258,8 @@ pub struct AppSettings {
     pub download_speed_limit_kbps: u64,
     pub delete_ts_temp_dir_after_download: bool,
     pub convert_to_mp4: bool,
+    #[serde(default = "default_ffmpeg_enabled")]
+    pub ffmpeg_enabled: bool,
     pub ffmpeg_path: Option<String>,
 }
 
@@ -270,9 +272,14 @@ impl Default for AppSettings {
             download_speed_limit_kbps: DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS,
             delete_ts_temp_dir_after_download: true,
             convert_to_mp4: true,
+            ffmpeg_enabled: true,
             ffmpeg_path: None,
         }
     }
+}
+
+fn default_ffmpeg_enabled() -> bool {
+    true
 }
 
 impl AppSettings {
@@ -450,6 +457,7 @@ mod tests {
             settings.download_speed_limit_kbps,
             DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS
         );
+        assert!(settings.ffmpeg_enabled);
     }
 
     #[test]

@@ -21,6 +21,7 @@ import {
   setDownloadConcurrency,
   setDownloadOutputSettings,
   setDownloadSpeedLimit,
+  setFfmpegEnabled,
   setFfmpegPath,
   setProxySettings,
 } from "../services/api";
@@ -39,6 +40,7 @@ type SpeedLimitMode = "unlimited" | "limited";
 
 interface SettingsModalProps {
   open: boolean;
+  initialTab?: "general" | "download" | "ffmpeg";
   themeMode: ThemeMode;
   onClose: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
@@ -46,10 +48,14 @@ interface SettingsModalProps {
 
 export function SettingsModal({
   open,
+  initialTab = "general",
   themeMode,
   onClose,
   onThemeModeChange,
 }: SettingsModalProps) {
+  const [activeTab, setActiveTab] = useState<"general" | "download" | "ffmpeg">(
+    initialTab
+  );
   const [proxySettings, setProxySettingsState] = useState<ProxySettings | null>(
     null
   );
@@ -74,13 +80,17 @@ export function SettingsModal({
   const [savingSpeedLimit, setSavingSpeedLimit] = useState(false);
   const [savingDownloadOutput, setSavingDownloadOutput] = useState(false);
   const [ffmpegStatus, setFfmpegStatus] = useState<FfmpegStatus | null>(null);
+  const [ffmpegEnabled, setFfmpegEnabledState] = useState(true);
   const [ffmpegDownloading, setFfmpegDownloading] = useState(false);
   const [ffmpegDownloadProgress, setFfmpegDownloadProgress] = useState<number>(0);
   const [ffmpegCustomPath, setFfmpegCustomPath] = useState("");
+  const [savingFfmpegEnabled, setSavingFfmpegEnabled] = useState(false);
   const ffmpegUnlistenRef = useRef<UnlistenFn | null>(null);
 
   useEffect(() => {
     if (!open) return;
+
+    setActiveTab(initialTab);
 
     setLoading(true);
     getAppSettings()
@@ -101,6 +111,7 @@ export function SettingsModal({
           settings.delete_ts_temp_dir_after_download
         );
         setConvertToMp4(settings.convert_to_mp4);
+        setFfmpegEnabledState(settings.ffmpeg_enabled);
         setFfmpegCustomPath(settings.ffmpeg_path ?? "");
       })
       .catch((error) => {
@@ -109,7 +120,7 @@ export function SettingsModal({
       .finally(() => setLoading(false));
 
     getFfmpegStatus().then(setFfmpegStatus).catch(() => {});
-  }, [open]);
+  }, [initialTab, open]);
 
   useEffect(() => {
     return () => {
@@ -330,6 +341,21 @@ export function SettingsModal({
     }
   };
 
+  const handleSetFfmpegEnabled = async (enabled: boolean) => {
+    setFfmpegEnabledState(enabled);
+    setSavingFfmpegEnabled(true);
+    try {
+      await setFfmpegEnabled(enabled);
+      message.success(enabled ? "FFmpeg 已开启" : "FFmpeg 已关闭");
+    } catch (error) {
+      message.error(`保存 FFmpeg 开关失败：${String(error)}`);
+      const settings = await getAppSettings();
+      setFfmpegEnabledState(settings.ffmpeg_enabled);
+    } finally {
+      setSavingFfmpegEnabled(false);
+    }
+  };
+
   const handleConfirm = async () => {
     if (
       downloadConcurrency !== null &&
@@ -504,6 +530,20 @@ export function SettingsModal({
       label: "FFmpeg",
       children: (
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            FFmpeg 是一个专业的音视频处理工具，部分转码和合成功能会依赖它。
+            如果你想获得更佳的体验，请无脑下载FFmpeg
+          </Typography.Paragraph>
+          <Space style={{ width: "100%", justifyContent: "space-between" }}>
+            <Typography.Text strong>开启 FFmpeg</Typography.Text>
+            <Switch
+              checked={ffmpegEnabled}
+              loading={loading || savingFfmpegEnabled}
+              onChange={(checked) => {
+                void handleSetFfmpegEnabled(checked);
+              }}
+            />
+          </Space>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
             <Typography.Text strong>状态</Typography.Text>
             <Space size={12} align="center">
@@ -524,7 +564,7 @@ export function SettingsModal({
               </Typography.Text>
             )}
           </Space>
-          {ffmpegStatus?.kind !== "installed" && (
+          {ffmpegEnabled && ffmpegStatus?.kind !== "installed" && (
             <Space direction="vertical" size={8} style={{ width: "100%" }}>
               <Typography.Text strong>自动下载</Typography.Text>
               {ffmpegDownloading && (
@@ -542,11 +582,11 @@ export function SettingsModal({
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
             <Typography.Text strong>自定义路径</Typography.Text>
             <Space size={8}>
-              <Button onClick={() => void handleSetFfmpegCustomPath()}>
+              <Button disabled={!ffmpegEnabled} onClick={() => void handleSetFfmpegCustomPath()}>
                 选择文件
               </Button>
               {ffmpegCustomPath && (
-                <Button onClick={() => void handleResetFfmpegPath()}>
+                <Button disabled={!ffmpegEnabled} onClick={() => void handleResetFfmpegPath()}>
                   重置
                 </Button>
               )}
@@ -579,12 +619,14 @@ export function SettingsModal({
         savingProxy ||
         savingConcurrency ||
         savingSpeedLimit ||
-        savingDownloadOutput
+        savingDownloadOutput ||
+        savingFfmpegEnabled
       }
     >
       <Tabs
         className="settings-modal-tabs"
-        defaultActiveKey="general"
+        activeKey={activeTab}
+        onChange={(key) => setActiveTab(key as "general" | "download" | "ffmpeg")}
         items={settingsTabItems}
       />
     </Modal>

@@ -903,6 +903,7 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         download_speed_limit_kbps: state.download_rate_limiter.limit_kbps().await,
         delete_ts_temp_dir_after_download: *state.delete_ts_temp_dir_after_download.lock().await,
         convert_to_mp4: *state.convert_to_mp4.lock().await,
+        ffmpeg_enabled: *state.ffmpeg_enabled.lock().await,
         ffmpeg_path: state.ffmpeg_path.lock().await.clone(),
     })
 }
@@ -1302,11 +1303,13 @@ pub async fn convert_ts_to_mp4_file(
     }
 
     let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle).await;
+    let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
     let resolved_output_path = downloader::resolve_available_file_path(&output_path);
     downloader::convert_ts_to_mp4_file(
         &input_path,
         &resolved_output_path,
         false,
+        ffmpeg_enabled,
         ffmpeg_path.as_deref(),
     )
     .await?;
@@ -1332,6 +1335,12 @@ pub async fn convert_multi_track_hls_to_mp4_dir(
     }
 
     let bundle = resolve_local_hls_bundle_paths(&input_dir)?;
+    let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
+    if !ffmpeg_enabled {
+        return Err(AppError::InvalidInput(
+            "FFmpeg 开关未开启，请先在设置 -> FFmpeg 中开启".to_string(),
+        ));
+    }
     let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle)
         .await
         .ok_or_else(|| {
@@ -1387,6 +1396,23 @@ pub async fn set_ffmpeg_path(
     })
     .await;
     Ok(crate::ffmpeg::detect_ffmpeg(&app_handle).await)
+}
+
+#[tauri::command]
+pub async fn set_ffmpeg_enabled(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), AppError> {
+    {
+        let mut ffmpeg_enabled = state.ffmpeg_enabled.lock().await;
+        *ffmpeg_enabled = enabled;
+    }
+    persistence::update_settings(&app_handle, |settings| {
+        settings.ffmpeg_enabled = enabled;
+    })
+    .await;
+    Ok(())
 }
 
 async fn ensure_task_playback_ready(
@@ -1872,7 +1898,12 @@ async fn start_download_worker(
         .lock()
         .await;
     let convert_to_mp4 = *app_handle.state::<AppState>().convert_to_mp4.lock().await;
-    let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle).await;
+    let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
+    let ffmpeg_path = if ffmpeg_enabled {
+        crate::ffmpeg::resolve_ffmpeg_path(&app_handle).await
+    } else {
+        None
+    };
     let rate_limiter = app_handle.state::<AppState>().download_rate_limiter.clone();
 
     {
@@ -2022,6 +2053,15 @@ async fn start_hls_bundle_download_worker(
     let task_id = task.id.clone();
     let cancel_token = CancellationToken::new();
     let rate_limiter = app_handle.state::<AppState>().download_rate_limiter.clone();
+    let output_dir_path = PathBuf::from(&task.output_dir);
+    let filename = task.filename.clone();
+    let convert_to_mp4 = *app_handle.state::<AppState>().convert_to_mp4.lock().await;
+    let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
+    let ffmpeg_path = if ffmpeg_enabled {
+        crate::ffmpeg::resolve_ffmpeg_path(&app_handle).await
+    } else {
+        None
+    };
 
     {
         let mut tokens = state_cancel_tokens.lock().await;
@@ -2035,10 +2075,14 @@ async fn start_hls_bundle_download_worker(
             client,
             rate_limiter,
             task_id.clone(),
+            output_dir_path,
+            filename,
             bundle_dir.clone(),
             prepared.playlist_files,
             prepared.entries,
             Arc::new(request_headers),
+            convert_to_mp4,
+            ffmpeg_path,
             cancel_token,
             max_concurrent,
         )
@@ -2052,14 +2096,22 @@ async fn start_hls_bundle_download_worker(
             let mut downloads = state_downloads.lock().await;
             if let Some(task) = downloads.get_mut(&task_id) {
                 match result {
-                    Ok(downloader::DownloadRunOutcome::Completed(_)) => {
+                    Ok(downloader::DownloadRunOutcome::Completed(final_path)) => {
                         let completed_at = Utc::now();
+                        let final_size = final_path.metadata().map(|metadata| metadata.len()).ok();
                         task.status = DownloadStatus::Completed;
                         task.completed_at = Some(completed_at);
                         task.updated_at = Some(completed_at);
                         task.completed_segments = task.total_segments;
                         task.speed_bytes_per_sec = 0;
-                        task.file_path = Some(bundle_dir.to_string_lossy().to_string());
+                        task.file_path = Some(final_path.to_string_lossy().to_string());
+                        task.playback_available = final_path.is_file();
+                        if let Some(final_size) = final_size {
+                            task.total_bytes = final_size;
+                        }
+                        if let Some(name) = final_path.file_name() {
+                            task.filename = name.to_string_lossy().to_string();
+                        }
                         progress_to_emit = Some(task_to_progress(task));
                         should_save = true;
                         remove_from_runtime = true;

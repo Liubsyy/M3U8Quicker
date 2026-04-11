@@ -79,6 +79,10 @@ pub fn run() {
                     *convert_to_mp4 = settings.convert_to_mp4;
                 }
                 {
+                    let mut ffmpeg_enabled = state.ffmpeg_enabled.lock().await;
+                    *ffmpeg_enabled = settings.ffmpeg_enabled;
+                }
+                {
                     let mut ffmpeg_path = state.ffmpeg_path.lock().await;
                     *ffmpeg_path = settings.ffmpeg_path;
                 }
@@ -144,6 +148,7 @@ pub fn run() {
             commands::get_ffmpeg_status,
             commands::download_ffmpeg,
             commands::set_ffmpeg_path,
+            commands::set_ffmpeg_enabled,
             commands::open_download_playback_session,
             commands::prioritize_download_playback_position,
             commands::close_download_playback_session,

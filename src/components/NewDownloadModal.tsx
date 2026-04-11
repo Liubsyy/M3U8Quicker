@@ -3,7 +3,9 @@ import { Modal, Form, Input, Button, Space, Radio, Typography, message } from "a
 import { FolderOpenOutlined } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  getAppSettings,
   getDefaultDownloadDir,
+  getFfmpegStatus,
   inspectHlsTracks,
   setDefaultDownloadDir,
 } from "../services/api";
@@ -28,6 +30,7 @@ interface NewDownloadModalProps {
   initialFileType?: FileType;
   resetKey?: number;
   onClose: () => void;
+  onOpenFfmpegSettings: () => void;
   onSubmit: (params: CreateDownloadParams) => Promise<void>;
 }
 
@@ -38,6 +41,7 @@ export function NewDownloadModal({
   initialFileType,
   resetKey,
   onClose,
+  onOpenFfmpegSettings,
   onSubmit,
 }: NewDownloadModalProps) {
   const [form] = Form.useForm();
@@ -98,6 +102,46 @@ export function NewDownloadModal({
     message.success("下载已开始");
   };
 
+  const ensureMultiTrackFfmpegReady = async (
+    inspection: InspectHlsTracksResult,
+    selection: HlsTrackSelection
+  ) => {
+    if (!willCreateMultiTrackBundle(inspection, selection)) {
+      return true;
+    }
+
+    try {
+      const [settings, ffmpegStatus] = await Promise.all([
+        getAppSettings(),
+        getFfmpegStatus(),
+      ]);
+
+      if (settings.ffmpeg_enabled && ffmpegStatus.kind === "installed") {
+        return true;
+      }
+
+      const description = settings.convert_to_mp4
+        ? "当前下载包含独立音频或字幕轨。你已开启“合并 mp4”，要在下载完成后自动合成为 mp4，需要先在设置里开启并配置 FFmpeg。"
+        : "当前下载包含独立音频或字幕轨。建议先在设置里开启并配置 FFmpeg，后续合成 mp4 会更方便。";
+
+      return await new Promise<boolean>((resolve) => {
+        Modal.confirm({
+          title: "多轨下载建议开启 FFmpeg",
+          content: <Typography.Paragraph style={{ marginBottom: 0 }}>{description}</Typography.Paragraph>,
+          okText: "前往设置",
+          cancelText: "继续下载",
+          onOk: () => {
+            onOpenFfmpegSettings();
+            resolve(false);
+          },
+          onCancel: () => resolve(true),
+        });
+      });
+    } catch {
+      return true;
+    }
+  };
+
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
@@ -141,12 +185,20 @@ export function NewDownloadModal({
           return;
         }
 
+        const normalizedSelection =
+          inspection.kind === "master"
+            ? normalizeTrackSelection(inspection, inspection.default_selection)
+            : undefined;
+        if (
+          normalizedSelection &&
+          !(await ensureMultiTrackFfmpegReady(inspection, normalizedSelection))
+        ) {
+          return;
+        }
+
         await submitDownload({
           ...nextParams,
-          hls_selection:
-            inspection.kind === "master"
-              ? normalizeTrackSelection(inspection, inspection.default_selection)
-              : undefined,
+          hls_selection: normalizedSelection,
         });
         return;
       }
@@ -173,6 +225,9 @@ export function NewDownloadModal({
 
     try {
       setSubmitting(true);
+      if (!(await ensureMultiTrackFfmpegReady(hlsInspection, normalizedSelection))) {
+        return;
+      }
       await submitDownload({
         ...pendingHlsParams,
         hls_selection: normalizedSelection,
@@ -480,6 +535,42 @@ function normalizeTrackSelection(
     audio_id,
     subtitle_id,
   };
+}
+
+function willCreateMultiTrackBundle(
+  inspection: InspectHlsTracksResult,
+  selection: HlsTrackSelection
+) {
+  if (inspection.kind !== "master") {
+    return false;
+  }
+
+  const normalizedSelection = normalizeTrackSelection(inspection, selection);
+  const selectedVideo = inspection.video_tracks.find(
+    (track) => track.id === normalizedSelection.video_id
+  );
+
+  if (!selectedVideo) {
+    return false;
+  }
+
+  const audioTracks = filterTracksForSelectedVideo(
+    inspection.audio_tracks,
+    selectedVideo.audio_group_id
+  );
+  const subtitleTracks = filterTracksForSelectedVideo(
+    inspection.subtitle_tracks,
+    selectedVideo.subtitle_group_id
+  );
+
+  const hasSelectedAudio =
+    Boolean(normalizedSelection.audio_id) &&
+    audioTracks.some((track) => track.id === normalizedSelection.audio_id);
+  const hasSelectedSubtitle =
+    Boolean(normalizedSelection.subtitle_id) &&
+    subtitleTracks.some((track) => track.id === normalizedSelection.subtitle_id);
+
+  return hasSelectedAudio || hasSelectedSubtitle;
 }
 
 function formatCreateDownloadError(error: unknown) {

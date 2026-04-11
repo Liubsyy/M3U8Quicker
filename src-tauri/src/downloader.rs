@@ -1974,7 +1974,15 @@ pub async fn run_download(
         let mp4_filename = ensure_extension(&filename, "mp4");
         let mp4_path = resolve_available_output_path(&output_dir, &mp4_filename);
 
-        match convert_ts_to_mp4_file(&ts_path, &mp4_path, true, ffmpeg_path.as_deref()).await {
+        match convert_ts_to_mp4_file(
+            &ts_path,
+            &mp4_path,
+            true,
+            ffmpeg_path.is_some(),
+            ffmpeg_path.as_deref(),
+        )
+        .await
+        {
             Ok(()) => mp4_path,
             Err(_) => ts_path,
         }
@@ -2051,10 +2059,14 @@ pub async fn run_hls_bundle_download(
     client: Arc<RwLock<reqwest::Client>>,
     rate_limiter: Arc<DownloadRateLimiter>,
     task_id: DownloadId,
+    output_dir: PathBuf,
+    filename: String,
     bundle_dir: PathBuf,
     playlist_files: Vec<BundlePlaylistFile>,
     entries: Vec<BundleDownloadEntry>,
     headers: Arc<RequestHeaders>,
+    convert_to_mp4: bool,
+    ffmpeg_path: Option<PathBuf>,
     cancel_token: CancellationToken,
     max_concurrent: Arc<Mutex<usize>>,
 ) -> Result<DownloadRunOutcome, AppError> {
@@ -2299,6 +2311,50 @@ pub async fn run_hls_bundle_download(
         )
         .await;
         return Ok(DownloadRunOutcome::Incomplete);
+    }
+
+    if convert_to_mp4 {
+        if let Some(ffmpeg_path) = ffmpeg_path {
+            let mp4_filename = ensure_extension(&filename, "mp4");
+            let mp4_path = resolve_available_output_path(&output_dir, &mp4_filename);
+            let video_playlist = bundle_dir.join("video").join("index.m3u8");
+            let audio_playlist = bundle_dir.join("audio").join("index.m3u8");
+            let subtitle_playlist = bundle_dir.join("subtitle").join("index.m3u8");
+            let audio_playlist = audio_playlist.is_file().then_some(audio_playlist);
+            let subtitle_playlist = subtitle_playlist.is_file().then_some(subtitle_playlist);
+
+            if video_playlist.is_file() {
+                emit_progress(
+                    &app_handle,
+                    &downloads,
+                    RuntimeProgressSnapshot {
+                        id: task_id.clone(),
+                        status: DownloadStatus::Converting,
+                        completed_segments: total,
+                        total_segments: total,
+                        completed_segment_indices: completed_segments_list,
+                        failed_segment_indices: Vec::new(),
+                        total_bytes: total_bytes.load(Ordering::Relaxed),
+                        speed_bytes_per_sec: 0,
+                        updated_at: Utc::now().to_rfc3339(),
+                    },
+                )
+                .await;
+
+                if crate::ffmpeg::convert_multi_track_hls_to_mp4(
+                    &ffmpeg_path,
+                    &video_playlist,
+                    audio_playlist.as_deref(),
+                    subtitle_playlist.as_deref(),
+                    &mp4_path,
+                )
+                .await
+                .is_ok()
+                {
+                    return Ok(DownloadRunOutcome::Completed(mp4_path));
+                }
+            }
+        }
     }
 
     Ok(DownloadRunOutcome::Completed(bundle_dir))
@@ -3027,40 +3083,31 @@ pub async fn convert_ts_to_mp4_file(
     ts_path: &Path,
     mp4_path: &Path,
     delete_source: bool,
+    ffmpeg_enabled: bool,
     ffmpeg_path: Option<&Path>,
 ) -> Result<(), AppError> {
     let ts_path = ts_path.to_path_buf();
-    let blocking_ts_path = ts_path.clone();
-    let blocking_mp4_path = mp4_path.to_path_buf();
-
-    let remux_result = tokio::task::spawn_blocking(move || {
-        crate::remux::remux_ts_to_mp4_file(&blocking_ts_path, &blocking_mp4_path)
-    })
-    .await
-    .map_err(|e| AppError::Conversion(format!("Task join error: {}", e)))?;
-
-    match remux_result {
-        Ok(()) => {}
-        Err(remux_err) => {
-            // Clean up partial mp4 from failed remux
-            let _ = tokio::fs::remove_file(mp4_path).await;
-
-            if let Some(ffmpeg) = ffmpeg_path {
-                crate::ffmpeg::convert_ts_to_mp4(ffmpeg, &ts_path, mp4_path)
-                    .await
-                    .map_err(|e| {
-                        AppError::Conversion(format!(
-                            "Rust remux: {}; ffmpeg: {}",
-                            remux_err, e
-                        ))
-                    })?;
-            } else {
-                return Err(AppError::Conversion(format!(
-                    "TS to MP4 conversion failed: {} (ffmpeg 未安装，无法自动回退)",
-                    remux_err
-                )));
+    if ffmpeg_enabled {
+        if let Some(ffmpeg) = ffmpeg_path {
+            match crate::ffmpeg::convert_ts_to_mp4(ffmpeg, &ts_path, mp4_path).await {
+                Ok(()) => {}
+                Err(ffmpeg_err) => {
+                    let _ = tokio::fs::remove_file(mp4_path).await;
+                    remux_ts_to_mp4_with_rust(&ts_path, mp4_path)
+                        .await
+                        .map_err(|remux_err| {
+                            AppError::Conversion(format!(
+                                "FFmpeg: {}; Rust remux: {}",
+                                ffmpeg_err, remux_err
+                            ))
+                        })?;
+                }
             }
+        } else {
+            remux_ts_to_mp4_with_rust(&ts_path, mp4_path).await?;
         }
+    } else {
+        remux_ts_to_mp4_with_rust(&ts_path, mp4_path).await?;
     }
 
     if delete_source {
@@ -3068,6 +3115,18 @@ pub async fn convert_ts_to_mp4_file(
     }
 
     Ok(())
+}
+
+async fn remux_ts_to_mp4_with_rust(ts_path: &Path, mp4_path: &Path) -> Result<(), AppError> {
+    let blocking_ts_path = ts_path.to_path_buf();
+    let blocking_mp4_path = mp4_path.to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        crate::remux::remux_ts_to_mp4_file(&blocking_ts_path, &blocking_mp4_path)
+    })
+    .await
+    .map_err(|e| AppError::Conversion(format!("Task join error: {}", e)))?
+    .map_err(|e| AppError::Conversion(format!("TS to MP4 conversion failed: {}", e)))
 }
 
 async fn merge_files(files: &[PathBuf], output_path: &Path) -> Result<(), AppError> {

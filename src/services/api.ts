@@ -222,3 +222,7 @@ export async function setFfmpegPath(
 ): Promise<FfmpegStatus> {
   return invoke<FfmpegStatus>("set_ffmpeg_path", { path });
 }
+
+export async function setFfmpegEnabled(enabled: boolean): Promise<void> {
+  return invoke("set_ffmpeg_enabled", { enabled });
+}

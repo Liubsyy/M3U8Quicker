@@ -75,6 +75,9 @@ const CHROMIUM_BROWSER_META: Record<
 function App({ themeMode, onThemeModeChange }: AppProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<
+    "general" | "download" | "ffmpeg"
+  >("general");
   const [toolModalOpen, setToolModalOpen] = useState(false);
   const [activeTool, setActiveTool] = useState<ToolAction | null>(null);
   const [downloadDraft, setDownloadDraft] = useState<DownloadDraft | null>(null);
@@ -383,7 +386,10 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
             setActiveTool(tool);
             setToolModalOpen(true);
           }}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => {
+            setSettingsInitialTab("general");
+            setSettingsOpen(true);
+          }}
         />
       </Header>
       <Content
@@ -401,6 +407,10 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         initialFileType={downloadDraft?.fileType}
         resetKey={downloadDraft?.nonce ?? 0}
         onClose={() => setModalOpen(false)}
+        onOpenFfmpegSettings={() => {
+          setSettingsInitialTab("ffmpeg");
+          setSettingsOpen(true);
+        }}
         onSubmit={async (params) => {
           await addDownload(params);
           setModalOpen(false);
@@ -408,8 +418,12 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
       />
       <SettingsModal
         open={settingsOpen}
+        initialTab={settingsInitialTab}
         themeMode={themeMode}
-        onClose={() => setSettingsOpen(false)}
+        onClose={() => {
+          setSettingsOpen(false);
+          setSettingsInitialTab("general");
+        }}
         onThemeModeChange={onThemeModeChange}
       />
       <ToolsModal
