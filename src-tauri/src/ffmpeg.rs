@@ -123,6 +123,18 @@ struct FfprobeStreamTags {
     language: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct MergeVideoInputInfo {
+    width: u32,
+    height: u32,
+    video_codec: Option<String>,
+    video_frame_rate: Option<String>,
+    has_audio: bool,
+    audio_codec: Option<String>,
+    audio_sample_rate: Option<String>,
+    audio_channels: Option<u32>,
+}
+
 fn ffmpeg_dir(app_handle: &AppHandle) -> PathBuf {
     app_handle
         .path()
@@ -497,6 +509,76 @@ pub async fn transcode_media_file(
     run_ffmpeg_command(ffmpeg_path, &args).await
 }
 
+pub async fn merge_video_files(
+    ffmpeg_path: &Path,
+    input_paths: &[PathBuf],
+    output_path: &Path,
+    merge_mode: &str,
+) -> Result<(), AppError> {
+    if input_paths.len() < 2 {
+        return Err(AppError::InvalidInput(
+            "请至少选择两个视频文件进行拼接".to_string(),
+        ));
+    }
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("m3u8quicker_video_merge_{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir_all(&temp_dir).await?;
+
+    let result = async {
+        let mut input_infos = Vec::with_capacity(input_paths.len());
+        for input_path in input_paths {
+            input_infos.push(inspect_merge_video_input(ffmpeg_path, input_path).await?);
+        }
+
+        let normalized_paths = if merge_mode == "fast" {
+            validate_fast_merge_inputs(&input_infos)?;
+            let mut remuxed_paths = Vec::with_capacity(input_paths.len());
+
+            for (index, input_path) in input_paths.iter().enumerate() {
+                let remuxed_path = temp_dir.join(format!("clip_{index:03}.mp4"));
+                let args = build_merge_video_fast_remux_args(input_path, &remuxed_path);
+                run_ffmpeg_command(ffmpeg_path, &args).await?;
+                remuxed_paths.push(remuxed_path);
+            }
+
+            remuxed_paths
+        } else {
+            let target_size = calculate_merge_video_output_size(&input_infos)?;
+            let mut transcoded_paths = Vec::with_capacity(input_paths.len());
+
+            for (index, (input_path, input_info)) in
+                input_paths.iter().zip(input_infos.iter()).enumerate()
+            {
+                let normalized_path = temp_dir.join(format!("clip_{index:03}.mp4"));
+                let args = build_merge_video_normalize_args(
+                    input_path,
+                    &normalized_path,
+                    target_size,
+                    input_info,
+                );
+                run_ffmpeg_command(ffmpeg_path, &args).await?;
+                transcoded_paths.push(normalized_path);
+            }
+
+            transcoded_paths
+        };
+        let concat_list_path = temp_dir.join("concat.txt");
+        tokio::fs::write(
+            &concat_list_path,
+            build_ffmpeg_concat_list(&normalized_paths),
+        )
+        .await?;
+
+        let args = build_merge_video_concat_args(&concat_list_path, output_path);
+        run_ffmpeg_command(ffmpeg_path, &args).await
+    }
+    .await;
+
+    let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    result
+}
+
 fn build_media_convert_args(
     input_path: &Path,
     output_path: &Path,
@@ -711,6 +793,229 @@ fn validate_transcode_combination(
     }
 
     Ok(())
+}
+
+async fn inspect_merge_video_input(
+    ffmpeg_path: &Path,
+    input_path: &Path,
+) -> Result<MergeVideoInputInfo, AppError> {
+    let raw_json = run_ffprobe_json(ffmpeg_path, input_path).await?;
+    let parsed: FfprobeOutput = serde_json::from_str(&raw_json)
+        .map_err(|e| AppError::Conversion(format!("解析 ffprobe 输出失败: {}", e)))?;
+
+    let video_stream = parsed
+        .streams
+        .iter()
+        .find(|stream| stream.codec_type.as_deref() == Some("video"))
+        .ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "文件 {} 不包含视频轨",
+                input_path.to_string_lossy()
+            ))
+        })?;
+
+    let width = video_stream.width.ok_or_else(|| {
+        AppError::InvalidInput(format!(
+            "无法识别文件 {} 的视频宽度",
+            input_path.to_string_lossy()
+        ))
+    })?;
+    let height = video_stream.height.ok_or_else(|| {
+        AppError::InvalidInput(format!(
+            "无法识别文件 {} 的视频高度",
+            input_path.to_string_lossy()
+        ))
+    })?;
+    let has_audio = parsed
+        .streams
+        .iter()
+        .any(|stream| stream.codec_type.as_deref() == Some("audio"));
+    let audio_stream = parsed
+        .streams
+        .iter()
+        .find(|stream| stream.codec_type.as_deref() == Some("audio"));
+
+    Ok(MergeVideoInputInfo {
+        width,
+        height,
+        video_codec: video_stream.codec_name.clone(),
+        video_frame_rate: video_stream
+            .avg_frame_rate
+            .clone()
+            .or_else(|| video_stream.r_frame_rate.clone()),
+        has_audio,
+        audio_codec: audio_stream.and_then(|stream| stream.codec_name.clone()),
+        audio_sample_rate: audio_stream.and_then(|stream| stream.sample_rate.clone()),
+        audio_channels: audio_stream.and_then(|stream| stream.channels),
+    })
+}
+
+fn validate_fast_merge_inputs(input_infos: &[MergeVideoInputInfo]) -> Result<(), AppError> {
+    let Some(first) = input_infos.first() else {
+        return Err(AppError::InvalidInput("请选择有效的视频文件".to_string()));
+    };
+
+    if !matches!(first.video_codec.as_deref(), Some("h264") | Some("hevc")) {
+        return Err(AppError::InvalidInput(
+            "极速合并目前仅支持 H.264 或 H.265 视频，请改用兼容合并".to_string(),
+        ));
+    }
+    if first.has_audio && !matches!(first.audio_codec.as_deref(), Some("aac") | Some("mp3")) {
+        return Err(AppError::InvalidInput(
+            "极速合并目前仅支持 AAC 或 MP3 音频，请改用兼容合并".to_string(),
+        ));
+    }
+
+    for info in input_infos.iter().skip(1) {
+        if info.width != first.width
+            || info.height != first.height
+            || info.video_codec != first.video_codec
+            || info.video_frame_rate != first.video_frame_rate
+            || info.has_audio != first.has_audio
+            || info.audio_codec != first.audio_codec
+            || info.audio_sample_rate != first.audio_sample_rate
+            || info.audio_channels != first.audio_channels
+        {
+            return Err(AppError::InvalidInput(
+                "极速合并要求所有视频的分辨率、视频编码、帧率和音频轨规格一致；当前文件不一致，请改用兼容合并".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn calculate_merge_video_output_size(
+    input_infos: &[MergeVideoInputInfo],
+) -> Result<(u32, u32), AppError> {
+    let max_width = input_infos
+        .iter()
+        .map(|item| item.width)
+        .max()
+        .ok_or_else(|| AppError::InvalidInput("请选择有效的视频文件".to_string()))?;
+    let max_height = input_infos
+        .iter()
+        .map(|item| item.height)
+        .max()
+        .ok_or_else(|| AppError::InvalidInput("请选择有效的视频文件".to_string()))?;
+
+    Ok((round_up_to_even(max_width), round_up_to_even(max_height)))
+}
+
+fn round_up_to_even(value: u32) -> u32 {
+    if value % 2 == 0 {
+        value
+    } else {
+        value.saturating_add(1)
+    }
+}
+
+fn build_merge_video_normalize_args(
+    input_path: &Path,
+    output_path: &Path,
+    target_size: (u32, u32),
+    input_info: &MergeVideoInputInfo,
+) -> Vec<String> {
+    let (target_width, target_height) = target_size;
+    let scale_filter = format!(
+        "scale=w={target_width}:h={target_height}:force_original_aspect_ratio=decrease,pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p"
+    );
+
+    let mut args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-i".to_string(),
+        input_path.to_string_lossy().into_owned(),
+    ];
+
+    if !input_info.has_audio {
+        args.extend([
+            "-f".to_string(),
+            "lavfi".to_string(),
+            "-i".to_string(),
+            "anullsrc=channel_layout=stereo:sample_rate=48000".to_string(),
+        ]);
+    }
+
+    args.extend([
+        "-map".to_string(),
+        "0:v:0".to_string(),
+        "-map".to_string(),
+        if input_info.has_audio {
+            "0:a:0".to_string()
+        } else {
+            "1:a:0".to_string()
+        },
+        "-vf".to_string(),
+        scale_filter,
+        "-c:v".to_string(),
+        "libx264".to_string(),
+        "-preset".to_string(),
+        "veryfast".to_string(),
+        "-crf".to_string(),
+        "20".to_string(),
+        "-c:a".to_string(),
+        "aac".to_string(),
+        "-b:a".to_string(),
+        "192k".to_string(),
+        "-ar".to_string(),
+        "48000".to_string(),
+        "-ac".to_string(),
+        "2".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+    ]);
+
+    if !input_info.has_audio {
+        args.push("-shortest".to_string());
+    }
+
+    args.push(output_path.to_string_lossy().into_owned());
+    args
+}
+
+fn build_merge_video_fast_remux_args(input_path: &Path, output_path: &Path) -> Vec<String> {
+    vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-i".to_string(),
+        input_path.to_string_lossy().into_owned(),
+        "-map".to_string(),
+        "0".to_string(),
+        "-c".to_string(),
+        "copy".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+        output_path.to_string_lossy().into_owned(),
+    ]
+}
+
+fn build_ffmpeg_concat_list(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| {
+            let normalized = path.to_string_lossy().replace('\\', "/");
+            format!("file '{}'\n", normalized.replace('\'', "'\\''"))
+        })
+        .collect::<String>()
+}
+
+fn build_merge_video_concat_args(concat_list_path: &Path, output_path: &Path) -> Vec<String> {
+    vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-f".to_string(),
+        "concat".to_string(),
+        "-safe".to_string(),
+        "0".to_string(),
+        "-i".to_string(),
+        concat_list_path.to_string_lossy().into_owned(),
+        "-c".to_string(),
+        "copy".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+        output_path.to_string_lossy().into_owned(),
+    ]
 }
 
 pub async fn convert_multi_track_hls_to_mp4(
@@ -1220,6 +1525,138 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|window| window == ["-s:s:0", "1280x128"]));
+    }
+
+    #[test]
+    fn calculate_merge_video_output_size_rounds_up_odd_values() {
+        let size = calculate_merge_video_output_size(&[
+            MergeVideoInputInfo {
+                width: 1279,
+                height: 719,
+                video_codec: Some("h264".to_string()),
+                video_frame_rate: Some("30/1".to_string()),
+                has_audio: true,
+                audio_codec: Some("aac".to_string()),
+                audio_sample_rate: Some("48000".to_string()),
+                audio_channels: Some(2),
+            },
+            MergeVideoInputInfo {
+                width: 640,
+                height: 360,
+                video_codec: Some("h264".to_string()),
+                video_frame_rate: Some("30/1".to_string()),
+                has_audio: false,
+                audio_codec: None,
+                audio_sample_rate: None,
+                audio_channels: None,
+            },
+        ])
+        .expect("size");
+
+        assert_eq!(size, (1280, 720));
+    }
+
+    #[test]
+    fn build_merge_video_normalize_args_adds_silent_audio_when_missing() {
+        let args = build_merge_video_normalize_args(
+            Path::new("clip1.mov"),
+            Path::new("temp/clip1.mp4"),
+            (1280, 720),
+            &MergeVideoInputInfo {
+                width: 640,
+                height: 360,
+                video_codec: Some("h264".to_string()),
+                video_frame_rate: Some("30/1".to_string()),
+                has_audio: false,
+                audio_codec: None,
+                audio_sample_rate: None,
+                audio_channels: None,
+            },
+        );
+
+        assert!(args.windows(2).any(|window| window == ["-f", "lavfi"]));
+        assert!(args.windows(2).any(|window| window == ["-map", "1:a:0"]));
+        assert!(args.iter().any(|item| item == "-shortest"));
+    }
+
+    #[test]
+    fn build_merge_video_concat_args_uses_concat_demuxer() {
+        let args = build_merge_video_concat_args(
+            Path::new("/tmp/concat.txt"),
+            Path::new("/tmp/output.mp4"),
+        );
+
+        assert!(args.windows(2).any(|window| window == ["-f", "concat"]));
+        assert!(args.windows(2).any(|window| window == ["-safe", "0"]));
+        assert!(args.windows(2).any(|window| window == ["-c", "copy"]));
+    }
+
+    #[test]
+    fn validate_fast_merge_inputs_accepts_matching_h264_aac_inputs() {
+        let result = validate_fast_merge_inputs(&[
+            MergeVideoInputInfo {
+                width: 1280,
+                height: 720,
+                video_codec: Some("h264".to_string()),
+                video_frame_rate: Some("30/1".to_string()),
+                has_audio: true,
+                audio_codec: Some("aac".to_string()),
+                audio_sample_rate: Some("48000".to_string()),
+                audio_channels: Some(2),
+            },
+            MergeVideoInputInfo {
+                width: 1280,
+                height: 720,
+                video_codec: Some("h264".to_string()),
+                video_frame_rate: Some("30/1".to_string()),
+                has_audio: true,
+                audio_codec: Some("aac".to_string()),
+                audio_sample_rate: Some("48000".to_string()),
+                audio_channels: Some(2),
+            },
+        ]);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_fast_merge_inputs_rejects_mixed_sizes() {
+        let result = validate_fast_merge_inputs(&[
+            MergeVideoInputInfo {
+                width: 1280,
+                height: 720,
+                video_codec: Some("h264".to_string()),
+                video_frame_rate: Some("30/1".to_string()),
+                has_audio: true,
+                audio_codec: Some("aac".to_string()),
+                audio_sample_rate: Some("48000".to_string()),
+                audio_channels: Some(2),
+            },
+            MergeVideoInputInfo {
+                width: 1920,
+                height: 1080,
+                video_codec: Some("h264".to_string()),
+                video_frame_rate: Some("30/1".to_string()),
+                has_audio: true,
+                audio_codec: Some("aac".to_string()),
+                audio_sample_rate: Some("48000".to_string()),
+                audio_channels: Some(2),
+            },
+        ]);
+
+        assert!(matches!(result, Err(AppError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn build_merge_video_fast_remux_args_copies_all_streams() {
+        let args =
+            build_merge_video_fast_remux_args(Path::new("clip1.mkv"), Path::new("temp/clip1.mp4"));
+
+        assert!(args.windows(2).any(|window| window == ["-map", "0"]));
+        assert!(args.windows(2).any(|window| window == ["-c", "copy"]));
+        assert!(args
+            .windows(2)
+            .any(|window| window == ["-movflags", "+faststart"]));
     }
 
     #[test]

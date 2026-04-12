@@ -147,6 +147,7 @@ pub fn run() {
             commands::convert_media_file,
             commands::transcode_media_file,
             commands::analyze_media_file,
+            commands::merge_video_files,
             commands::convert_multi_track_hls_to_mp4_dir,
             commands::get_ffmpeg_status,
             commands::download_ffmpeg,

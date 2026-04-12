@@ -236,6 +236,18 @@ export async function transcodeMediaFile(
   });
 }
 
+export async function mergeVideoFiles(
+  inputPaths: string[],
+  outputPath: string,
+  mergeMode: string
+): Promise<string> {
+  return invoke<string>("merge_video_files", {
+    inputPaths,
+    outputPath,
+    mergeMode,
+  });
+}
+
 export async function convertMultiTrackHlsToMp4Dir(
   inputDir: string,
   outputPath: string

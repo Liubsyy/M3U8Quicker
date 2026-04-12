@@ -13,7 +13,10 @@ import {
   message,
 } from "antd";
 import {
+  ArrowDownOutlined,
+  ArrowUpOutlined,
   ApartmentOutlined,
+  DeleteOutlined,
   FileOutlined,
   FileSearchOutlined,
   FolderOpenOutlined,
@@ -26,6 +29,7 @@ import {
   convertMultiTrackHlsToMp4Dir,
   convertMediaFile,
   convertTsToMp4File,
+  mergeVideoFiles,
   mergeTsFiles,
   transcodeMediaFile,
 } from "../services/api";
@@ -34,6 +38,7 @@ import type { MediaAnalysisResult } from "../types";
 export type ToolAction =
   | "merge-ts"
   | "ts-to-mp4"
+  | "merge-video"
   | "format-convert"
   | "codec-convert"
   | "analyze-media"
@@ -44,6 +49,7 @@ export type ToolAction =
 
 type ConvertFormat = "mp4" | "mkv" | "mov" | "mp3" | "m4a" | "wav";
 type ConvertMode = "quick" | "compatible";
+type MergeVideoMode = "fast" | "compatible";
 type CodecOutputFormat = "mp4" | "mkv" | "mov";
 type VideoCodec = "h264" | "h265" | "vp9" | "copy";
 type AudioCodec = "aac" | "mp3" | "opus" | "copy";
@@ -60,6 +66,11 @@ const CONVERT_FORMAT_OPTIONS: Array<{ value: ConvertFormat; label: string }> = [
 const CONVERT_MODE_OPTIONS: Array<{ value: ConvertMode; label: string }> = [
   { value: "quick", label: "快速转换" },
   { value: "compatible", label: "兼容转换" },
+];
+
+const MERGE_VIDEO_MODE_OPTIONS: Array<{ value: MergeVideoMode; label: string }> = [
+  { value: "fast", label: "极速合并" },
+  { value: "compatible", label: "兼容合并" },
 ];
 
 const CODEC_OUTPUT_FORMAT_OPTIONS: Array<{ value: CodecOutputFormat; label: string }> = [
@@ -124,6 +135,7 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
   const codecOutputFormat = Form.useWatch("output_format", form) as
     | CodecOutputFormat
     | undefined;
+  const mergeVideoInputPaths = Form.useWatch("input_paths", form) as string[] | undefined;
 
   const title = useMemo(() => {
     if (tool === "merge-ts") {
@@ -140,6 +152,15 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
         <Space size={8}>
           <SwapOutlined />
           <span>ts 转 mp4</span>
+        </Space>
+      );
+    }
+
+    if (tool === "merge-video") {
+      return (
+        <Space size={8}>
+          <MergeCellsOutlined />
+          <span>合并视频</span>
         </Space>
       );
     }
@@ -196,6 +217,9 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
       form.setFieldValue("video_codec", "h264");
       form.setFieldValue("audio_codec", "aac");
     }
+    if (tool === "merge-video") {
+      form.setFieldValue("merge_mode", "fast");
+    }
   }, [form, open, tool]);
 
   const handlePickInput = async () => {
@@ -215,6 +239,27 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
             ? buildMergedOutputPath(inputDir)
             : buildMultiTrackMp4OutputPath(inputDir)
         );
+      }
+      return;
+    }
+
+    if (tool === "merge-video") {
+      const selected = await pickDialogPath({
+        multiple: true,
+        directory: false,
+        filters: [
+          {
+            name: "视频文件",
+            extensions: ["mp4", "mkv", "mov", "webm", "avi", "wmv", "flv", "m4v", "ts"],
+          },
+        ],
+      });
+
+      if (!selected) return;
+      const inputPaths = Array.isArray(selected) ? selected : [selected as string];
+      form.setFieldValue("input_paths", inputPaths);
+      if (!form.getFieldValue("output_path")) {
+        form.setFieldValue("output_path", buildMergedVideoOutputPath(inputPaths));
       }
       return;
     }
@@ -272,6 +317,8 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
       filters:
         tool === "merge-ts"
           ? [{ name: "TS 文件", extensions: ["ts"] }]
+          : tool === "merge-video"
+            ? [{ name: "MP4 文件", extensions: ["mp4"] }]
           : tool === "codec-convert"
             ? [{ name: `${outputFormat.toUpperCase()} 文件`, extensions: [outputFormat] }]
           : tool === "format-convert"
@@ -306,6 +353,21 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
           savedPath === requestedOutput
             ? "mp4 已生成，原 ts 文件已保留"
             : `mp4 已生成，原 ts 文件已保留，已另存为 ${getPathName(savedPath)}`
+        );
+      } else if (tool === "merge-video") {
+        const inputPaths =
+          (form.getFieldValue("input_paths") as string[] | undefined) ?? [];
+        if (inputPaths.length < 2) {
+          message.error("请至少选择两个视频文件");
+          return;
+        }
+        const requestedOutput = values.output_path.trim();
+        const mergeMode = (values.merge_mode as MergeVideoMode | undefined) ?? "fast";
+        const savedPath = await mergeVideoFiles(inputPaths, requestedOutput, mergeMode);
+        message.success(
+          savedPath === requestedOutput
+            ? "视频已合并完成，原文件已保留"
+            : `视频已合并完成，原文件已保留，已另存为 ${getPathName(savedPath)}`
         );
       } else if (tool === "format-convert") {
         const requestedOutput = values.output_path.trim();
@@ -374,81 +436,149 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
       cancelText="取消"
       confirmLoading={submitting}
       destroyOnClose
-      width={tool === "analyze-media" ? 760 : 520}
+      width={tool === "analyze-media" ? 760 : tool === "merge-video" ? 720 : 520}
     >
       <Form form={form} layout="vertical">
-        <Form.Item
-          label={
-            tool === "merge-ts"
-              ? "TS 目录"
-              : tool === "ts-to-mp4"
-                ? "TS 文件"
-                : tool === "format-convert"
-                  ? "媒体文件"
-                  : tool === "codec-convert"
+        {tool === "merge-video" ? (
+          <Form.Item label="视频文件" required>
+            <Space direction="vertical" size={8} style={{ width: "100%" }}>
+              <Button icon={<FileOutlined />} onClick={() => void handlePickInput()}>
+                选择多个视频
+              </Button>
+              {(mergeVideoInputPaths ?? []).length > 0 ? (
+                <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                  {(mergeVideoInputPaths ?? []).map((path, index, list) => (
+                      <Space.Compact key={`${path}-${index}`} style={{ width: "100%" }}>
+                        <Input readOnly value={`${index + 1}. ${path}`} />
+                        <Button
+                          disabled={index === 0}
+                          icon={<ArrowUpOutlined />}
+                          onClick={() => {
+                            const next = [...list];
+                            [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                            form.setFieldValue("input_paths", next);
+                          }}
+                        />
+                        <Button
+                          disabled={index === list.length - 1}
+                          icon={<ArrowDownOutlined />}
+                          onClick={() => {
+                            const next = [...list];
+                            [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                            form.setFieldValue("input_paths", next);
+                          }}
+                        />
+                        <Button
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={() => {
+                            const next = list.filter((_, itemIndex) => itemIndex !== index);
+                            form.setFieldValue("input_paths", next);
+                          }}
+                        />
+                      </Space.Compact>
+                    )
+                  )}
+                </Space>
+              ) : (
+                <Input.TextArea
+                  readOnly
+                  autoSize={{ minRows: 4, maxRows: 6 }}
+                  placeholder="请选择至少两个待拼接的视频文件"
+                />
+              )}
+            </Space>
+          </Form.Item>
+        ) : (
+          <Form.Item
+            label={
+              tool === "merge-ts"
+                ? "TS 目录"
+                : tool === "ts-to-mp4"
+                  ? "TS 文件"
+                  : tool === "format-convert"
                     ? "媒体文件"
-                  : tool === "analyze-media"
-                    ? "视频文件"
-                    : "多轨 HLS 目录"
-          }
-          required
-        >
-          <Space.Compact style={{ width: "100%" }}>
-            <Form.Item
-              name="input_path"
-              noStyle
-              rules={[
-                {
-                  required: true,
-                  message:
-                    tool === "merge-ts"
-                      ? "请选择 TS 目录"
-                      : tool === "ts-to-mp4"
-                        ? "请选择 TS 文件"
-                        : tool === "format-convert"
-                          ? "请选择媒体文件"
-                          : tool === "codec-convert"
+                    : tool === "codec-convert"
+                      ? "媒体文件"
+                    : tool === "analyze-media"
+                      ? "视频文件"
+                      : "多轨 HLS 目录"
+            }
+            required
+          >
+            <Space.Compact style={{ width: "100%" }}>
+              <Form.Item
+                name="input_path"
+                noStyle
+                rules={[
+                  {
+                    required: true,
+                    message:
+                      tool === "merge-ts"
+                        ? "请选择 TS 目录"
+                        : tool === "ts-to-mp4"
+                          ? "请选择 TS 文件"
+                          : tool === "format-convert"
                             ? "请选择媒体文件"
+                            : tool === "codec-convert"
+                              ? "请选择媒体文件"
+                            : tool === "analyze-media"
+                              ? "请选择视频文件"
+                              : "请选择多轨 HLS 目录",
+                  },
+                ]}
+              >
+                <Input
+                  readOnly
+                  placeholder={
+                    tool === "merge-ts"
+                      ? "请选择包含 ts 切片的目录"
+                      : tool === "ts-to-mp4"
+                        ? "请选择待转换的 ts 文件"
+                        : tool === "format-convert"
+                          ? "请选择待转换的媒体文件"
+                          : tool === "codec-convert"
+                            ? "请选择待进行编码转换的媒体文件"
                           : tool === "analyze-media"
-                            ? "请选择视频文件"
-                            : "请选择多轨 HLS 目录",
-                },
-              ]}
-            >
-              <Input
-                readOnly
-                placeholder={
-                  tool === "merge-ts"
-                    ? "请选择包含 ts 切片的目录"
-                    : tool === "ts-to-mp4"
-                      ? "请选择待转换的 ts 文件"
-                      : tool === "format-convert"
-                        ? "请选择待转换的媒体文件"
-                        : tool === "codec-convert"
-                          ? "请选择待进行编码转换的媒体文件"
-                        : tool === "analyze-media"
-                          ? "请选择待分析的视频文件"
-                          : "请选择本应用生成的多轨 HLS 目录"
+                            ? "请选择待分析的视频文件"
+                            : "请选择本应用生成的多轨 HLS 目录"
+                  }
+                />
+              </Form.Item>
+              <Button
+                icon={
+                  tool === "ts-to-mp4" ||
+                  tool === "format-convert" ||
+                  tool === "codec-convert" ||
+                  tool === "analyze-media" ? (
+                    <FileOutlined />
+                  ) : (
+                    <FolderOpenOutlined />
+                  )
                 }
-              />
-            </Form.Item>
-            <Button
-              icon={
-                tool === "ts-to-mp4" ||
-                tool === "format-convert" ||
-                tool === "codec-convert" ||
-                tool === "analyze-media" ? (
-                  <FileOutlined />
-                ) : (
-                  <FolderOpenOutlined />
-                )
-              }
-              onClick={() => void handlePickInput()}
-            >
-              选择
-            </Button>
-          </Space.Compact>
-        </Form.Item>
+                onClick={() => void handlePickInput()}
+              >
+                选择
+              </Button>
+            </Space.Compact>
+          </Form.Item>
+        )}
+
+        {tool === "merge-video" && (
+          <Form.Item
+            label="合并模式"
+            name="merge_mode"
+            rules={[{ required: true, message: "请选择合并模式" }]}
+          >
+            <Radio.Group optionType="button" buttonStyle="solid">
+              {MERGE_VIDEO_MODE_OPTIONS.map((option) => (
+                <Radio.Button key={option.value} value={option.value}>
+                  {option.label}
+                </Radio.Button>
+              ))}
+            </Radio.Group>
+          </Form.Item>
+        )}
 
         {tool === "format-convert" && (
           <Form.Item
@@ -565,6 +695,11 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
         {tool === "ts-to-mp4" && (
           <Typography.Text type="secondary">
             该工具会保留原 ts 文件，只额外生成一个 mp4 文件。
+          </Typography.Text>
+        )}
+        {tool === "merge-video" && (
+          <Typography.Text type="secondary">
+            极速合并会尽量直接拼接，速度更快，但要求分辨率、编码和音频轨规格一致；兼容合并会统一规格后再拼接，适合不同分辨率的视频。
           </Typography.Text>
         )}
         {tool === "format-convert" && (
@@ -771,6 +906,18 @@ function buildMp4OutputPath(inputPath: string) {
     ? `${name.slice(0, -3)}.mp4`
     : `${name}.mp4`;
   return joinPath(dir, nextName);
+}
+
+function buildMergedVideoOutputPath(inputPaths: string[]) {
+  const firstInput = inputPaths[0];
+  if (!firstInput) {
+    return "merged.mp4";
+  }
+
+  const { dir, name } = splitPath(firstInput);
+  const dotIndex = name.lastIndexOf(".");
+  const baseName = dotIndex > 0 ? name.slice(0, dotIndex) : name;
+  return joinPath(dir, `${baseName || "merged"}-merged.mp4`);
 }
 
 function buildConvertedOutputPath(inputPath: string, targetFormat: ConvertFormat) {

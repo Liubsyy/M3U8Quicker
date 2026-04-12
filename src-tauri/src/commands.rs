@@ -1472,6 +1472,67 @@ pub async fn transcode_media_file(
 }
 
 #[tauri::command]
+pub async fn merge_video_files(
+    app_handle: AppHandle,
+    input_paths: Vec<String>,
+    output_path: String,
+    merge_mode: String,
+) -> Result<String, AppError> {
+    if input_paths.len() < 2 {
+        return Err(AppError::InvalidInput("请至少选择两个视频文件".to_string()));
+    }
+
+    let mut resolved_inputs = Vec::with_capacity(input_paths.len());
+    for input_path in input_paths {
+        let path = PathBuf::from(input_path.trim());
+        if path.as_os_str().is_empty() || !path.is_file() {
+            return Err(AppError::InvalidInput("请选择有效的视频文件".to_string()));
+        }
+        resolved_inputs.push(path);
+    }
+
+    let output_path = PathBuf::from(output_path.trim());
+    let merge_mode = merge_mode.trim().to_lowercase();
+    if output_path.as_os_str().is_empty() {
+        return Err(AppError::InvalidInput("输出文件不能为空".to_string()));
+    }
+    if !matches!(merge_mode.as_str(), "fast" | "compatible") {
+        return Err(AppError::InvalidInput("请选择有效的合并模式".to_string()));
+    }
+
+    let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
+    if !ffmpeg_enabled {
+        return Err(AppError::InvalidInput(
+            "FFmpeg 开关未开启，请先在设置 -> FFmpeg 中开启".to_string(),
+        ));
+    }
+    let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle)
+        .await
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "未检测到可用的 FFmpeg，请先在设置 -> FFmpeg 中配置或下载 FFmpeg".to_string(),
+            )
+        })?;
+
+    if let Some(parent) = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    let resolved_output_path = downloader::resolve_available_file_path(&output_path);
+    crate::ffmpeg::merge_video_files(
+        &ffmpeg_path,
+        &resolved_inputs,
+        &resolved_output_path,
+        &merge_mode,
+    )
+    .await?;
+    Ok(resolved_output_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 pub async fn convert_multi_track_hls_to_mp4_dir(
     app_handle: AppHandle,
     input_dir: String,
@@ -3157,7 +3218,9 @@ mod tests {
             resolve_chrome_extension_dir_from_candidates(vec![bundled_dir.clone(), dev_dir])
                 .expect("expected chrome extension dir");
 
-        assert_eq!(resolved, bundled_dir);
+        let expected =
+            normalize_path_for_platform(std::fs::canonicalize(&bundled_dir).unwrap_or(bundled_dir));
+        assert_eq!(resolved, expected);
         remove_temp_dir(&temp_root);
     }
 
@@ -3172,7 +3235,9 @@ mod tests {
             resolve_chrome_extension_dir_from_candidates(vec![missing_dir, dev_dir.clone()])
                 .expect("expected fallback chrome extension dir");
 
-        assert_eq!(resolved, dev_dir);
+        let expected =
+            normalize_path_for_platform(std::fs::canonicalize(&dev_dir).unwrap_or(dev_dir));
+        assert_eq!(resolved, expected);
         remove_temp_dir(&temp_root);
     }
 
