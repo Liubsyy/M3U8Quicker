@@ -24,8 +24,7 @@ pub struct AppState {
     pub ffmpeg_enabled: Arc<Mutex<bool>>,
     pub playback_server: Arc<RwLock<Option<PlaybackServerState>>>,
     pub playback_sessions: Arc<Mutex<HashMap<DownloadId, PlaybackSession>>>,
-    pub download_priorities:
-        Arc<Mutex<HashMap<DownloadId, Arc<DownloadPriorityState>>>>,
+    pub download_priorities: Arc<Mutex<HashMap<DownloadId, Arc<DownloadPriorityState>>>>,
     pub ffmpeg_path: Arc<Mutex<Option<String>>>,
 }
 

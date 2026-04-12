@@ -320,11 +320,9 @@ pub async fn inspect_hls_tracks(
             subtitle_tracks: Vec::new(),
             default_selection: HlsTrackSelection::default(),
         }),
-        m3u8_rs::Playlist::MasterPlaylist(master) => Ok(build_master_track_catalog(
-            &fetched.base_url,
-            &master,
-        )?
-        .inspection),
+        m3u8_rs::Playlist::MasterPlaylist(master) => {
+            Ok(build_master_track_catalog(&fetched.base_url, &master)?.inspection)
+        }
     }
 }
 
@@ -364,8 +362,10 @@ pub async fn prepare_hls_download(
                     AppError::InvalidInput("所选视频轨道不存在，请重新解析后再下载".to_string())
                 })?;
 
-            let available_audios =
-                tracks_for_group(&catalog.audios, selected_video.option.audio_group_id.as_deref());
+            let available_audios = tracks_for_group(
+                &catalog.audios,
+                selected_video.option.audio_group_id.as_deref(),
+            );
             let available_subtitles = tracks_for_group(
                 &catalog.subtitles,
                 selected_video.option.subtitle_group_id.as_deref(),
@@ -394,8 +394,10 @@ pub async fn prepare_hls_download(
                 let video_playlist =
                     fetch_media_playlist_following_variants(client, &selected_video.uri, headers)
                         .await?;
-                let mut segments =
-                    parse_media_playlist_segments(&video_playlist.base_url, &video_playlist.playlist)?;
+                let mut segments = parse_media_playlist_segments(
+                    &video_playlist.base_url,
+                    &video_playlist.playlist,
+                )?;
                 fetch_encryption_keys(client, &mut segments, headers).await?;
 
                 return Ok(PreparedHlsDownload::Single(PreparedSingleHlsDownload {
@@ -405,7 +407,8 @@ pub async fn prepare_hls_download(
             }
 
             let video_playlist =
-                fetch_media_playlist_following_variants(client, &selected_video.uri, headers).await?;
+                fetch_media_playlist_following_variants(client, &selected_video.uri, headers)
+                    .await?;
             let mut plan = build_bundle_track_plan(&video_playlist, "video")?;
 
             if let Some(selected_audio) = selected_audio {
@@ -464,10 +467,7 @@ async fn fetch_hls_playlist(
         AppError::InvalidInput("链接内容不是有效的 M3U8 播放列表，请检查地址是否正确".to_string())
     })?;
 
-    Ok(FetchedPlaylist {
-        base_url,
-        playlist,
-    })
+    Ok(FetchedPlaylist { base_url, playlist })
 }
 
 async fn fetch_media_playlist_following_variants(
@@ -835,10 +835,16 @@ impl BundleTrackPlanBuild {
     fn extend(&mut self, other: BundleTrackPlanBuild) {
         let next_index = self.entries.len();
         self.playlist_files.extend(other.playlist_files);
-        self.entries.extend(other.entries.into_iter().enumerate().map(|(offset, mut entry)| {
-            entry.index = next_index + offset;
-            entry
-        }));
+        self.entries.extend(
+            other
+                .entries
+                .into_iter()
+                .enumerate()
+                .map(|(offset, mut entry)| {
+                    entry.index = next_index + offset;
+                    entry
+                }),
+        );
     }
 }
 
@@ -2779,10 +2785,7 @@ async fn download_segment(
         request = request.header(header::RANGE, range_value);
     }
 
-    let response = request
-        .send()
-        .await?
-        .error_for_status()?;
+    let response = request.send().await?.error_for_status()?;
 
     let mut stream = response.bytes_stream();
     let mut output = tokio::fs::File::create(&part_path).await?;
@@ -3374,7 +3377,10 @@ high/index.m3u8
             Some(catalog.inspection.audio_tracks[1].id.clone())
         );
         assert_eq!(catalog.inspection.default_selection.subtitle_id, None);
-        assert_eq!(catalog.inspection.video_tracks[0].resolution.as_deref(), Some("1280x720"));
+        assert_eq!(
+            catalog.inspection.video_tracks[0].resolution.as_deref(),
+            Some("1280x720")
+        );
     }
 
     #[test]
@@ -3414,11 +3420,9 @@ seg-2.m4s
             plan.entries[1].relative_path,
             PathBuf::from("video").join("seg_000001.m4s")
         );
-        assert!(
-            plan.playlist_files[0]
-                .content
-                .contains("#EXT-X-MAP:URI=\"init_000001.mp4\"")
-        );
+        assert!(plan.playlist_files[0]
+            .content
+            .contains("#EXT-X-MAP:URI=\"init_000001.mp4\""));
         assert!(plan.playlist_files[0].content.contains("seg_000001.m4s"));
         assert!(plan.playlist_files[0].content.contains("seg_000002.m4s"));
     }
