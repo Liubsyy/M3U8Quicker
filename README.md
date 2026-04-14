@@ -33,15 +33,19 @@
 
 可在 GitHub Releases 页面下载对应的桌面安装包或发行文件，常见安装文件与平台对应关系如下：
 
-| 文件类型 / 文件名示例 | 适用平台 | 说明 |
-| --- | --- | --- |
-| `M3U8.Quicker_xxx_x64-setup.exe` | Windows 64 位 | 推荐，大多数 Windows 电脑使用这个安装包 |
-| `M3U8.Quicker_xxx_x86-setup.exe` | Windows 32 位 | 仅旧版 32 位 Windows 需要 |
-| `M3U8.Quicker_xxx_aarch64.dmg` | macOS Apple Silicon | 适用于 M1 / M2 / M3 等 ARM 芯片 Mac |
-| `M3U8.Quicker_xxx_x64.dmg` | macOS Intel | 适用于 Intel 芯片 Mac |
-| `M3U8.Quicker_xxx_amd64.AppImage` | Linux x64 | 免安装，赋予执行权限后可直接运行 |
-| `M3U8.Quicker_xxx_amd64.deb` | Debian / Ubuntu 系 | 适用于 `Ubuntu`、`Debian`、`Linux Mint` 等 |
-| `M3U8.Quicker_xxx_x86_64.rpm` | RPM 系 Linux | 适用于 `Fedora`、`RHEL`、`CentOS Stream`、`openSUSE` 等 |
+| 文件类型 | 文件名示例 | 适用平台 | 说明 |
+| --- | --- | --- | --- |
+| Windows 安装包 | `M3U8.Quicker_xxx_windows_x64-setup.exe` | Windows 64 位 | 推荐，大多数 Windows 电脑使用这个安装包 |
+| Windows 便携包 | `M3U8.Quicker_xxx_windows_x64.zip` | Windows 64 位 | 免安装，解压后可直接运行 |
+| Windows 安装包 | `M3U8.Quicker_xxx_windows_x86-setup.exe` | Windows 32 位 | 仅旧版 32 位 Windows 需要 |
+| Windows 便携包 | `M3U8.Quicker_xxx_windows_x86.zip` | Windows 32 位 | 仅旧版 32 位 Windows 需要，解压后可直接运行 |
+| macOS 磁盘镜像 | `M3U8.Quicker_xxx_macos_aarch64.dmg` | macOS Apple Silicon | 适用于 M1 / M2 / M3 等 ARM 芯片 Mac |
+| macOS 应用包压缩文件 | `M3U8.Quicker_xxx_macos_aarch64.app.tar.gz` | macOS Apple Silicon | 解压后得到 `.app` 应用包，适合手动分发或自行拷贝到“应用程序”目录 |
+| macOS 磁盘镜像 | `M3U8.Quicker_xxx_macos_x64.dmg` | macOS Intel | 适用于 Intel 芯片 Mac |
+| macOS 应用包压缩文件 | `M3U8.Quicker_xxx_macos_x64.app.tar.gz` | macOS Intel | 解压后得到 `.app` 应用包，适合手动分发或自行拷贝到“应用程序”目录 |
+| Linux AppImage | `M3U8.Quicker_xxx_linux_amd64.AppImage` | Linux x64 | 免安装，赋予执行权限后可直接运行 |
+| Linux DEB 安装包 | `M3U8.Quicker_xxx_linux_amd64.deb` | Debian / Ubuntu 系 | 适用于 `Ubuntu`、`Debian`、`Linux Mint` 等 |
+| Linux RPM 安装包 | `M3U8.Quicker_xxx_linux_x86_64.rpm` | RPM 系 Linux | 适用于 `Fedora`、`RHEL`、`CentOS Stream`、`openSUSE` 等 |
 
 macOS 首次安装时如果遇到“无法打开”或“应用已损坏”之类的权限提示，可按下面方式处理：
 

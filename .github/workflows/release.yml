@@ -26,14 +26,29 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
+            os_name: windows
+            arch: x64
+            target: ""
             args: --config src-tauri/tauri.windows.conf.json
           - platform: windows-latest
+            os_name: windows
+            arch: x86
+            target: i686-pc-windows-msvc
             args: --target i686-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
           - platform: macos-latest
-            args: --target aarch64-apple-darwin --bundles dmg
+            os_name: macos
+            arch: aarch64
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles app,dmg
           - platform: macos-latest
-            args: --target x86_64-apple-darwin --bundles dmg
+            os_name: macos
+            arch: x64
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles app,dmg
           - platform: ubuntu-22.04
+            os_name: linux
+            arch: amd64
+            target: ""
             args: --bundles appimage,deb,rpm
 
     runs-on: ${{ matrix.platform }}
@@ -85,5 +100,63 @@ jobs:
           tagName: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
           releaseDraft: false
           prerelease: ${{ github.event.release.prerelease || false }}
-          releaseAssetNamePattern: "[name]_[version]_[arch][_setup][ext]"
+          assetNamePattern: "[name]_[version]_${{ matrix.os_name }}_[arch][_setup][ext]"
           args: ${{ matrix.args }}
+
+      - name: Resolve portable archive metadata
+        if: matrix.os_name == 'windows'
+        id: portable-meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          product_name="$(sed -nE 's/.*"productName": "([^"]+)".*/\1/p' src-tauri/tauri.conf.json | head -n 1)"
+          asset_name_prefix="${product_name// /.}"
+          version="$(sed -nE 's/^version = "([^"]+)".*/\1/p' src-tauri/Cargo.toml | head -n 1)"
+          target_dir="src-tauri/target"
+
+          if [ -n "${{ matrix.target }}" ]; then
+            target_dir="${target_dir}/${{ matrix.target }}/release"
+          else
+            target_dir="${target_dir}/release"
+          fi
+
+          echo "target_dir=${target_dir}" >> "$GITHUB_OUTPUT"
+          echo "asset_base=${asset_name_prefix}_${version}_${{ matrix.os_name }}_${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Windows portable archive
+        if: matrix.os_name == 'windows'
+        id: portable-windows
+        shell: pwsh
+        run: |
+          $targetDir = "${{ steps.portable-meta.outputs.target_dir }}"
+          $stageRoot = Join-Path $env:RUNNER_TEMP "portable"
+          $packageDir = Join-Path $stageRoot "${{ steps.portable-meta.outputs.asset_base }}"
+          $excludeNames = @(".fingerprint", "build", "bundle", "deps", "examples", "incremental")
+
+          if (-not (Test-Path $targetDir)) {
+            Write-Error "Target directory not found: $targetDir"
+          }
+
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+
+          Get-ChildItem -LiteralPath $targetDir | Where-Object { $excludeNames -notcontains $_.Name -and $_.Extension -ne ".pdb" } | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $packageDir $_.Name) -Recurse -Force
+          }
+
+          $archivePath = Join-Path $stageRoot "${{ steps.portable-meta.outputs.asset_base }}.zip"
+          if (Test-Path $archivePath) {
+            Remove-Item -LiteralPath $archivePath -Force
+          }
+
+          Compress-Archive -LiteralPath $packageDir -DestinationPath $archivePath -Force
+          "archive_path=$archivePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload Windows portable archive
+        if: matrix.os_name == 'windows'
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
+          files: ${{ steps.portable-windows.outputs.archive_path }}
