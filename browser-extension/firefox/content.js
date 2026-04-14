@@ -7,6 +7,7 @@
   const PANEL_ID = "m3u8quicker-download-panel";
   const ROOT_HOST_ID = "m3u8quicker-root-host";
   const APP_DEEP_LINK_BASE_URL = "m3u8quicker://new-task";
+  const APP_BATCH_DEEP_LINK_BASE_URL = "m3u8quicker://batch-download";
   const CHECK_PATTERN = /(png|image|ts|jpg|mp4|jpeg|EXTINF)/i;
   const BUTTON_LABEL = "M3U8 Quicker";
   const BUTTON_ICON_URL = browser.runtime.getURL("icon.png");
@@ -301,6 +302,9 @@
     panel.style.boxShadow = "0 18px 45px rgba(15, 33, 62, 0.18)";
     panel.style.pointerEvents = "auto";
 
+    const selectedUrls = new Set();
+    const panelItems = buildTargetsWithUniqueNames(detectedTargets);
+
     const header = document.createElement("div");
     header.style.display = "flex";
     header.style.alignItems = "center";
@@ -315,6 +319,40 @@
     title.style.fontWeight = "700";
     title.style.flex = "1";
 
+    const headerActions = document.createElement("div");
+    headerActions.style.display = "flex";
+    headerActions.style.alignItems = "center";
+    headerActions.style.gap = "6px";
+    const selectionInputs = [];
+
+    const createTextActionButton = (text) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = text;
+      button.style.border = "none";
+      button.style.background = "transparent";
+      button.style.color = "#5b718b";
+      button.style.fontSize = "12px";
+      button.style.cursor = "pointer";
+      button.style.padding = "2px 4px";
+      return button;
+    };
+
+    const selectAllButton = createTextActionButton("全选");
+    const clearSelectionButton = createTextActionButton("清空");
+
+    const batchButton = document.createElement("button");
+    batchButton.type = "button";
+    batchButton.textContent = "批量下载";
+    batchButton.style.border = "1px solid rgba(17, 85, 204, 0.18)";
+    batchButton.style.background = "#f2f7ff";
+    batchButton.style.color = "#1155cc";
+    batchButton.style.fontSize = "12px";
+    batchButton.style.fontWeight = "600";
+    batchButton.style.cursor = "pointer";
+    batchButton.style.padding = "4px 8px";
+    batchButton.style.borderRadius = "999px";
+
     const closeButton = document.createElement("button");
     closeButton.type = "button";
     closeButton.textContent = "关闭";
@@ -328,36 +366,129 @@
       panel.remove();
     });
 
+    const updateBatchButtonState = () => {
+      const checkedCount = selectedUrls.size;
+      batchButton.textContent = checkedCount > 0 ? `批量下载 (${checkedCount})` : "批量下载";
+      batchButton.disabled = checkedCount === 0;
+      batchButton.style.opacity = checkedCount > 0 ? "1" : "0.45";
+      batchButton.style.cursor = checkedCount > 0 ? "pointer" : "not-allowed";
+    };
+
+    selectAllButton.addEventListener("click", () => {
+      detectedTargets.forEach((item) => selectedUrls.add(item.url));
+      selectionInputs.forEach((input) => {
+        input.checked = true;
+      });
+      updateBatchButtonState();
+    });
+
+    clearSelectionButton.addEventListener("click", () => {
+      selectedUrls.clear();
+      selectionInputs.forEach((input) => {
+        input.checked = false;
+      });
+      updateBatchButtonState();
+    });
+
+    batchButton.addEventListener("click", () => {
+      if (selectedUrls.size === 0) {
+        return;
+      }
+
+      openBatchDownloader(
+        panelItems.filter((item) => selectedUrls.has(item.url))
+      );
+      panel.remove();
+    });
+
     header.appendChild(title);
-    header.appendChild(closeButton);
+    headerActions.appendChild(selectAllButton);
+    headerActions.appendChild(clearSelectionButton);
+    headerActions.appendChild(batchButton);
+    headerActions.appendChild(closeButton);
+    header.appendChild(headerActions);
     panel.appendChild(header);
 
-    detectedTargets.forEach((item) => {
-      const entry = document.createElement("button");
-      entry.type = "button";
-      entry.textContent = item.fileName;
-      entry.title = item.url;
-      entry.style.display = "block";
-      entry.style.width = "100%";
+    panelItems.forEach((item) => {
+      const entry = document.createElement("div");
+      entry.style.display = "flex";
+      entry.style.alignItems = "flex-start";
+      entry.style.gap = "8px";
       entry.style.marginTop = "6px";
       entry.style.padding = "10px 12px";
       entry.style.border = "1px solid #d8e2f1";
       entry.style.borderRadius = "10px";
       entry.style.background = "#f7fbff";
-      entry.style.color = "#17324d";
-      entry.style.textAlign = "left";
-      entry.style.lineHeight = "1.45";
-      entry.style.whiteSpace = "normal";
-      entry.style.wordBreak = "break-word";
-      entry.style.overflowWrap = "anywhere";
-      entry.style.cursor = "pointer";
-      entry.addEventListener("click", () => {
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = false;
+      checkbox.style.margin = "3px 0 0";
+      checkbox.style.cursor = "pointer";
+      selectionInputs.push(checkbox);
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) {
+          selectedUrls.add(item.url);
+        } else {
+          selectedUrls.delete(item.url);
+        }
+        updateBatchButtonState();
+      });
+
+      const content = document.createElement("button");
+      content.type = "button";
+      content.title = item.url;
+      content.style.flex = "1";
+      content.style.border = "none";
+      content.style.padding = "0";
+      content.style.background = "transparent";
+      content.style.color = "#17324d";
+      content.style.textAlign = "left";
+      content.style.lineHeight = "1.45";
+      content.style.whiteSpace = "normal";
+      content.style.wordBreak = "break-word";
+      content.style.overflowWrap = "anywhere";
+      content.style.cursor = "pointer";
+      content.addEventListener("click", () => {
         openDownloader(item.url, item.fileType || "hls");
         panel.remove();
       });
+
+      const name = document.createElement("div");
+      name.textContent = item.displayName;
+      name.style.fontSize = "13px";
+      name.style.fontWeight = "600";
+      name.style.color = "#17324d";
+
+      content.appendChild(name);
+
+      const copyButton = document.createElement("button");
+      copyButton.type = "button";
+      copyButton.textContent = "复制地址";
+      copyButton.style.border = "none";
+      copyButton.style.background = "transparent";
+      copyButton.style.color = "#1155cc";
+      copyButton.style.fontSize = "12px";
+      copyButton.style.cursor = "pointer";
+      copyButton.style.padding = "2px 4px";
+      copyButton.style.flex = "0 0 auto";
+      copyButton.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const copied = await copyTextToClipboard(item.url);
+        const originalText = copyButton.textContent;
+        copyButton.textContent = copied ? "已复制" : "失败";
+        window.setTimeout(() => {
+          copyButton.textContent = originalText;
+        }, 1200);
+      });
+
+      entry.appendChild(checkbox);
+      entry.appendChild(content);
+      entry.appendChild(copyButton);
       panel.appendChild(entry);
     });
 
+    updateBatchButtonState();
     getUiRoot().appendChild(panel);
   }
 
@@ -378,6 +509,110 @@
 
     const url = `${APP_DEEP_LINK_BASE_URL}?${params.toString()}`;
     window.location.href = url;
+  }
+
+  function openBatchDownloader(items) {
+    if (!items || items.length === 0) {
+      return;
+    }
+
+    const params = new URLSearchParams({
+      items: items.map((item) => item.batchUrl || item.url).join("\n")
+    });
+    const extraHeaders = buildExtraHeaders();
+    if (extraHeaders) {
+      params.set("extra_headers", extraHeaders);
+    }
+
+    window.location.href = `${APP_BATCH_DEEP_LINK_BASE_URL}?${params.toString()}`;
+  }
+
+  function buildTargetsWithUniqueNames(items) {
+    const totals = new Map();
+    items.forEach((item) => {
+      const key = String(item.fileName || "").toLowerCase();
+      if (!key) {
+        return;
+      }
+      totals.set(key, (totals.get(key) || 0) + 1);
+    });
+
+    const indexes = new Map();
+    return items.map((item) => {
+      const fileName = item.fileName || "video";
+      const key = fileName.toLowerCase();
+      const total = totals.get(key) || 0;
+      if (total <= 1) {
+        return {
+          ...item,
+          displayName: fileName,
+          batchUrl: item.url
+        };
+      }
+
+      const nextIndex = (indexes.get(key) || 0) + 1;
+      indexes.set(key, nextIndex);
+      const displayName = appendNameIndex(fileName, nextIndex);
+      const originalTitle = getCurrentTitleFromUrl(item.url) || fileName;
+      return {
+        ...item,
+        displayName,
+        batchUrl: appendCustomTitle(item.url, appendNameIndex(originalTitle, nextIndex))
+      };
+    });
+  }
+
+  function appendNameIndex(fileName, index) {
+    const match = String(fileName).match(/^(.*?)(\.[^./\\]+)?$/);
+    const baseName = match && match[1] ? match[1] : String(fileName);
+    const extension = match && match[2] ? match[2] : "";
+    return `${baseName}-${index}${extension}`;
+  }
+
+  function getCurrentTitleFromUrl(url) {
+    try {
+      const urlObj = new URL(url, window.location.href);
+      return urlObj.searchParams.get("title") || "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function appendCustomTitle(url, title) {
+    try {
+      const urlObj = new URL(url, window.location.href);
+      urlObj.searchParams.set("title", title);
+      return urlObj.href;
+    } catch (error) {
+      return url;
+    }
+  }
+
+  async function copyTextToClipboard(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (error) {
+      console.debug("[m3u8quicker] clipboard api failed", error);
+    }
+
+    try {
+      const input = document.createElement("textarea");
+      input.value = text;
+      input.setAttribute("readonly", "readonly");
+      input.style.position = "fixed";
+      input.style.top = "-9999px";
+      document.body.appendChild(input);
+      input.select();
+      const copied = document.execCommand("copy");
+      document.body.removeChild(input);
+      return copied;
+    } catch (error) {
+      console.debug("[m3u8quicker] execCommand copy failed", error);
+      return false;
+    }
   }
 
   function buildExtraHeaders() {

@@ -24,6 +24,9 @@ const { TextArea } = Input;
 
 interface BatchDownloadModalProps {
   open: boolean;
+  initialRawInput?: string;
+  initialExtraHeaders?: string;
+  resetKey?: number;
   onClose: () => void;
   onSubmit: (params: CreateDownloadParams) => Promise<void>;
 }
@@ -34,6 +37,7 @@ interface ParsedBatchItem {
   rawLine: string;
   url: string;
   filename?: string;
+  filenameEdited?: boolean;
   mode: "hls" | "direct";
   fileType: CreateDownloadParams["file_type"];
   valid: boolean;
@@ -42,6 +46,9 @@ interface ParsedBatchItem {
 
 export function BatchDownloadModal({
   open,
+  initialRawInput,
+  initialExtraHeaders,
+  resetKey,
   onClose,
   onSubmit,
 }: BatchDownloadModalProps) {
@@ -57,10 +64,10 @@ export function BatchDownloadModal({
     }
 
     void getDefaultDownloadDir().then(setOutputDir);
-    setRawInput("");
-    setExtraHeaders("");
-    setParsedItems([]);
-  }, [open]);
+    setRawInput(initialRawInput || "");
+    setExtraHeaders(initialExtraHeaders || "");
+    setParsedItems(parseBatchInput(initialRawInput || ""));
+  }, [initialExtraHeaders, initialRawInput, open, resetKey]);
 
   useEffect(() => {
     setParsedItems(parseBatchInput(rawInput));
@@ -84,10 +91,20 @@ export function BatchDownloadModal({
     await setDefaultDownloadDir(selectedPath);
   };
 
-  const updateParsedItem = (key: string, patch: Partial<ParsedBatchItem>) => {
+  const updateParsedItem = (
+    key: string,
+    patch:
+      | Partial<ParsedBatchItem>
+      | ((current: ParsedBatchItem) => Partial<ParsedBatchItem>)
+  ) => {
     setParsedItems((prev) =>
       prev.map((item) =>
-        item.key === key ? normalizeParsedItem({ ...item, ...patch }) : item
+        item.key === key
+          ? normalizeParsedItem({
+              ...item,
+              ...(typeof patch === "function" ? patch(item) : patch),
+            })
+          : item
       )
     );
   };
@@ -225,11 +242,12 @@ export function BatchDownloadModal({
                           value={value}
                           onChange={(event) => {
                             const nextUrl = event.target.value;
-                            updateParsedItem(record.key, {
+                            updateParsedItem(record.key, (current) => ({
                               url: nextUrl,
-                              filename:
-                                record.filename || deriveFilenameFromUrl(nextUrl) || undefined,
-                            });
+                              filename: current.filenameEdited
+                                ? current.filename
+                                : deriveFilenameFromUrl(nextUrl) || undefined,
+                            }));
                           }}
                         />
                         {!record.valid ? (
@@ -251,6 +269,7 @@ export function BatchDownloadModal({
                         onChange={(event) =>
                           updateParsedItem(record.key, {
                             filename: event.target.value || undefined,
+                            filenameEdited: Boolean(event.target.value.trim()),
                           })
                         }
                       />
@@ -328,10 +347,9 @@ function parseBatchInput(rawInput: string): ParsedBatchItem[] {
 }
 
 function parseBatchLine(rawLine: string, lineNumber: number): ParsedBatchItem {
-  const { url: rawUrl, filename: rawFilename } = extractUrlAndFilename(rawLine.trim());
-  const url = rawUrl.trim() || rawLine.trim();
+  const url = rawLine.trim();
   const directFileType = inferDirectFileTypeFromUrl(url);
-  const filename = normalizeBatchFilename(rawFilename) || deriveFilenameFromUrl(url) || undefined;
+  const filename = deriveFilenameFromUrl(url) || undefined;
 
   return normalizeParsedItem({
     key: `batch-${lineNumber}`,
@@ -339,33 +357,11 @@ function parseBatchLine(rawLine: string, lineNumber: number): ParsedBatchItem {
     rawLine,
     url,
     filename,
+    filenameEdited: false,
     mode: directFileType ? "direct" : "hls",
     fileType: directFileType ?? "hls",
     valid: true,
   });
-}
-
-function extractUrlAndFilename(rawLine: string) {
-  const urlMatch = rawLine.match(/https?:\/\/\S+/i);
-  if (!urlMatch || urlMatch.index === undefined) {
-    return {
-      url: rawLine,
-      filename: "",
-    };
-  }
-
-  const rawUrl = urlMatch[0].replace(/[，,;；]+$/g, "");
-  const before = rawLine.slice(0, urlMatch.index);
-  const after = rawLine.slice(urlMatch.index + urlMatch[0].length);
-  const filename = [before, after]
-    .join(" ")
-    .replace(/[\t|,，;；]+/g, " ")
-    .trim();
-
-  return {
-    url: rawUrl,
-    filename,
-  };
 }
 
 function normalizeParsedItem(item: ParsedBatchItem): ParsedBatchItem {
@@ -424,38 +420,6 @@ function normalizeParsedItem(item: ParsedBatchItem): ParsedBatchItem {
   };
 }
 
-function normalizeBatchFilename(name: string) {
-  const trimmed = name.trim();
-  if (!trimmed) {
-    return "";
-  }
-
-  const sanitized = Array.from(trimmed)
-    .map((char) =>
-      /[<>:"/\\|?*]/.test(char) || char.charCodeAt(0) <= 0x1f ? "_" : char
-    )
-    .join("")
-    .replace(/^\.+|\.+$/g, "")
-    .trim();
-
-  if (!sanitized) {
-    return "";
-  }
-
-  const lower = sanitized.toLowerCase();
-  if (lower.endsWith(".m3u8")) {
-    return sanitized.slice(0, -5);
-  }
-
-  const knownSuffixes = [".mp4", ".mkv", ".avi", ".wmv", ".flv", ".webm", ".mov", ".rmvb"];
-  for (const suffix of knownSuffixes) {
-    if (lower.endsWith(suffix)) {
-      return sanitized.slice(0, -suffix.length);
-    }
-  }
-
-  return sanitized;
-}
 
 function formatBatchCreateError(error: unknown) {
   const text = String(error ?? "").trim();

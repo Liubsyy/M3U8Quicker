@@ -51,6 +51,12 @@ interface DownloadDraft {
   nonce: number;
 }
 
+interface BatchDownloadDraft {
+  rawInput: string;
+  extraHeaders?: string;
+  nonce: number;
+}
+
 interface AppProps {
   themeMode: ThemeMode;
   onThemeModeChange: (mode: ThemeMode) => void;
@@ -96,6 +102,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
   const [toolModalOpen, setToolModalOpen] = useState(false);
   const [activeTool, setActiveTool] = useState<ToolAction | null>(null);
   const [downloadDraft, setDownloadDraft] = useState<DownloadDraft | null>(null);
+  const [batchDownloadDraft, setBatchDownloadDraft] = useState<BatchDownloadDraft | null>(null);
   const [batchDownloadModalOpen, setBatchDownloadModalOpen] = useState(false);
   const [chromiumInstallGuide, setChromiumInstallGuide] =
     useState<ChromiumInstallGuideState | null>(null);
@@ -131,16 +138,26 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     let disposed = false;
 
     const openDraftFromDeepLink = (deepLink: string) => {
-      const draft = parseDownloadDraft(deepLink);
-      if (!draft) {
+      const singleDraft = parseDownloadDraft(deepLink);
+      if (singleDraft) {
+        setDownloadDraft({
+          ...singleDraft,
+          nonce: Date.now(),
+        });
+        setModalOpen(true);
         return;
       }
 
-      setDownloadDraft({
-        ...draft,
+      const batchDraft = parseBatchDownloadDraft(deepLink);
+      if (!batchDraft) {
+        return;
+      }
+
+      setBatchDownloadDraft({
+        ...batchDraft,
         nonce: Date.now(),
       });
-      setModalOpen(true);
+      setBatchDownloadModalOpen(true);
     };
 
     const initDeepLink = async () => {
@@ -387,6 +404,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
             setModalOpen(true);
           }}
           onOpenBatchDownload={() => {
+            setBatchDownloadDraft(null);
             setBatchDownloadModalOpen(true);
           }}
           onOpenTool={(tool) => {
@@ -455,7 +473,13 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
       />
       <BatchDownloadModal
         open={batchDownloadModalOpen}
-        onClose={() => setBatchDownloadModalOpen(false)}
+        initialRawInput={batchDownloadDraft?.rawInput}
+        initialExtraHeaders={batchDownloadDraft?.extraHeaders}
+        resetKey={batchDownloadDraft?.nonce ?? 0}
+        onClose={() => {
+          setBatchDownloadModalOpen(false);
+          setBatchDownloadDraft(null);
+        }}
         onSubmit={async (params) => {
           await addDownload(params);
         }}
@@ -918,6 +942,29 @@ function parseDownloadDraft(deepLink: string): Omit<DownloadDraft, "nonce"> | nu
     return { url, extraHeaders, fileType };
   } catch (error) {
     console.debug("[m3u8quicker] failed to parse deep link", deepLink, error);
+    return null;
+  }
+}
+
+function parseBatchDownloadDraft(
+  deepLink: string
+): Omit<BatchDownloadDraft, "nonce"> | null {
+  try {
+    const parsed = new URL(deepLink);
+    const action = (parsed.hostname || parsed.pathname.replace(/^\/+/, "")).toLowerCase();
+    if (action !== "batch-download") {
+      return null;
+    }
+
+    const rawInput = (parsed.searchParams.get("items") || "").trim();
+    if (!rawInput) {
+      return null;
+    }
+
+    const extraHeaders = parsed.searchParams.get("extra_headers")?.trim() || undefined;
+    return { rawInput, extraHeaders };
+  } catch (error) {
+    console.debug("[m3u8quicker] failed to parse batch deep link", deepLink, error);
     return null;
   }
 }
