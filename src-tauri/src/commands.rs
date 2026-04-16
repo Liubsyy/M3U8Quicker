@@ -1224,6 +1224,12 @@ pub async fn open_file_location(path: String) -> Result<(), AppError> {
 }
 
 #[tauri::command]
+pub async fn open_url(url: String) -> Result<(), AppError> {
+    open::that(&url).map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn install_chromium_extension(
     app_handle: AppHandle,
     browser: ChromiumBrowser,
@@ -2247,9 +2253,6 @@ async fn start_download_worker(
             }
         }
 
-        if let Some(progress) = progress_to_emit {
-            let _ = app_handle.emit("download-progress", &progress);
-        }
         if should_save {
             let task = {
                 let downloads = state_downloads.lock().await;
@@ -2263,6 +2266,9 @@ async fn start_download_worker(
         if remove_from_runtime {
             let mut downloads = state_downloads.lock().await;
             downloads.remove(&task_id);
+        }
+        if let Some(progress) = progress_to_emit {
+            let _ = app_handle.emit("download-progress", &progress);
         }
 
         let final_status = {
@@ -2404,9 +2410,6 @@ async fn start_hls_bundle_download_worker(
             }
         }
 
-        if let Some(progress) = progress_to_emit {
-            let _ = app_handle.emit("download-progress", &progress);
-        }
         if should_save {
             let task = {
                 let downloads = state_downloads.lock().await;
@@ -2420,6 +2423,9 @@ async fn start_hls_bundle_download_worker(
         if remove_from_runtime {
             let mut downloads = state_downloads.lock().await;
             downloads.remove(&task_id);
+        }
+        if let Some(progress) = progress_to_emit {
+            let _ = app_handle.emit("download-progress", &progress);
         }
 
         let final_status = {

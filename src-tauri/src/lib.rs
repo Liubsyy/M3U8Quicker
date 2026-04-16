@@ -2,6 +2,7 @@ mod commands;
 mod downloader;
 mod error;
 mod ffmpeg;
+mod fix_path;
 mod models;
 mod persistence;
 mod playback;
@@ -17,6 +18,10 @@ use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 修复 macOS/Linux GUI 应用不继承用户 shell PATH 的问题，
+    // 使通过包管理器（如 Homebrew）安装的 ffmpeg 等命令可被检测到。
+    let _ = fix_path::fix();
+
     let download_dir = dirs::download_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap().join("Downloads"))
         .to_string_lossy()
@@ -138,6 +143,7 @@ pub fn run() {
             commands::set_download_speed_limit,
             commands::set_download_output_settings,
             commands::open_file_location,
+            commands::open_url,
             commands::install_chromium_extension,
             commands::open_chromium_extensions_page,
             commands::install_firefox_extension,

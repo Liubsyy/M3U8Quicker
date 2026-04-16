@@ -34,6 +34,7 @@ bytes = "1"
 h264-reader = "0.8"
 mp4 = "0.14"
 ffmpeg-sidecar = "2"
+strip-ansi-escapes = "0.2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

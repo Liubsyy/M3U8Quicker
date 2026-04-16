@@ -282,3 +282,7 @@ export async function setFfmpegPath(
 export async function setFfmpegEnabled(enabled: boolean): Promise<void> {
   return invoke("set_ffmpeg_enabled", { enabled });
 }
+
+export async function openUrl(url: string): Promise<void> {
+  return invoke("open_url", { url });
+}

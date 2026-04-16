@@ -2,9 +2,9 @@ import { Button, Dropdown, Space, Typography, theme } from "antd";
 import {
   ApartmentOutlined,
   ChromeOutlined,
-  ControlOutlined,
+  RetweetOutlined,
   DeploymentUnitOutlined,
-  DownloadOutlined,
+  PlusSquareOutlined,
   FileSyncOutlined,
   FileSearchOutlined,
   GlobalOutlined,
@@ -39,7 +39,7 @@ export function Toolbar({
     {
       key: "batch-download",
       label: "批量下载",
-      icon: <DownloadOutlined />,
+      icon: <PlusSquareOutlined />,
     },
   ];
   const toolItems: MenuProps["items"] = [
@@ -76,7 +76,7 @@ export function Toolbar({
         {
           key: "codec-convert",
           label: "编码转换",
-          icon: <ControlOutlined />,
+          icon: <RetweetOutlined />,
         },
         {
           key: "merge-video",
@@ -130,26 +130,30 @@ export function Toolbar({
         </Typography.Title>
       </Space>
       <Space>
-        <Space.Compact className="toolbar-download-actions">
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={onNewDownload}
-            className="toolbar-download-main-btn"
-          >
-            新建下载
-          </Button>
-          <Dropdown
-            menu={{
-              items: newDownloadItems,
-              onClick: ({ key }) => {
-                if (key === "batch-download") {
-                  onOpenBatchDownload();
-                }
-              },
-            }}
-            trigger={["click"]}
-          >
+        <Dropdown
+          menu={{
+            items: newDownloadItems,
+            onClick: ({ key }) => {
+              if (key === "batch-download") {
+                onOpenBatchDownload();
+              }
+            },
+          }}
+          trigger={["click"]}
+          placement="bottomLeft"
+        >
+          <Space.Compact className="toolbar-download-actions">
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={(e) => {
+                e.stopPropagation();
+                onNewDownload();
+              }}
+              className="toolbar-download-main-btn"
+            >
+              新建下载
+            </Button>
             <Button
               type="primary"
               aria-label="更多下载方式"
@@ -157,8 +161,8 @@ export function Toolbar({
             >
               <DownOutlined style={{ fontSize: 12 }} />
             </Button>
-          </Dropdown>
-        </Space.Compact>
+          </Space.Compact>
+        </Dropdown>
         <Dropdown
           menu={{
             items: toolItems,

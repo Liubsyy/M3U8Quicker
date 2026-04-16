@@ -990,27 +990,26 @@ fn update_encryption_state(
         return Ok(());
     };
 
-    match key.method {
-        m3u8_rs::KeyMethod::AES128 => {
-            let key_uri = key
-                .uri
-                .as_ref()
-                .ok_or_else(|| AppError::M3u8Parse("AES-128 key missing URI".into()))?;
-            *current_key = Some(ParsedEncryptionState {
-                method: "AES-128".to_string(),
-                key_uri: resolve_url(base_url, key_uri),
-                iv: key.iv.clone(),
-            });
-        }
-        m3u8_rs::KeyMethod::None => {
-            *current_key = None;
-        }
-        _ => {
-            return Err(AppError::M3u8Parse(format!(
-                "Unsupported encryption method: {:?}",
-                key.method
-            )));
-        }
+    if key.method == m3u8_rs::KeyMethod::None {
+        *current_key = None;
+    } else if is_aes_cbc_method(&key.method) {
+        let method_name = key.method.to_string();
+        let key_uri = key
+            .uri
+            .as_ref()
+            .ok_or_else(|| {
+                AppError::M3u8Parse(format!("{} key missing URI", method_name))
+            })?;
+        *current_key = Some(ParsedEncryptionState {
+            method: method_name,
+            key_uri: resolve_url(base_url, key_uri),
+            iv: key.iv.clone(),
+        });
+    } else {
+        return Err(AppError::M3u8Parse(format!(
+            "Unsupported encryption method: {:?}",
+            key.method
+        )));
     }
 
     Ok(())
@@ -1023,6 +1022,11 @@ fn to_encryption_info(state: &ParsedEncryptionState) -> EncryptionInfo {
         iv: state.iv.clone(),
         key_bytes: Vec::new(),
     }
+}
+
+fn is_aes_cbc_method(method: &m3u8_rs::KeyMethod) -> bool {
+    matches!(method, m3u8_rs::KeyMethod::AES128)
+        || matches!(method, m3u8_rs::KeyMethod::Other(s) if s == "AES-192" || s == "AES-256")
 }
 
 fn resolve_explicit_byte_range(
@@ -2982,48 +2986,45 @@ pub async fn convert_local_m3u8_to_mp4_file(
             }
 
             if let Some(key) = segment.key.as_ref() {
-                match key.method {
-                    m3u8_rs::KeyMethod::None => {
-                        current_enc = None;
-                    }
-                    m3u8_rs::KeyMethod::AES128 => {
-                        let key_uri = key.uri.as_ref().ok_or_else(|| {
-                            AppError::M3u8Parse("AES-128 key 缺少 URI".to_string())
-                        })?;
-                        let key_path = resolve_local_m3u8_uri(&base_dir, key_uri)?;
-                        let key_bytes = if let Some(cached) = key_cache.get(&key_path) {
-                            cached.clone()
-                        } else {
-                            let bytes = tokio::fs::read(&key_path).await?;
-                            if !matches!(bytes.len(), 16 | 24 | 32) {
-                                return Err(AppError::Decryption(format!(
-                                    "AES key 长度非法：{} 字节",
-                                    bytes.len()
-                                )));
-                            }
-                            key_cache.insert(key_path.clone(), bytes.clone());
-                            bytes
-                        };
-                        let method = match key_bytes.len() {
-                            16 => "AES-128",
-                            24 => "AES-192",
-                            32 => "AES-256",
-                            _ => "AES-128",
+                if key.method == m3u8_rs::KeyMethod::None {
+                    current_enc = None;
+                } else if is_aes_cbc_method(&key.method) {
+                    let method_name = key.method.to_string();
+                    let key_uri = key.uri.as_ref().ok_or_else(|| {
+                        AppError::M3u8Parse(format!("{} key 缺少 URI", method_name))
+                    })?;
+                    let key_path = resolve_local_m3u8_uri(&base_dir, key_uri)?;
+                    let key_bytes = if let Some(cached) = key_cache.get(&key_path) {
+                        cached.clone()
+                    } else {
+                        let bytes = tokio::fs::read(&key_path).await?;
+                        if !matches!(bytes.len(), 16 | 24 | 32) {
+                            return Err(AppError::Decryption(format!(
+                                "AES key 长度非法：{} 字节",
+                                bytes.len()
+                            )));
                         }
-                        .to_string();
-                        current_enc = Some(EncryptionInfo {
-                            method,
-                            key_uri: key_uri.clone(),
-                            iv: key.iv.clone(),
-                            key_bytes,
-                        });
+                        key_cache.insert(key_path.clone(), bytes.clone());
+                        bytes
+                    };
+                    let method = match key_bytes.len() {
+                        16 => "AES-128",
+                        24 => "AES-192",
+                        32 => "AES-256",
+                        _ => "AES-128",
                     }
-                    _ => {
-                        return Err(AppError::M3u8Parse(format!(
-                            "不支持的加密方式：{:?}",
-                            key.method
-                        )));
-                    }
+                    .to_string();
+                    current_enc = Some(EncryptionInfo {
+                        method,
+                        key_uri: key_uri.clone(),
+                        iv: key.iv.clone(),
+                        key_bytes,
+                    });
+                } else {
+                    return Err(AppError::M3u8Parse(format!(
+                        "不支持的加密方式：{:?}",
+                        key.method
+                    )));
                 }
             }
 

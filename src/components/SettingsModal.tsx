@@ -13,6 +13,7 @@ import {
   message,
 } from "antd";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   downloadFfmpeg,
@@ -24,6 +25,7 @@ import {
   setFfmpegEnabled,
   setFfmpegPath,
   setProxySettings,
+  openUrl,
 } from "../services/api";
 import type {
   FfmpegDownloadProgress,
@@ -85,12 +87,15 @@ export function SettingsModal({
   const [ffmpegDownloadProgress, setFfmpegDownloadProgress] = useState<number>(0);
   const [ffmpegCustomPath, setFfmpegCustomPath] = useState("");
   const [savingFfmpegEnabled, setSavingFfmpegEnabled] = useState(false);
+  const [appVersion, setAppVersion] = useState("");
   const ffmpegUnlistenRef = useRef<UnlistenFn | null>(null);
 
   useEffect(() => {
     if (!open) return;
 
     setActiveTab(initialTab);
+
+    getVersion().then(setAppVersion);
 
     setLoading(true);
     getAppSettings()
@@ -425,6 +430,13 @@ export function SettingsModal({
                 })
               }
             />
+          </Space>
+
+          <Space direction="vertical" size={4} style={{ width: "100%" }}>
+            <Typography.Text strong>关于</Typography.Text>
+            <Typography.Text type="secondary">
+              版本：{appVersion || "-"}　　作者：<a href="#" onClick={(e) => { e.preventDefault(); openUrl("https://github.com/Liubsyy/M3U8Quicker"); }}>Liubsyy</a>
+            </Typography.Text>
           </Space>
         </Space>
       ),

@@ -189,6 +189,12 @@ export function useDownloads() {
         return;
       }
 
+      setActivePage((prev) => ({
+        ...prev,
+        items: prev.items.filter((item) => item.id !== progress.id),
+        total: Math.max(0, prev.total - 1),
+      }));
+
       void refreshCounts().catch((error) => {
         console.error("Failed to refresh download counts", error);
       });

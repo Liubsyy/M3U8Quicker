@@ -21,6 +21,7 @@ import {
   FileSyncOutlined,
   FileSearchOutlined,
   FolderOpenOutlined,
+  RetweetOutlined,
   MergeCellsOutlined,
   SwapOutlined,
 } from "@ant-design/icons";
@@ -189,7 +190,7 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
     if (tool === "codec-convert") {
       return (
         <Space size={8}>
-          <SwapOutlined />
+          <RetweetOutlined />
           <span>编码转换</span>
         </Space>
       );
