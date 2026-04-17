@@ -89,6 +89,28 @@ body,
   padding-inline: 0;
 }
 
+/*
+ * 裂缝兼容处理：
+ * 部分 Intel Mac（非 retina 或旧 WebKit）上，AntD Compact 的负 margin +
+ * ::before 分割线会出现主按钮与下拉按钮之间透出窗口底色的"裂缝"。
+ * 思路：给容器铺一层与 primary 同色的背景 + border-radius + overflow:hidden，
+ * 即使两按钮之间存在亚像素缝隙，透出来的也是同色底，不会再看到裂缝。
+ * 再用下拉按钮自身左边框作为一条浅色分割线，效果与其他系统一致。
+ */
+.toolbar-download-actions.ant-space-compact {
+  background-color: #1668dc;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.toolbar-download-actions.ant-space-compact .toolbar-download-main-btn.ant-btn {
+  margin-inline-end: 0 !important;
+}
+
 .toolbar-download-caret-btn.ant-btn {
-  border-left-color: transparent !important;
+  border-inline-start: 1px solid rgba(255, 255, 255, 0.35) !important;
+}
+
+.toolbar-download-actions .ant-btn + .ant-btn::before {
+  display: none !important;
 }
