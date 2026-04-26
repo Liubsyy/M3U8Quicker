@@ -2,6 +2,7 @@ const BACKGROUND_DETECT_MESSAGE = "m3u8quicker:network-detected";
 const FRAME_DETECT_MESSAGE = "m3u8quicker:frame-detected";
 const SYNC_DETECTIONS_MESSAGE = "m3u8quicker:sync-detections";
 const M3U8_PATTERN = /\.m3u8(?:$|[?#])/i;
+const M3U8_REQUEST_FILTERS = ["*://*/*.m3u8*"];
 const pendingDetectionsByTab = new Map();
 
 chrome.webRequest.onBeforeRequest.addListener(
@@ -13,7 +14,7 @@ chrome.webRequest.onBeforeRequest.addListener(
     queueAndDispatch(details.tabId, details.url);
   },
   {
-    urls: ["<all_urls>"]
+    urls: M3U8_REQUEST_FILTERS
   }
 );
 

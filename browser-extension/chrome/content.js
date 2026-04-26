@@ -9,6 +9,8 @@
   const APP_DEEP_LINK_BASE_URL = "m3u8quicker://new-task";
   const APP_BATCH_DEEP_LINK_BASE_URL = "m3u8quicker://batch-download";
   const CHECK_PATTERN = /(png|image|ts|jpg|mp4|jpeg|EXTINF)/i;
+  const M3U8_PATTERN = /\.m3u8(?:$|[?#])/i;
+  const DIRECT_VIDEO_PATTERN = /\.(mp4|mkv|avi|wmv|flv|webm|mov|rmvb)(?:$|[?#])/i;
   const BUTTON_LABEL = "M3U8 Quicker";
   const BUTTON_ICON_URL = chrome.runtime.getURL("icon.png");
   const isTopLevelContext = checkIsTopLevelContext();
@@ -18,7 +20,7 @@
   let buttonPosition = { top: 20, right: 20 };
   let uiRoot = null;
 
-  injectNetworkHook();
+  // Background webRequest already sees m3u8 requests; avoid monkey-patching page networking on heavy SPAs.
   bindDetectionListener();
   bindRuntimeListener();
   syncPendingDetections();
@@ -53,7 +55,7 @@
         return;
       }
 
-      checkM3u8Url(message.url);
+      handleDetectedUrl(message.url);
     });
   }
 
@@ -70,14 +72,15 @@
     for (let i = 0; i < videos.length; i += 1) {
       const video = videos[i];
       const currentSrc = video.currentSrc || video.src || "";
-      const DIRECT_EXTS = [".mp4", ".mkv", ".avi", ".wmv", ".flv", ".webm", ".mov", ".rmvb"];
-      if (currentSrc.indexOf(".m3u8") > -1 || DIRECT_EXTS.some((ext) => currentSrc.toLowerCase().indexOf(ext) > -1)) {
-        const thumbnail = collectVideoThumbnail(video);
-        if (thumbnail) {
-          videoThumbnailMap.set(currentSrc, thumbnail);
-        }
-        reportDetection(currentSrc);
+      if (!isSupportedMediaUrl(currentSrc) || checkedTargets.has(currentSrc)) {
+        continue;
       }
+
+      const thumbnail = collectVideoThumbnail(video);
+      if (thumbnail) {
+        videoThumbnailMap.set(currentSrc, thumbnail);
+      }
+      reportDetection(currentSrc);
     }
     backfillThumbnails();
   }
@@ -201,7 +204,7 @@
     }
 
     if (isTopLevelContext) {
-      checkM3u8Url(url);
+      handleDetectedUrl(url);
       return;
     }
 
@@ -236,12 +239,28 @@
           }
 
           response.urls.forEach((url) => {
-            checkM3u8Url(url);
+            handleDetectedUrl(url);
           });
         }
       );
     } catch (error) {
       console.debug("[m3u8quicker] failed to sync pending detections", error);
+    }
+  }
+
+  function handleDetectedUrl(url) {
+    if (!isTopLevelContext || !url || checkedTargets.has(url)) {
+      return;
+    }
+
+    if (isDirectVideoUrl(url)) {
+      checkedTargets.add(url);
+      registerTarget(url, appendTitle(url));
+      return;
+    }
+
+    if (isM3u8Url(url)) {
+      checkM3u8Url(url);
     }
   }
 
@@ -273,6 +292,18 @@
       console.debug("[m3u8quicker] failed to validate m3u8 url", url, error);
       registerTarget(url, normalizedUrl);
     }
+  }
+
+  function isSupportedMediaUrl(url) {
+    return isM3u8Url(url) || isDirectVideoUrl(url);
+  }
+
+  function isM3u8Url(url) {
+    return typeof url === "string" && M3U8_PATTERN.test(url);
+  }
+
+  function isDirectVideoUrl(url) {
+    return typeof url === "string" && DIRECT_VIDEO_PATTERN.test(url);
   }
 
 
