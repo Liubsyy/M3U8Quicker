@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Alert,
   Badge,
   Button,
   Card,
@@ -21,13 +20,9 @@ import {
 import {
   CheckCircleFilled,
   CloseCircleFilled,
-  CloudDownloadOutlined,
   DashboardOutlined,
-  FolderOpenOutlined,
   GithubOutlined,
-  InfoCircleOutlined,
   ReloadOutlined,
-  SettingOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
