@@ -25,8 +25,9 @@
   - FFmpeg功能：集成了分析视频、格式/编码转换等操作
   - 安装浏览器扩展
 - 可设置：代理、下载并发数、下载完成后行为
-- 支持mp4/mkv/avi/wmv/flv/webm/mov/rmvb视频直接下载
+- 支持普通视频下载：mp4/mkv/avi/wmv/flv/webm/mov/rmvb
 - 支持批量下载，也支持浏览器多选视频新建`批量下载`任务
+- 支持视频的图片预览
 
 修改记录：见 [CHANGELOG.md](./CHANGELOG.md)
 
