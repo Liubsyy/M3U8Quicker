@@ -26,8 +26,8 @@
   - 安装浏览器扩展
 - 可设置：代理、下载并发数、下载完成后行为
 - 支持普通视频下载：mp4/mkv/avi/wmv/flv/webm/mov/rmvb
-- 支持批量下载，也支持浏览器多选视频新建`批量下载`任务
-- 支持视频的图片预览
+- 支持批量下载
+- 支持视频预览图
 
 修改记录：见 [CHANGELOG.md](./CHANGELOG.md)
 
@@ -45,9 +45,8 @@
 
 MacOS 首次安装时如果遇到“无法打开”或“应用已损坏”之类的权限提示，可按下面方式处理：
 
-- 先在“系统设置 -> 隐私与安全性”中找到被拦截的应用，点击“仍要打开”
-- 或在 Finder 中对应用点右键，选择“打开”，再确认一次
-- 如果仍被 Gatekeeper 拦截，可在终端执行 `xattr -rd com.apple.quarantine /Applications/M3U8\ Quicker.app` 后重新打开
+- “系统设置 -> 隐私与安全性”中找到被拦截的应用，点击“仍要打开”
+- 如果仍被拦截，可在终端执行 `xattr -rd com.apple.quarantine /Applications/M3U8\ Quicker.app` 后重新打开
 
 安装完成后首次启动应用，如果需要通过浏览器快速新建下载任务，可继续在应用内打开“工具 -> 安装浏览器扩展”查看引导。
 
@@ -62,6 +61,11 @@ referer:https://example.com
 origin:https://example.com
 ```
 ![新建下载](./doc/img/newtask.png)
+
+
+下载前可查看视频预览图
+
+![视频预览](./doc/img/video_preview.png)
 
 
 ### 下载中
