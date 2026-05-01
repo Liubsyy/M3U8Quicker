@@ -7,7 +7,8 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { Alert, Empty, Image, Select, Space, Spin, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, Empty, Image, Select, Space, Spin, Tag, Tooltip, Typography, message, theme } from "antd";
+import type { GlobalToken } from "antd";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
   AppstoreOutlined,
@@ -58,52 +59,60 @@ type DirectoryPickerWindow = Window &
 
 const STEPPER_HEIGHT = 30;
 
-const stepperWrapperStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "stretch",
-  height: STEPPER_HEIGHT,
-  borderRadius: 8,
-  overflow: "hidden",
-  border: "1px solid var(--ant-color-border-secondary, #e5e7eb)",
-  background: "var(--ant-color-bg-container, #ffffff)",
-  boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
-};
+function buildStepperWrapperStyle(token: GlobalToken): CSSProperties {
+  return {
+    display: "inline-flex",
+    alignItems: "stretch",
+    height: STEPPER_HEIGHT,
+    borderRadius: 8,
+    overflow: "hidden",
+    border: `1px solid ${token.colorBorderSecondary}`,
+    background: token.colorBgContainer,
+    boxShadow: token.boxShadowTertiary,
+  };
+}
 
-const stepperButtonStyle: CSSProperties = {
-  width: 30,
-  height: "100%",
-  padding: 0,
-  border: 0,
-  background: "transparent",
-  color: "var(--ant-color-text-secondary, rgba(0,0,0,0.65))",
-  cursor: "pointer",
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  fontSize: 12,
-  transition: "background 0.15s ease, color 0.15s ease",
-};
+function buildStepperButtonStyle(token: GlobalToken): CSSProperties {
+  return {
+    width: 30,
+    height: "100%",
+    padding: 0,
+    border: 0,
+    background: "transparent",
+    color: token.colorTextSecondary,
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 12,
+    transition: "background 0.15s ease, color 0.15s ease",
+  };
+}
 
-const stepperButtonDisabledStyle: CSSProperties = {
-  cursor: "not-allowed",
-  color: "var(--ant-color-text-disabled, rgba(0,0,0,0.25))",
-  background: "transparent",
-};
+function buildStepperButtonDisabledStyle(token: GlobalToken): CSSProperties {
+  return {
+    cursor: "not-allowed",
+    color: token.colorTextDisabled,
+    background: "transparent",
+  };
+}
 
-const stepperLabelStyle: CSSProperties = {
-  minWidth: 80,
-  padding: "0 8px",
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  gap: 5,
-  borderLeft: "1px solid var(--ant-color-border-secondary, #f0f0f0)",
-  borderRight: "1px solid var(--ant-color-border-secondary, #f0f0f0)",
-  background: "var(--ant-color-fill-quaternary, rgba(0,0,0,0.02))",
-  fontSize: 12,
-  whiteSpace: "nowrap",
-  color: "var(--ant-color-text, rgba(0,0,0,0.88))",
-};
+function buildStepperLabelStyle(token: GlobalToken): CSSProperties {
+  return {
+    minWidth: 80,
+    padding: "0 8px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    borderLeft: `1px solid ${token.colorBorderSecondary}`,
+    borderRight: `1px solid ${token.colorBorderSecondary}`,
+    background: token.colorFillQuaternary,
+    fontSize: 12,
+    whiteSpace: "nowrap",
+    color: token.colorText,
+  };
+}
 
 interface PreviewThumbnailEvent {
   token: string;
@@ -251,25 +260,28 @@ export function PreviewWindow() {
       console.debug("Failed to save preview columns setting", error);
     });
   };
+  const { token: themeToken } = theme.useToken();
+  const iconStyle: CSSProperties = { color: themeToken.colorPrimary };
   return (
     <div
       style={{
         height: "100vh",
         display: "flex",
         flexDirection: "column",
-        background: "var(--ant-color-bg-layout, #f5f5f5)",
+        background: themeToken.colorBgLayout,
+        color: themeToken.colorText,
       }}
     >
       <div
         style={{
           padding: "12px 16px",
-          borderBottom: "1px solid rgba(0,0,0,0.08)",
+          borderBottom: `1px solid ${themeToken.colorBorderSecondary}`,
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
           gap: 12,
           flexWrap: "wrap",
-          background: "var(--ant-color-bg-container, #ffffff)",
+          background: themeToken.colorBgContainer,
         }}
       >
         <Space>
@@ -278,7 +290,7 @@ export function PreviewWindow() {
         </Space>
         <Space size={10} wrap>
           <CompactSelectControl
-            icon={<PictureOutlined style={{ color: "var(--ant-color-primary, #1677ff)" }} />}
+            icon={<PictureOutlined style={iconStyle} />}
             label="宽度"
             ariaLabel="选择预览图宽度"
             disabled={loading}
@@ -289,7 +301,7 @@ export function PreviewWindow() {
             onChange={handleThumbnailWidthChange}
           />
           <CompactSelectControl
-            icon={<PictureOutlined style={{ color: "var(--ant-color-primary, #1677ff)" }} />}
+            icon={<PictureOutlined style={iconStyle} />}
             label="质量"
             ariaLabel="选择预览图质量"
             disabled={loading}
@@ -300,7 +312,7 @@ export function PreviewWindow() {
             onChange={handleJpegQualityChange}
           />
           <Stepper
-            icon={<AppstoreOutlined style={{ color: "var(--ant-color-primary, #1677ff)" }} />}
+            icon={<AppstoreOutlined style={iconStyle} />}
             label={<>每行 <strong style={{ margin: "0 2px" }}>{columns}</strong> 张</>}
             onMinus={handleColumnsDecrement}
             onPlus={handleColumnsIncrement}
@@ -312,7 +324,7 @@ export function PreviewWindow() {
             plusAriaLabel="每行增加 1 张"
           />
           <Stepper
-            icon={<PictureOutlined style={{ color: "var(--ant-color-primary, #1677ff)" }} />}
+            icon={<PictureOutlined style={iconStyle} />}
             label={
               <>
                 共
@@ -414,8 +426,13 @@ function Stepper({
   minusAriaLabel,
   plusAriaLabel,
 }: StepperProps) {
+  const { token } = theme.useToken();
+  const wrapperStyle = buildStepperWrapperStyle(token);
+  const buttonStyle = buildStepperButtonStyle(token);
+  const buttonDisabledStyle = buildStepperButtonDisabledStyle(token);
+  const labelStyle = buildStepperLabelStyle(token);
   return (
-    <div style={stepperWrapperStyle}>
+    <div style={wrapperStyle}>
       <Tooltip title={minusTooltip}>
         <button
           type="button"
@@ -423,26 +440,23 @@ function Stepper({
           onClick={onMinus}
           disabled={minusDisabled}
           style={{
-            ...stepperButtonStyle,
-            ...(minusDisabled ? stepperButtonDisabledStyle : {}),
+            ...buttonStyle,
+            ...(minusDisabled ? buttonDisabledStyle : {}),
           }}
           onMouseEnter={(event) => {
             if (minusDisabled) return;
-            event.currentTarget.style.background =
-              "var(--ant-color-fill-tertiary, rgba(0,0,0,0.04))";
-            event.currentTarget.style.color =
-              "var(--ant-color-primary, #1677ff)";
+            event.currentTarget.style.background = token.colorFillTertiary;
+            event.currentTarget.style.color = token.colorPrimary;
           }}
           onMouseLeave={(event) => {
             event.currentTarget.style.background = "transparent";
-            event.currentTarget.style.color =
-              "var(--ant-color-text-secondary, rgba(0,0,0,0.65))";
+            event.currentTarget.style.color = token.colorTextSecondary;
           }}
         >
           <MinusOutlined />
         </button>
       </Tooltip>
-      <div style={stepperLabelStyle}>
+      <div style={labelStyle}>
         {icon}
         <span>{label}</span>
       </div>
@@ -453,20 +467,17 @@ function Stepper({
           onClick={onPlus}
           disabled={plusDisabled}
           style={{
-            ...stepperButtonStyle,
-            ...(plusDisabled ? stepperButtonDisabledStyle : {}),
+            ...buttonStyle,
+            ...(plusDisabled ? buttonDisabledStyle : {}),
           }}
           onMouseEnter={(event) => {
             if (plusDisabled) return;
-            event.currentTarget.style.background =
-              "var(--ant-color-fill-tertiary, rgba(0,0,0,0.04))";
-            event.currentTarget.style.color =
-              "var(--ant-color-primary, #1677ff)";
+            event.currentTarget.style.background = token.colorFillTertiary;
+            event.currentTarget.style.color = token.colorPrimary;
           }}
           onMouseLeave={(event) => {
             event.currentTarget.style.background = "transparent";
-            event.currentTarget.style.color =
-              "var(--ant-color-text-secondary, rgba(0,0,0,0.65))";
+            event.currentTarget.style.color = token.colorTextSecondary;
           }}
         >
           <PlusOutlined />
@@ -499,9 +510,10 @@ function CompactSelectControl({
   popupWidth,
   onChange,
 }: CompactSelectControlProps) {
+  const { token } = theme.useToken();
   return (
-    <div style={stepperWrapperStyle}>
-      <div style={{ ...stepperLabelStyle, borderLeft: 0, borderRight: 0 }}>
+    <div style={buildStepperWrapperStyle(token)}>
+      <div style={{ ...buildStepperLabelStyle(token), borderLeft: 0, borderRight: 0 }}>
         {icon}
         <span>{label}</span>
         <Select
@@ -522,14 +534,16 @@ function CompactSelectControl({
 }
 
 function ThumbnailCard({ thumb }: { thumb: PreviewThumbnail }) {
+  const { token } = theme.useToken();
   const [aspectRatio, setAspectRatio] = useState<string>("16 / 9");
   return (
     <div
       style={{
-        background: "var(--ant-color-bg-container, #ffffff)",
+        background: token.colorBgContainer,
+        border: `1px solid ${token.colorBorderSecondary}`,
         borderRadius: 8,
         overflow: "hidden",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+        boxShadow: token.boxShadowTertiary,
       }}
     >
       <Image
@@ -557,7 +571,7 @@ function ThumbnailCard({ thumb }: { thumb: PreviewThumbnail }) {
           display: "flex",
           justifyContent: "space-between",
           fontSize: 12,
-          color: "var(--ant-color-text-secondary, rgba(0,0,0,0.65))",
+          color: token.colorTextSecondary,
         }}
       >
         <span>#{thumb.index + 1}</span>

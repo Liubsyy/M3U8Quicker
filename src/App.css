@@ -1,11 +1,12 @@
 :root {
   color-scheme: dark;
-  --app-bg: #141414;
-  --app-text: #e8e8e8;
-  --app-scrollbar-track: #1f1f1f;
-  --app-scrollbar-thumb: #444;
-  --app-scrollbar-thumb-hover: #555;
-  --app-table-border: #2a2a2a;
+  --app-bg: #0d1117;
+  --app-text: #e6edf3;
+  --app-scrollbar-track: #161b22;
+  --app-scrollbar-thumb: #30363d;
+  --app-scrollbar-thumb-hover: #484f58;
+  --app-table-border: #21262d;
+  --app-primary: #4096ff;
 }
 
 :root[data-theme-mode="light"] {
@@ -16,6 +17,7 @@
   --app-scrollbar-thumb: #c2ccdb;
   --app-scrollbar-thumb-hover: #aab7cb;
   --app-table-border: #e6ebf2;
+  --app-primary: #1668dc;
 }
 
 html,
@@ -98,7 +100,7 @@ body,
  * 再用下拉按钮自身左边框作为一条浅色分割线，效果与其他系统一致。
  */
 .toolbar-download-actions.ant-space-compact {
-  background-color: #1668dc;
+  background-color: var(--app-primary);
   border-radius: 6px;
   overflow: hidden;
 }

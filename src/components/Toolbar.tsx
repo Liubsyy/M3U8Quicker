@@ -132,7 +132,7 @@ export function Toolbar({
       }}
     >
       <Space>
-        <ThunderboltOutlined style={{ fontSize: 24, color: "#1668dc" }} />
+        <ThunderboltOutlined style={{ fontSize: 24, color: token.colorPrimary }} />
         <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
           M3U8 Quicker
         </Typography.Title>
