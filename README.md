@@ -103,7 +103,7 @@ origin:https://example.com
 - FFmpeg下载和管理
 
 
-## 浏览器扩展（可选）
+### 浏览器扩展（可选）
 
 安装浏览器扩展后，网页中会自动扫描出`m3u8`链接和视频地址，右上角会出现一个按钮`M3U8 Quicker`，点击后唤起桌面应用新建下载任务，并自动带入 `url`、`referer`、`origin`、`user-agent`。
 > 安装扩展引导：打开M3U8 Quicker-> 工具 -> 安装浏览器扩展，按引导可安装Chrome扩展、Firefox扩展和Microsoft Edge扩展。
@@ -115,18 +115,20 @@ origin:https://example.com
 - 不会自动传递 `Cookie`
 - 无法可靠读取 `HttpOnly` Cookie
 
-## 技术栈
+## 开发与构建
+
+### 技术栈
 
 - 前端：`React 19`、`TypeScript`、`Vite 8`、`Ant Design 6`
 - 桌面端：`Tauri 2`
 - 后端逻辑：`Rust`
 
-## 环境要求
+### 环境要求
 
 - Node.js：建议使用较新的 LTS 版本
 - Rust：最低 `1.88`
 
-## 目录结构
+### 目录结构
 
 - `src/`：React 前端界面与页面逻辑
 - `src-tauri/`：Tauri 桌面端与 Rust 后端实现
@@ -134,27 +136,27 @@ origin:https://example.com
 - `test-hls-server/`：独立的 Rust 本地测试服务，用于把视频切成 `m3u8 + ts`
 - `public/`：静态资源
 
-## 快速开始
+### 本地开发
 
-### 1. 安装依赖
+#### 1. 安装依赖
 
 ```bash
 npm install
 ```
 
-### 2. 启动前端开发服务器
+#### 2. 启动前端开发服务器
 
 ```bash
 npm run dev
 ```
 
-### 3. 启动桌面应用
+#### 3. 启动桌面应用
 
 ```bash
 npm run tauri dev
 ```
 
-## 常用命令
+### 常用命令
 
 | 命令 | 说明 |
 | --- | --- |
@@ -168,7 +170,7 @@ npm run tauri dev
 | `cargo check --manifest-path src-tauri/Cargo.toml` | 检查 Rust / Tauri 侧代码 |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | 运行 Rust 单元测试 |
 
-## 打包与资源说明
+### 打包与资源说明
 
 - 应用名称：`M3U8 Quicker`
 - 应用标识：`com.liubsyy.m3u8quicker`
