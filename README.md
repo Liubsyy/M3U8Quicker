@@ -144,13 +144,7 @@ origin:https://example.com
 npm install
 ```
 
-#### 2. 启动前端开发服务器
-
-```bash
-npm run dev
-```
-
-#### 3. 启动桌面应用
+#### 2. 启动桌面应用调试
 
 ```bash
 npm run tauri dev
