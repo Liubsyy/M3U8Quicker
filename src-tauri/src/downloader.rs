@@ -62,8 +62,22 @@ pub enum PreparedHlsDownload {
 
 #[derive(Debug, Clone)]
 pub struct PreparedSingleHlsDownload {
+    pub media_kind: HlsMediaKind,
+    pub init_segments: Vec<PreparedHlsInitSegment>,
     pub segments: Vec<SegmentInfo>,
     pub selection: Option<HlsTrackSelection>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedHlsInitSegment {
+    pub info: HlsInitSegmentInfo,
+    pub encryption: Option<EncryptionInfo>,
+}
+
+impl PreparedHlsInitSegment {
+    pub fn output_path(&self, temp_dir: &Path) -> PathBuf {
+        hls_init_segment_file_path(temp_dir, self.info.index)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -336,11 +350,15 @@ pub async fn prepare_hls_download(
 
     match fetched.playlist {
         m3u8_rs::Playlist::MediaPlaylist(media) => {
-            let mut segments = parse_media_playlist_segments(&fetched.base_url, &media)?;
-            fetch_encryption_keys(client, &mut segments, headers).await?;
+            let mut plan = parse_media_playlist_plan(&fetched.base_url, &media)?;
+            validate_fmp4_init_encryption(&plan.init_segments)?;
+            fetch_prepared_init_encryption_keys(client, &mut plan.init_segments, headers).await?;
+            fetch_encryption_keys(client, &mut plan.segments, headers).await?;
 
             Ok(PreparedHlsDownload::Single(PreparedSingleHlsDownload {
-                segments,
+                media_kind: plan.media_kind,
+                init_segments: plan.init_segments,
+                segments: plan.segments,
                 selection: None,
             }))
         }
@@ -394,14 +412,17 @@ pub async fn prepare_hls_download(
                 let video_playlist =
                     fetch_media_playlist_following_variants(client, &selected_video.uri, headers)
                         .await?;
-                let mut segments = parse_media_playlist_segments(
-                    &video_playlist.base_url,
-                    &video_playlist.playlist,
-                )?;
-                fetch_encryption_keys(client, &mut segments, headers).await?;
+                let mut plan =
+                    parse_media_playlist_plan(&video_playlist.base_url, &video_playlist.playlist)?;
+                validate_fmp4_init_encryption(&plan.init_segments)?;
+                fetch_prepared_init_encryption_keys(client, &mut plan.init_segments, headers)
+                    .await?;
+                fetch_encryption_keys(client, &mut plan.segments, headers).await?;
 
                 return Ok(PreparedHlsDownload::Single(PreparedSingleHlsDownload {
-                    segments,
+                    media_kind: plan.media_kind,
+                    init_segments: plan.init_segments,
+                    segments: plan.segments,
                     selection: Some(resolved_selection),
                 }));
             }
@@ -794,18 +815,57 @@ fn resolve_selected_optional_track(
         })
 }
 
-fn parse_media_playlist_segments(
+#[derive(Debug, Clone)]
+struct ParsedMediaPlaylistPlan {
+    media_kind: HlsMediaKind,
+    init_segments: Vec<PreparedHlsInitSegment>,
+    segments: Vec<SegmentInfo>,
+}
+
+fn parse_media_playlist_plan(
     base_url: &Url,
     playlist: &m3u8_rs::MediaPlaylist,
-) -> Result<Vec<SegmentInfo>, AppError> {
+) -> Result<ParsedMediaPlaylistPlan, AppError> {
     let media_sequence = playlist.media_sequence;
     let mut current_key: Option<ParsedEncryptionState> = None;
+    let mut current_init_segment_index: Option<usize> = None;
+    let mut init_cache = HashMap::<BundleMapCacheKey, usize>::new();
+    let mut init_segments = Vec::new();
+    let mut previous_map_byte_range: Option<(String, u64)> = None;
     let mut previous_media_byte_range: Option<(String, u64)> = None;
     let mut segments = Vec::with_capacity(playlist.segments.len());
 
     for (index, segment) in playlist.segments.iter().enumerate() {
         update_encryption_state(&mut current_key, base_url, segment.key.as_ref())?;
         let encryption = current_key.as_ref().map(to_encryption_info);
+        if let Some(map) = segment.map.as_ref() {
+            let resolved_map_uri = resolve_url(base_url, &map.uri);
+            let byte_range = resolve_explicit_byte_range(
+                &resolved_map_uri,
+                map.byte_range.as_ref(),
+                &mut previous_map_byte_range,
+            );
+            let cache_key = BundleMapCacheKey {
+                uri: resolved_map_uri.clone(),
+                byte_range: byte_range.clone(),
+            };
+            let init_index = if let Some(existing) = init_cache.get(&cache_key) {
+                *existing
+            } else {
+                let init_index = init_segments.len();
+                init_segments.push(PreparedHlsInitSegment {
+                    info: HlsInitSegmentInfo {
+                        index: init_index,
+                        uri: resolved_map_uri,
+                        byte_range,
+                    },
+                    encryption: encryption.clone(),
+                });
+                init_cache.insert(cache_key, init_index);
+                init_index
+            };
+            current_init_segment_index = Some(init_index);
+        }
         let resolved_uri = resolve_url(base_url, &segment.uri);
 
         segments.push(SegmentInfo {
@@ -818,11 +878,28 @@ fn parse_media_playlist_segments(
                 segment.byte_range.as_ref(),
                 &mut previous_media_byte_range,
             ),
+            init_segment_index: current_init_segment_index,
             encryption,
         });
     }
 
-    Ok(segments)
+    Ok(ParsedMediaPlaylistPlan {
+        media_kind: if init_segments.is_empty() {
+            HlsMediaKind::MpegTs
+        } else {
+            HlsMediaKind::Fmp4
+        },
+        init_segments,
+        segments,
+    })
+}
+
+#[cfg(test)]
+fn parse_media_playlist_segments(
+    base_url: &Url,
+    playlist: &m3u8_rs::MediaPlaylist,
+) -> Result<Vec<SegmentInfo>, AppError> {
+    Ok(parse_media_playlist_plan(base_url, playlist)?.segments)
 }
 
 #[derive(Debug, Clone)]
@@ -997,9 +1074,7 @@ fn update_encryption_state(
         let key_uri = key
             .uri
             .as_ref()
-            .ok_or_else(|| {
-                AppError::M3u8Parse(format!("{} key missing URI", method_name))
-            })?;
+            .ok_or_else(|| AppError::M3u8Parse(format!("{} key missing URI", method_name)))?;
         *current_key = Some(ParsedEncryptionState {
             method: method_name,
             key_uri: resolve_url(base_url, key_uri),
@@ -1146,6 +1221,60 @@ pub async fn fetch_encryption_keys(
     Ok(())
 }
 
+fn validate_fmp4_init_encryption(init_segments: &[PreparedHlsInitSegment]) -> Result<(), AppError> {
+    for init in init_segments {
+        if init
+            .encryption
+            .as_ref()
+            .is_some_and(|encryption| encryption.iv.is_none())
+        {
+            return Err(AppError::Decryption(
+                "加密的 fMP4 EXT-X-MAP 必须提供显式 IV".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn fetch_prepared_init_encryption_keys(
+    client: &reqwest::Client,
+    init_segments: &mut [PreparedHlsInitSegment],
+    headers: &RequestHeaders,
+) -> Result<(), AppError> {
+    let mut key_cache: HashMap<String, Vec<u8>> = HashMap::new();
+
+    for init in init_segments.iter_mut() {
+        if let Some(ref mut enc) = init.encryption {
+            if !key_cache.contains_key(&enc.key_uri) {
+                let resp = build_request_with_headers(client, &enc.key_uri, headers)
+                    .timeout(M3U8_METADATA_TIMEOUT)
+                    .send()
+                    .await?
+                    .error_for_status()?;
+                let bytes = resp.bytes().await?;
+                if !matches!(bytes.len(), 16 | 24 | 32) {
+                    return Err(AppError::Decryption(format!(
+                        "AES key must be 16, 24, or 32 bytes, got {}",
+                        bytes.len()
+                    )));
+                }
+                key_cache.insert(enc.key_uri.clone(), bytes.to_vec());
+            }
+            enc.key_bytes = key_cache[&enc.key_uri].clone();
+            enc.method = match enc.key_bytes.len() {
+                16 => "AES-128",
+                24 => "AES-192",
+                32 => "AES-256",
+                _ => enc.method.as_str(),
+            }
+            .to_string();
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn fetch_bundle_encryption_keys(
     client: &reqwest::Client,
     entries: &mut [BundleDownloadEntry],
@@ -1264,8 +1393,35 @@ pub fn segment_file_path(temp_dir: &Path, segment_index: usize) -> PathBuf {
     temp_dir.join(format!("seg_{:06}.ts", segment_index))
 }
 
-fn partial_segment_file_path(temp_dir: &Path, segment_index: usize) -> PathBuf {
-    temp_dir.join(format!("seg_{:06}.ts.part", segment_index))
+pub fn hls_init_segment_file_path(temp_dir: &Path, init_index: usize) -> PathBuf {
+    temp_dir.join(format!("init_{:06}.mp4", init_index))
+}
+
+pub fn fmp4_segment_file_path(temp_dir: &Path, segment_index: usize) -> PathBuf {
+    temp_dir.join(format!("seg_{:06}.m4s", segment_index))
+}
+
+fn segment_file_path_for_kind(
+    temp_dir: &Path,
+    media_kind: HlsMediaKind,
+    segment_index: usize,
+) -> PathBuf {
+    match media_kind {
+        HlsMediaKind::MpegTs => segment_file_path(temp_dir, segment_index),
+        HlsMediaKind::Fmp4 => fmp4_segment_file_path(temp_dir, segment_index),
+    }
+}
+
+fn partial_segment_file_path_for_kind(
+    temp_dir: &Path,
+    media_kind: HlsMediaKind,
+    segment_index: usize,
+) -> PathBuf {
+    part_path_for_downloaded_file(&segment_file_path_for_kind(
+        temp_dir,
+        media_kind,
+        segment_index,
+    ))
 }
 
 fn part_path_for_downloaded_file(path: &Path) -> PathBuf {
@@ -1623,6 +1779,7 @@ async fn snapshot_segments(segment_indices: &Arc<Mutex<BTreeSet<usize>>>) -> Vec
 
 async fn restore_download_state(
     temp_dir: &Path,
+    media_kind: HlsMediaKind,
     segments: &[SegmentInfo],
     recorded_completed_segment_indices: &[usize],
     recorded_failed_segment_indices: &[usize],
@@ -1637,8 +1794,8 @@ async fn restore_download_state(
     let recorded: BTreeSet<usize> = recorded_completed_segment_indices.iter().copied().collect();
 
     for segment in segments {
-        let completed_path = segment_file_path(temp_dir, segment.index);
-        let partial_path = partial_segment_file_path(temp_dir, segment.index);
+        let completed_path = segment_file_path_for_kind(temp_dir, media_kind, segment.index);
+        let partial_path = partial_segment_file_path_for_kind(temp_dir, media_kind, segment.index);
         if partial_path.exists() {
             let _ = tokio::fs::remove_file(&partial_path).await;
         }
@@ -1676,12 +1833,76 @@ pub async fn cleanup_temp_dir(output_dir: &Path, task_id: &str) -> Result<(), Ap
     Ok(())
 }
 
+async fn restore_fmp4_init_download_state(
+    temp_dir: &Path,
+    init_segments: &[PreparedHlsInitSegment],
+) -> Result<u64, AppError> {
+    let mut total_bytes = 0u64;
+    for init in init_segments {
+        let completed_path = init.output_path(temp_dir);
+        let partial_path = part_path_for_downloaded_file(&completed_path);
+        if partial_path.exists() {
+            let _ = tokio::fs::remove_file(&partial_path).await;
+        }
+        if completed_path.exists() {
+            total_bytes += tokio::fs::metadata(&completed_path).await?.len();
+        }
+    }
+
+    Ok(total_bytes)
+}
+
+async fn download_missing_fmp4_init_segments(
+    client: Arc<RwLock<reqwest::Client>>,
+    rate_limiter: Arc<DownloadRateLimiter>,
+    headers: Arc<RequestHeaders>,
+    temp_dir: &Path,
+    init_segments: &[PreparedHlsInitSegment],
+    cancel: &CancellationToken,
+) -> Result<u64, AppError> {
+    let mut downloaded_bytes = 0u64;
+    for init in init_segments {
+        let output_path = init.output_path(temp_dir);
+        if output_path.exists() {
+            continue;
+        }
+
+        let outcome = download_segment_with_retry(
+            client.clone(),
+            rate_limiter.clone(),
+            headers.clone(),
+            &init.info.uri,
+            &output_path,
+            init.info.byte_range.as_ref(),
+            init.encryption.as_ref(),
+            0,
+            3,
+            cancel,
+        )
+        .await?;
+
+        match outcome {
+            SegmentDownloadOutcome::Downloaded(file_size) => downloaded_bytes += file_size,
+            SegmentDownloadOutcome::Skipped => {
+                return Err(AppError::Network(format!(
+                    "fMP4 初始化片段下载失败：{}",
+                    init.info.uri
+                )));
+            }
+        }
+    }
+
+    Ok(downloaded_bytes)
+}
+
 pub async fn run_download(
     app_handle: AppHandle,
     downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
     client: Arc<RwLock<reqwest::Client>>,
     rate_limiter: Arc<DownloadRateLimiter>,
     task_id: DownloadId,
+    media_kind: HlsMediaKind,
+    init_segments: Vec<PreparedHlsInitSegment>,
     segments: Vec<SegmentInfo>,
     headers: Arc<RequestHeaders>,
     output_dir: PathBuf,
@@ -1713,15 +1934,44 @@ pub async fn run_download(
     let (restored_completed_segment_indices, restored_failed_segment_indices, restored_total_bytes) =
         restore_download_state(
             &temp_dir,
+            media_kind,
             &segments,
             &existing_completed_segment_indices,
             &existing_failed_segment_indices,
         )
         .await?;
+    let restored_init_bytes = if media_kind == HlsMediaKind::Fmp4 {
+        restore_fmp4_init_download_state(&temp_dir, &init_segments).await?
+    } else {
+        0
+    };
+    let downloaded_init_bytes = if media_kind == HlsMediaKind::Fmp4 {
+        download_missing_fmp4_init_segments(
+            client.clone(),
+            rate_limiter.clone(),
+            headers.clone(),
+            &temp_dir,
+            &init_segments,
+            &cancel_token,
+        )
+        .await?
+    } else {
+        0
+    };
+    if media_kind == HlsMediaKind::Fmp4 {
+        let init_infos = init_segments
+            .iter()
+            .map(|init| init.info.clone())
+            .collect::<Vec<_>>();
+        write_fmp4_local_playlist(&temp_dir, &init_infos, &segments).await?;
+    }
 
+    let initial_total_bytes = restored_total_bytes
+        .saturating_add(restored_init_bytes)
+        .saturating_add(downloaded_init_bytes);
     let semaphore = Arc::new(Semaphore::new(MAX_DOWNLOAD_CONCURRENCY));
     let completed = Arc::new(AtomicUsize::new(restored_completed_segment_indices.len()));
-    let total_bytes = Arc::new(AtomicU64::new(restored_total_bytes));
+    let total_bytes = Arc::new(AtomicU64::new(initial_total_bytes));
     let speed_bytes_per_sec = Arc::new(AtomicU64::new(0));
     let completed_segment_indices = Arc::new(Mutex::new(restored_completed_segment_indices));
     let failed_segment_indices = Arc::new(Mutex::new(restored_failed_segment_indices));
@@ -1762,7 +2012,7 @@ pub async fn run_download(
         let completed_segment_indices = completed_segment_indices.clone();
         let failed_segment_indices = failed_segment_indices.clone();
         let speed_report_cancel = speed_report_cancel.clone();
-        let restored_total_bytes = restored_total_bytes;
+        let restored_total_bytes = initial_total_bytes;
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -1860,6 +2110,7 @@ pub async fn run_download(
             rate_limiter.clone(),
             headers.clone(),
             temp_dir.clone(),
+            media_kind,
             segments.clone(),
             completed.clone(),
             total_bytes.clone(),
@@ -1958,49 +2209,89 @@ pub async fn run_download(
     )
     .await;
 
-    // Merge segments into .ts file
-    let ts_filename = ensure_extension(&filename, "ts");
-    let ts_path = resolve_available_output_path(&output_dir, &ts_filename);
-    merge_segments(&temp_dir, total, &ts_path).await?;
+    let final_path = if media_kind == HlsMediaKind::Fmp4 {
+        if convert_to_mp4 {
+            emit_progress(
+                &app_handle,
+                &downloads,
+                RuntimeProgressSnapshot {
+                    id: task_id.clone(),
+                    status: DownloadStatus::Converting,
+                    completed_segments: total,
+                    total_segments: total,
+                    completed_segment_indices: completed_segments_list,
+                    failed_segment_indices: Vec::new(),
+                    total_bytes: downloaded_bytes,
+                    speed_bytes_per_sec: 0,
+                    updated_at: Utc::now().to_rfc3339(),
+                },
+            )
+            .await;
 
-    let final_path = if convert_to_mp4 {
-        emit_progress(
-            &app_handle,
-            &downloads,
-            RuntimeProgressSnapshot {
-                id: task_id.clone(),
-                status: DownloadStatus::Converting,
-                completed_segments: total,
-                total_segments: total,
-                completed_segment_indices: completed_segments_list,
-                failed_segment_indices: Vec::new(),
-                total_bytes: downloaded_bytes,
-                speed_bytes_per_sec: 0,
-                updated_at: Utc::now().to_rfc3339(),
-            },
-        )
-        .await;
-
-        let mp4_filename = ensure_extension(&filename, "mp4");
-        let mp4_path = resolve_available_output_path(&output_dir, &mp4_filename);
-
-        match convert_ts_to_mp4_file(
-            &ts_path,
-            &mp4_path,
-            true,
-            ffmpeg_path.is_some(),
-            ffmpeg_path.as_deref(),
-        )
-        .await
-        {
-            Ok(()) => mp4_path,
-            Err(_) => ts_path,
+            let mp4_filename = ensure_extension(&filename, "mp4");
+            let mp4_path = resolve_available_output_path(&output_dir, &mp4_filename);
+            let init_infos = init_segments
+                .iter()
+                .map(|init| init.info.clone())
+                .collect::<Vec<_>>();
+            merge_fmp4_segments(&temp_dir, &init_infos, segments.as_ref(), &mp4_path).await?;
+            mp4_path
+        } else {
+            temp_dir.clone()
         }
     } else {
-        ts_path
+        // Merge segments into .ts file
+        let ts_filename = ensure_extension(&filename, "ts");
+        let ts_path = resolve_available_output_path(&output_dir, &ts_filename);
+        merge_segments(&temp_dir, total, &ts_path).await?;
+
+        if convert_to_mp4 {
+            emit_progress(
+                &app_handle,
+                &downloads,
+                RuntimeProgressSnapshot {
+                    id: task_id.clone(),
+                    status: DownloadStatus::Converting,
+                    completed_segments: total,
+                    total_segments: total,
+                    completed_segment_indices: completed_segments_list,
+                    failed_segment_indices: Vec::new(),
+                    total_bytes: downloaded_bytes,
+                    speed_bytes_per_sec: 0,
+                    updated_at: Utc::now().to_rfc3339(),
+                },
+            )
+            .await;
+
+            let mp4_filename = ensure_extension(&filename, "mp4");
+            let mp4_path = resolve_available_output_path(&output_dir, &mp4_filename);
+
+            match convert_ts_to_mp4_file(
+                &ts_path,
+                &mp4_path,
+                true,
+                ffmpeg_path.is_some(),
+                ffmpeg_path.as_deref(),
+            )
+            .await
+            {
+                Ok(()) => mp4_path,
+                Err(_) => ts_path,
+            }
+        } else {
+            ts_path
+        }
     };
 
-    if delete_ts_temp_dir_after_download
+    if media_kind != HlsMediaKind::Fmp4
+        && delete_ts_temp_dir_after_download
+        && !playback::has_active_playback_session(&playback_sessions, &task_id).await
+    {
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+    if media_kind == HlsMediaKind::Fmp4
+        && convert_to_mp4
+        && delete_ts_temp_dir_after_download
         && !playback::has_active_playback_session(&playback_sessions, &task_id).await
     {
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
@@ -2548,6 +2839,7 @@ async fn download_worker_loop(
     rate_limiter: Arc<DownloadRateLimiter>,
     headers: Arc<RequestHeaders>,
     temp_dir: PathBuf,
+    media_kind: HlsMediaKind,
     segments: Arc<Vec<SegmentInfo>>,
     completed: Arc<AtomicUsize>,
     total_bytes: Arc<AtomicU64>,
@@ -2591,7 +2883,7 @@ async fn download_worker_loop(
             }
         };
 
-        let segment_path = segment_file_path(&temp_dir, segment.index);
+        let segment_path = segment_file_path_for_kind(&temp_dir, media_kind, segment.index);
         let outcome = download_segment_with_retry(
             client.clone(),
             rate_limiter.clone(),
@@ -2833,6 +3125,97 @@ async fn merge_segments(temp_dir: &Path, total: usize, output_path: &Path) -> Re
     merge_files(&segment_paths, output_path).await
 }
 
+async fn merge_fmp4_segments(
+    temp_dir: &Path,
+    init_segments: &[HlsInitSegmentInfo],
+    segments: &[SegmentInfo],
+    output_path: &Path,
+) -> Result<(), AppError> {
+    let mut output_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output_path)
+        .await?;
+    let mut last_init_index = None;
+
+    for segment in segments {
+        if segment.init_segment_index != last_init_index {
+            if let Some(init_index) = segment.init_segment_index {
+                let init = init_segments
+                    .iter()
+                    .find(|init| init.index == init_index)
+                    .ok_or_else(|| {
+                        AppError::Internal(format!(
+                            "Missing fMP4 init segment metadata for index {}",
+                            init_index
+                        ))
+                    })?;
+                let init_bytes =
+                    tokio::fs::read(hls_init_segment_file_path(temp_dir, init.index)).await?;
+                output_file.write_all(&init_bytes).await?;
+            }
+            last_init_index = segment.init_segment_index;
+        }
+
+        let segment_bytes =
+            tokio::fs::read(fmp4_segment_file_path(temp_dir, segment.index)).await?;
+        output_file.write_all(&segment_bytes).await?;
+    }
+
+    output_file.flush().await?;
+    Ok(())
+}
+
+pub async fn write_fmp4_local_playlist(
+    temp_dir: &Path,
+    init_segments: &[HlsInitSegmentInfo],
+    segments: &[SegmentInfo],
+) -> Result<(), AppError> {
+    let target_duration = segments.iter().fold(1u64, |max_duration, segment| {
+        max_duration.max(segment.duration.ceil().max(1.0) as u64)
+    });
+    let mut lines = Vec::with_capacity(segments.len() * 3 + 8);
+    lines.push("#EXTM3U".to_string());
+    lines.push("#EXT-X-VERSION:6".to_string());
+    lines.push(format!("#EXT-X-TARGETDURATION:{}", target_duration));
+    lines.push("#EXT-X-MEDIA-SEQUENCE:0".to_string());
+    lines.push("#EXT-X-PLAYLIST-TYPE:VOD".to_string());
+
+    let mut last_init_index = None;
+    for segment in segments {
+        if segment.init_segment_index != last_init_index {
+            if let Some(init_index) = segment.init_segment_index {
+                let init = init_segments
+                    .iter()
+                    .find(|init| init.index == init_index)
+                    .ok_or_else(|| {
+                        AppError::Internal(format!(
+                            "Missing fMP4 init segment metadata for index {}",
+                            init_index
+                        ))
+                    })?;
+                lines.push(format!(
+                    "#EXT-X-MAP:URI=\"{}\"",
+                    hls_init_segment_file_path(Path::new(""), init.index)
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                ));
+            }
+            last_init_index = segment.init_segment_index;
+        }
+        lines.push(format!("#EXTINF:{:.3},", segment.duration));
+        lines.push(
+            fmp4_segment_file_path(Path::new(""), segment.index)
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
+    }
+
+    lines.push("#EXT-X-ENDLIST".to_string());
+    tokio::fs::write(temp_dir.join("index.m3u8"), lines.join("\n")).await?;
+    Ok(())
+}
+
 // --- TS to MP4 Conversion ---
 
 pub async fn merge_ts_files_in_dir(input_dir: &Path, output_path: &Path) -> Result<(), AppError> {
@@ -2883,15 +3266,10 @@ fn resolve_local_m3u8_uri(base_dir: &Path, uri: &str) -> Result<PathBuf, AppErro
 
     let lower = trimmed.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
-        return Err(AppError::InvalidInput(
-            "本地转换不支持网络 URI".to_string(),
-        ));
+        return Err(AppError::InvalidInput("本地转换不支持网络 URI".to_string()));
     }
 
-    let cleaned: &str = trimmed
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(trimmed);
+    let cleaned: &str = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
 
     let candidate = if let Some(rest) = cleaned
         .strip_prefix("file://")
@@ -2924,6 +3302,28 @@ fn resolve_local_m3u8_uri(base_dir: &Path, uri: &str) -> Result<PathBuf, AppErro
     Ok(resolved)
 }
 
+async fn read_local_m3u8_bytes(
+    path: &Path,
+    byte_range: Option<&ByteRangeSpec>,
+) -> Result<Vec<u8>, AppError> {
+    let bytes = tokio::fs::read(path).await?;
+    let Some(byte_range) = byte_range else {
+        return Ok(bytes);
+    };
+
+    let offset = byte_range.offset.unwrap_or(0) as usize;
+    let length = byte_range.length as usize;
+    let end = offset.saturating_add(length);
+    if offset > bytes.len() || end > bytes.len() {
+        return Err(AppError::InvalidInput(format!(
+            "字节范围超出文件大小：{}",
+            path.display()
+        )));
+    }
+
+    Ok(bytes[offset..end].to_vec())
+}
+
 pub async fn convert_local_m3u8_to_mp4_file(
     m3u8_path: &Path,
     mp4_path: &Path,
@@ -2931,9 +3331,8 @@ pub async fn convert_local_m3u8_to_mp4_file(
     ffmpeg_path: Option<&Path>,
 ) -> Result<(), AppError> {
     let bytes = tokio::fs::read(m3u8_path).await?;
-    let playlist = m3u8_rs::parse_playlist_res(&bytes).map_err(|_| {
-        AppError::InvalidInput("所选文件不是有效的 M3U8 播放列表".to_string())
-    })?;
+    let playlist = m3u8_rs::parse_playlist_res(&bytes)
+        .map_err(|_| AppError::InvalidInput("所选文件不是有效的 M3U8 播放列表".to_string()))?;
 
     let media = match playlist {
         m3u8_rs::Playlist::MediaPlaylist(media) => media,
@@ -2952,8 +3351,9 @@ pub async fn convert_local_m3u8_to_mp4_file(
     let media_sequence = media.media_sequence;
     let mut current_enc: Option<EncryptionInfo> = None;
     let mut key_cache: HashMap<PathBuf, Vec<u8>> = HashMap::new();
+    let is_fmp4 = media.segments.iter().any(|segment| segment.map.is_some());
 
-    let tmp_ts_path = {
+    let tmp_media_path = {
         let stem = mp4_path
             .file_stem()
             .and_then(|value| value.to_str())
@@ -2962,7 +3362,8 @@ pub async fn convert_local_m3u8_to_mp4_file(
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        parent.join(format!("{}.m3u8quicker.ts", stem))
+        let extension = if is_fmp4 { "mp4" } else { "ts" };
+        parent.join(format!("{}.m3u8quicker.{}", stem, extension))
     };
 
     let result = async {
@@ -2970,16 +3371,14 @@ pub async fn convert_local_m3u8_to_mp4_file(
             .create(true)
             .write(true)
             .truncate(true)
-            .open(&tmp_ts_path)
+            .open(&tmp_media_path)
             .await?;
+        let mut previous_map_byte_range: Option<(String, u64)> = None;
+        let mut previous_media_byte_range: Option<(String, u64)> = None;
+        let mut current_map_key: Option<(PathBuf, Option<ByteRangeSpec>)> = None;
 
         for (index, segment) in media.segments.iter().enumerate() {
-            if segment.map.is_some() {
-                return Err(AppError::InvalidInput(
-                    "暂不支持包含 EXT-X-MAP 的播放列表".to_string(),
-                ));
-            }
-            if segment.byte_range.is_some() {
+            if !is_fmp4 && segment.byte_range.is_some() {
                 return Err(AppError::InvalidInput(
                     "暂不支持包含 EXT-X-BYTERANGE 的播放列表".to_string(),
                 ));
@@ -3028,8 +3427,45 @@ pub async fn convert_local_m3u8_to_mp4_file(
                 }
             }
 
+            if let Some(map) = segment.map.as_ref() {
+                let map_path = resolve_local_m3u8_uri(&base_dir, &map.uri)?;
+                let map_uri_key = map_path.to_string_lossy().to_string();
+                let map_byte_range = resolve_explicit_byte_range(
+                    &map_uri_key,
+                    map.byte_range.as_ref(),
+                    &mut previous_map_byte_range,
+                );
+                let map_key = (map_path.clone(), map_byte_range.clone());
+                if current_map_key.as_ref() != Some(&map_key) {
+                    if current_enc.as_ref().is_some_and(|enc| enc.iv.is_none()) {
+                        return Err(AppError::Decryption(
+                            "加密的 fMP4 EXT-X-MAP 必须提供显式 IV".to_string(),
+                        ));
+                    }
+                    let raw = read_local_m3u8_bytes(&map_path, map_byte_range.as_ref()).await?;
+                    let plain = if let Some(ref enc) = current_enc {
+                        let iv = compute_iv(enc, 0);
+                        decrypt_aes_cbc(&raw, &enc.key_bytes, &iv)?
+                    } else {
+                        raw
+                    };
+                    tmp_file.write_all(&plain).await?;
+                    current_map_key = Some(map_key);
+                }
+            } else if is_fmp4 && current_map_key.is_none() {
+                return Err(AppError::InvalidInput(
+                    "fMP4 播放列表缺少 EXT-X-MAP".to_string(),
+                ));
+            }
+
             let segment_path = resolve_local_m3u8_uri(&base_dir, &segment.uri)?;
-            let raw = tokio::fs::read(&segment_path).await?;
+            let segment_uri_key = segment_path.to_string_lossy().to_string();
+            let media_byte_range = resolve_explicit_byte_range(
+                &segment_uri_key,
+                segment.byte_range.as_ref(),
+                &mut previous_media_byte_range,
+            );
+            let raw = read_local_m3u8_bytes(&segment_path, media_byte_range.as_ref()).await?;
             let sequence_number = media_sequence + index as u64;
 
             let plain = if let Some(ref enc) = current_enc {
@@ -3045,12 +3481,18 @@ pub async fn convert_local_m3u8_to_mp4_file(
         tmp_file.flush().await?;
         drop(tmp_file);
 
-        convert_ts_to_mp4_file(&tmp_ts_path, mp4_path, true, ffmpeg_enabled, ffmpeg_path).await
+        if is_fmp4 {
+            tokio::fs::rename(&tmp_media_path, mp4_path).await?;
+            Ok(())
+        } else {
+            convert_ts_to_mp4_file(&tmp_media_path, mp4_path, true, ffmpeg_enabled, ffmpeg_path)
+                .await
+        }
     }
     .await;
 
     if result.is_err() {
-        let _ = tokio::fs::remove_file(&tmp_ts_path).await;
+        let _ = tokio::fs::remove_file(&tmp_media_path).await;
     }
 
     result
@@ -3612,6 +4054,132 @@ seg-2.m4s
             .contains("#EXT-X-MAP:URI=\"init_000001.mp4\""));
         assert!(plan.playlist_files[0].content.contains("seg_000001.m4s"));
         assert!(plan.playlist_files[0].content.contains("seg_000002.m4s"));
+    }
+
+    #[test]
+    fn parse_media_playlist_plan_detects_fmp4_init_segments() {
+        let base_url = Url::parse("https://example.com/video/index.m3u8").expect("base url");
+        let playlist = r#"#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-TARGETDURATION:4
+#EXT-X-MAP:URI="init.mp4"
+#EXTINF:4.000,
+seg-1.m4s
+#EXTINF:4.000,
+seg-2.m4s
+#EXT-X-ENDLIST
+"#;
+
+        let parsed = m3u8_rs::parse_playlist_res(playlist.as_bytes()).expect("parse media");
+        let m3u8_rs::Playlist::MediaPlaylist(media) = parsed else {
+            panic!("expected media playlist");
+        };
+        let plan = parse_media_playlist_plan(&base_url, &media).expect("plan");
+
+        assert_eq!(plan.media_kind, HlsMediaKind::Fmp4);
+        assert_eq!(plan.init_segments.len(), 1);
+        assert_eq!(
+            plan.init_segments[0].info.uri,
+            "https://example.com/video/init.mp4"
+        );
+        assert_eq!(plan.segments[0].init_segment_index, Some(0));
+        assert_eq!(plan.segments[1].init_segment_index, Some(0));
+    }
+
+    #[test]
+    fn validate_fmp4_init_encryption_requires_explicit_iv() {
+        let init_segments = vec![PreparedHlsInitSegment {
+            info: HlsInitSegmentInfo {
+                index: 0,
+                uri: "https://example.com/init.mp4".to_string(),
+                byte_range: None,
+            },
+            encryption: Some(EncryptionInfo {
+                method: "AES-128".to_string(),
+                key_uri: "https://example.com/key.bin".to_string(),
+                iv: None,
+                key_bytes: Vec::new(),
+            }),
+        }];
+
+        assert!(validate_fmp4_init_encryption(&init_segments).is_err());
+    }
+
+    #[tokio::test]
+    async fn convert_local_m3u8_to_mp4_file_supports_fmp4_maps() {
+        let temp_root = unique_temp_path("local-fmp4-convert");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        fs::write(temp_root.join("init.mp4"), b"init").expect("write init");
+        fs::write(temp_root.join("seg-1.m4s"), b"seg1").expect("write seg1");
+        fs::write(temp_root.join("seg-2.m4s"), b"seg2").expect("write seg2");
+        let playlist = r#"#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-TARGETDURATION:4
+#EXT-X-MAP:URI="init.mp4"
+#EXTINF:4.000,
+seg-1.m4s
+#EXTINF:4.000,
+seg-2.m4s
+#EXT-X-ENDLIST
+"#;
+        let playlist_path = temp_root.join("index.m3u8");
+        let output_path = temp_root.join("output.mp4");
+        fs::write(&playlist_path, playlist).expect("write playlist");
+
+        convert_local_m3u8_to_mp4_file(&playlist_path, &output_path, false, None)
+            .await
+            .expect("convert local fmp4");
+
+        assert_eq!(
+            fs::read(&output_path).expect("read output"),
+            b"initseg1seg2"
+        );
+        remove_temp_dir(&temp_root);
+    }
+
+    #[tokio::test]
+    async fn merge_fmp4_segments_writes_init_before_fragments() {
+        let temp_root = unique_temp_path("merge-fmp4");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        fs::write(hls_init_segment_file_path(&temp_root, 0), b"init").expect("write init");
+        fs::write(fmp4_segment_file_path(&temp_root, 0), b"seg0").expect("write seg0");
+        fs::write(fmp4_segment_file_path(&temp_root, 1), b"seg1").expect("write seg1");
+        let output_path = temp_root.join("merged.mp4");
+        let init_segments = vec![HlsInitSegmentInfo {
+            index: 0,
+            uri: "https://example.com/init.mp4".to_string(),
+            byte_range: None,
+        }];
+        let segments = vec![
+            SegmentInfo {
+                index: 0,
+                uri: "https://example.com/seg0.m4s".to_string(),
+                duration: 4.0,
+                sequence_number: 0,
+                byte_range: None,
+                init_segment_index: Some(0),
+                encryption: None,
+            },
+            SegmentInfo {
+                index: 1,
+                uri: "https://example.com/seg1.m4s".to_string(),
+                duration: 4.0,
+                sequence_number: 1,
+                byte_range: None,
+                init_segment_index: Some(0),
+                encryption: None,
+            },
+        ];
+
+        merge_fmp4_segments(&temp_root, &init_segments, &segments, &output_path)
+            .await
+            .expect("merge fmp4");
+
+        assert_eq!(
+            fs::read(&output_path).expect("read output"),
+            b"initseg0seg1"
+        );
+        remove_temp_dir(&temp_root);
     }
 
     #[test]

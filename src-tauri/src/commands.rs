@@ -95,6 +95,7 @@ pub async fn create_download(
             filename: filename.clone(),
             file_type,
             hls_output_mode: HlsOutputMode::SingleStream,
+            hls_media_kind: HlsMediaKind::MpegTs,
             hls_selection: None,
             encryption_method: None,
             output_dir: output_dir.clone(),
@@ -106,6 +107,8 @@ pub async fn create_download(
             failed_segment_indices: Vec::new(),
             segment_uris: Vec::new(),
             segment_durations: Vec::new(),
+            hls_init_segments: Vec::new(),
+            segment_init_indices: Vec::new(),
             total_bytes: 0,
             speed_bytes_per_sec: 0,
             created_at,
@@ -150,6 +153,7 @@ pub async fn create_download(
                     filename: filename.clone(),
                     file_type: FileType::Hls,
                     hls_output_mode: HlsOutputMode::SingleStream,
+                    hls_media_kind: prepared.media_kind,
                     hls_selection: prepared.selection.clone(),
                     encryption_method: detect_encryption_method(&prepared.segments),
                     output_dir: output_dir.clone(),
@@ -161,6 +165,8 @@ pub async fn create_download(
                     failed_segment_indices: Vec::new(),
                     segment_uris: segment_uris(&prepared.segments),
                     segment_durations: segment_durations(&prepared.segments),
+                    hls_init_segments: hls_init_segments(&prepared.init_segments),
+                    segment_init_indices: segment_init_indices(&prepared.segments),
                     total_bytes: 0,
                     speed_bytes_per_sec: 0,
                     created_at,
@@ -184,6 +190,8 @@ pub async fn create_download(
                     state.download_priorities.clone(),
                     state.http_client.clone(),
                     task.clone(),
+                    prepared.media_kind,
+                    prepared.init_segments,
                     prepared.segments,
                     request_headers,
                     state.max_concurrent_segments.clone(),
@@ -202,6 +210,7 @@ pub async fn create_download(
                     filename: filename.clone(),
                     file_type: FileType::Hls,
                     hls_output_mode: HlsOutputMode::MultiTrackBundle,
+                    hls_media_kind: HlsMediaKind::MpegTs,
                     hls_selection: Some(prepared.selection.clone()),
                     encryption_method: prepared.encryption_method(),
                     output_dir: output_dir.clone(),
@@ -213,6 +222,8 @@ pub async fn create_download(
                     failed_segment_indices: Vec::new(),
                     segment_uris: prepared.source_uris(),
                     segment_durations: prepared.durations(),
+                    hls_init_segments: Vec::new(),
+                    segment_init_indices: Vec::new(),
                     total_bytes: 0,
                     speed_bytes_per_sec: 0,
                     created_at,
@@ -405,6 +416,9 @@ pub async fn resume_download(
                 task.total_segments = prepared.segments.len();
                 task.segment_uris = segment_uris(&prepared.segments);
                 task.segment_durations = segment_durations(&prepared.segments);
+                task.hls_media_kind = prepared.media_kind;
+                task.hls_init_segments = hls_init_segments(&prepared.init_segments);
+                task.segment_init_indices = segment_init_indices(&prepared.segments);
                 task.encryption_method = detect_encryption_method(&prepared.segments);
                 task.hls_selection = prepared.selection.clone();
                 task.hls_output_mode = HlsOutputMode::SingleStream;
@@ -425,6 +439,8 @@ pub async fn resume_download(
                 state.download_priorities.clone(),
                 state.http_client.clone(),
                 updated_task.clone(),
+                prepared.media_kind,
+                prepared.init_segments,
                 prepared.segments,
                 request_headers,
                 state.max_concurrent_segments.clone(),
@@ -461,6 +477,9 @@ pub async fn resume_download(
                 task.total_segments = prepared.total_units();
                 task.segment_uris = prepared.source_uris();
                 task.segment_durations = prepared.durations();
+                task.hls_media_kind = HlsMediaKind::MpegTs;
+                task.hls_init_segments = Vec::new();
+                task.segment_init_indices = Vec::new();
                 task.encryption_method = prepared.encryption_method();
                 task.hls_selection = Some(prepared.selection.clone());
                 task.hls_output_mode = HlsOutputMode::MultiTrackBundle;
@@ -594,6 +613,9 @@ pub async fn retry_failed_segments(
                 task.total_segments = prepared.segments.len();
                 task.segment_uris = segment_uris(&prepared.segments);
                 task.segment_durations = segment_durations(&prepared.segments);
+                task.hls_media_kind = prepared.media_kind;
+                task.hls_init_segments = hls_init_segments(&prepared.init_segments);
+                task.segment_init_indices = segment_init_indices(&prepared.segments);
                 task.encryption_method = detect_encryption_method(&prepared.segments);
                 task.hls_selection = prepared.selection.clone();
                 task.hls_output_mode = HlsOutputMode::SingleStream;
@@ -614,6 +636,8 @@ pub async fn retry_failed_segments(
                 state.download_priorities.clone(),
                 state.http_client.clone(),
                 updated_task.clone(),
+                prepared.media_kind,
+                prepared.init_segments,
                 prepared.segments,
                 request_headers,
                 state.max_concurrent_segments.clone(),
@@ -651,6 +675,9 @@ pub async fn retry_failed_segments(
                 task.total_segments = prepared.total_units();
                 task.segment_uris = prepared.source_uris();
                 task.segment_durations = prepared.durations();
+                task.hls_media_kind = HlsMediaKind::MpegTs;
+                task.hls_init_segments = Vec::new();
+                task.segment_init_indices = Vec::new();
                 task.encryption_method = prepared.encryption_method();
                 task.hls_selection = Some(prepared.selection.clone());
                 task.hls_output_mode = HlsOutputMode::MultiTrackBundle;
@@ -1830,7 +1857,7 @@ async fn ensure_task_playback_ready(
 
     let client = state.http_client.read().await.clone();
     let request_headers = parse_request_headers(task.extra_headers.as_deref())?;
-    let segments = match downloader::prepare_hls_download(
+    let (media_kind, init_segments, segments) = match downloader::prepare_hls_download(
         &client,
         &task.url,
         &request_headers,
@@ -1838,7 +1865,11 @@ async fn ensure_task_playback_ready(
     )
     .await?
     {
-        downloader::PreparedHlsDownload::Single(prepared) => prepared.segments,
+        downloader::PreparedHlsDownload::Single(prepared) => (
+            prepared.media_kind,
+            hls_init_segments(&prepared.init_segments),
+            prepared.segments,
+        ),
         downloader::PreparedHlsDownload::Bundle(_) => {
             return Err(AppError::InvalidInput("多轨下载暂不支持播放".to_string()))
         }
@@ -1860,6 +1891,9 @@ async fn ensure_task_playback_ready(
             .ok_or_else(|| AppError::InvalidInput(format!("Download {} not found", id)))?;
         task.segment_uris = segment_uris(&segments);
         task.segment_durations = segment_durations(&segments);
+        task.hls_media_kind = media_kind;
+        task.hls_init_segments = init_segments;
+        task.segment_init_indices = segment_init_indices(&segments);
         task.encryption_method = detect_encryption_method(&segments);
         task.touch();
         task.clone()
@@ -1880,7 +1914,11 @@ fn playback_target_for_task(task: &DownloadTask) -> Result<(PlaybackSourceKind, 
                 .file_path
                 .as_ref()
                 .ok_or_else(|| AppError::InvalidInput("下载完成文件不存在".to_string()))?;
-            if !std::path::Path::new(file_path).is_file() {
+            let path = std::path::Path::new(file_path);
+            if task.hls_media_kind == HlsMediaKind::Fmp4 && path.is_dir() {
+                return Ok((PlaybackSourceKind::Hls, playback::playlist_path(&task.id)));
+            }
+            if !path.is_file() {
                 return Err(AppError::InvalidInput("下载完成文件不存在".to_string()));
             }
             Ok((PlaybackSourceKind::File, playback::file_path(&task.id)))
@@ -1941,6 +1979,18 @@ async fn maybe_cleanup_completed_temp_dir(
     };
 
     if matches!(task.status, DownloadStatus::Completed) {
+        if task.hls_media_kind == HlsMediaKind::Fmp4
+            && task
+                .file_path
+                .as_deref()
+                .is_some_and(|path| Path::new(path).is_dir())
+        {
+            playback::playback_log(&format!(
+                "skip temp cleanup because completed fMP4 directory is final output task_id={}",
+                id
+            ));
+            return;
+        }
         playback::playback_log(&format!("cleanup completed temp dir task_id={}", id));
         let _ = downloader::cleanup_temp_dir(&PathBuf::from(&task.output_dir), &task.id).await;
     }
@@ -1952,6 +2002,19 @@ fn segment_uris(segments: &[SegmentInfo]) -> Vec<String> {
 
 fn segment_durations(segments: &[SegmentInfo]) -> Vec<f32> {
     segments.iter().map(|segment| segment.duration).collect()
+}
+
+fn hls_init_segments(
+    init_segments: &[downloader::PreparedHlsInitSegment],
+) -> Vec<HlsInitSegmentInfo> {
+    init_segments.iter().map(|init| init.info.clone()).collect()
+}
+
+fn segment_init_indices(segments: &[SegmentInfo]) -> Vec<Option<usize>> {
+    segments
+        .iter()
+        .map(|segment| segment.init_segment_index)
+        .collect()
 }
 
 fn detect_encryption_method(segments: &[SegmentInfo]) -> Option<String> {
@@ -1971,7 +2034,14 @@ fn comparable_segment_path(uri: &str) -> String {
 
 fn validate_segment_layout(task: &DownloadTask, segments: &[SegmentInfo]) -> Result<(), AppError> {
     let current_uris = segment_uris(segments);
-    validate_uri_layout(task, &current_uris)
+    validate_uri_layout(task, &current_uris)?;
+    let current_init_indices = segment_init_indices(segments);
+    if !task.segment_init_indices.is_empty() && task.segment_init_indices != current_init_indices {
+        return Err(AppError::InvalidInput(
+            "检测到远端 fMP4 初始化片段已变化，请重新创建下载任务".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_bundle_layout(task: &DownloadTask, current_uris: &[String]) -> Result<(), AppError> {
@@ -2187,7 +2257,11 @@ async fn start_mp4_download_worker(
                 match result {
                     Ok(downloader::DownloadRunOutcome::Completed(final_path)) => {
                         let completed_at = Utc::now();
-                        let final_size = final_path.metadata().map(|metadata| metadata.len()).ok();
+                        let final_size = final_path
+                            .metadata()
+                            .ok()
+                            .filter(|metadata| metadata.is_file())
+                            .map(|metadata| metadata.len());
                         task.status = DownloadStatus::Completed;
                         task.completed_at = Some(completed_at);
                         task.updated_at = Some(completed_at);
@@ -2197,8 +2271,10 @@ async fn start_mp4_download_worker(
                             task.total_bytes = final_size;
                             task.completed_segments = task.total_segments;
                         }
-                        if let Some(name) = final_path.file_name() {
-                            task.filename = name.to_string_lossy().to_string();
+                        if final_path.is_file() {
+                            if let Some(name) = final_path.file_name() {
+                                task.filename = name.to_string_lossy().to_string();
+                            }
                         }
                         progress_to_emit = Some(task_to_progress(task));
                         should_save = true;
@@ -2281,6 +2357,8 @@ async fn start_download_worker(
     >,
     client: Arc<RwLock<reqwest::Client>>,
     task: DownloadTask,
+    media_kind: HlsMediaKind,
+    init_segments: Vec<downloader::PreparedHlsInitSegment>,
     segments: Vec<SegmentInfo>,
     request_headers: RequestHeaders,
     max_concurrent: Arc<Mutex<usize>>,
@@ -2315,6 +2393,8 @@ async fn start_download_worker(
             client,
             rate_limiter,
             task_id.clone(),
+            media_kind,
+            init_segments,
             segments,
             Arc::new(request_headers),
             output_dir_path.clone(),
@@ -2339,7 +2419,11 @@ async fn start_download_worker(
                 match result {
                     Ok(downloader::DownloadRunOutcome::Completed(final_path)) => {
                         let completed_at = Utc::now();
-                        let final_size = final_path.metadata().map(|metadata| metadata.len()).ok();
+                        let final_size = final_path
+                            .metadata()
+                            .ok()
+                            .filter(|metadata| metadata.is_file())
+                            .map(|metadata| metadata.len());
                         task.status = DownloadStatus::Completed;
                         task.completed_at = Some(completed_at);
                         task.updated_at = Some(completed_at);
@@ -3172,6 +3256,7 @@ mod tests {
             filename: "video".to_string(),
             file_type: FileType::Hls,
             hls_output_mode: HlsOutputMode::SingleStream,
+            hls_media_kind: HlsMediaKind::MpegTs,
             hls_selection: None,
             encryption_method: None,
             output_dir: "D:\\Download".to_string(),
@@ -3183,6 +3268,8 @@ mod tests {
             failed_segment_indices: Vec::new(),
             segment_uris: segment_uris.into_iter().map(str::to_string).collect(),
             segment_durations: vec![5.0; total_segments],
+            hls_init_segments: Vec::new(),
+            segment_init_indices: Vec::new(),
             total_bytes: 1024,
             speed_bytes_per_sec: 0,
             created_at: Utc::now(),
@@ -3203,6 +3290,7 @@ mod tests {
                 duration: 5.0,
                 sequence_number: index as u64,
                 byte_range: None,
+                init_segment_index: None,
                 encryption: None,
             })
             .collect()

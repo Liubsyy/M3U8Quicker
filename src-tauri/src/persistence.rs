@@ -39,6 +39,10 @@ struct DownloadTaskDetail {
     segment_uris: Vec<String>,
     #[serde(default)]
     segment_durations: Vec<f32>,
+    #[serde(default)]
+    hls_init_segments: Vec<crate::models::HlsInitSegmentInfo>,
+    #[serde(default)]
+    segment_init_indices: Vec<Option<usize>>,
 }
 
 fn app_data_dir(app_handle: &tauri::AppHandle) -> PathBuf {
@@ -153,6 +157,8 @@ fn task_to_detail(task: &DownloadTask) -> DownloadTaskDetail {
         failed_segment_indices: task.failed_segment_indices.clone(),
         segment_uris: task.segment_uris.clone(),
         segment_durations: task.segment_durations.clone(),
+        hls_init_segments: task.hls_init_segments.clone(),
+        segment_init_indices: task.segment_init_indices.clone(),
     }
 }
 
@@ -162,6 +168,7 @@ pub fn task_to_summary(task: &DownloadTask) -> DownloadTaskSummary {
         filename: task.filename.clone(),
         file_type: task.file_type,
         hls_output_mode: task.hls_output_mode,
+        hls_media_kind: task.hls_media_kind,
         hls_selection: task.hls_selection.clone(),
         encryption_method: task.encryption_method.clone(),
         output_dir: task.output_dir.clone(),
@@ -215,6 +222,7 @@ fn task_from_parts(
         filename: summary.filename,
         file_type: summary.file_type,
         hls_output_mode: summary.hls_output_mode,
+        hls_media_kind: summary.hls_media_kind,
         hls_selection: summary.hls_selection,
         encryption_method: summary.encryption_method,
         output_dir: summary.output_dir,
@@ -226,6 +234,8 @@ fn task_from_parts(
         failed_segment_indices: detail.failed_segment_indices,
         segment_uris: detail.segment_uris,
         segment_durations: detail.segment_durations,
+        hls_init_segments: detail.hls_init_segments,
+        segment_init_indices: detail.segment_init_indices,
         total_bytes: summary.total_bytes,
         speed_bytes_per_sec: summary.speed_bytes_per_sec,
         created_at: parse_datetime(&summary.created_at)?,

@@ -34,6 +34,14 @@ pub enum HlsOutputMode {
     MultiTrackBundle,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HlsMediaKind {
+    #[default]
+    MpegTs,
+    Fmp4,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HlsPlaylistKind {
@@ -143,6 +151,8 @@ pub struct DownloadTask {
     #[serde(default)]
     pub hls_output_mode: HlsOutputMode,
     #[serde(default)]
+    pub hls_media_kind: HlsMediaKind,
+    #[serde(default)]
     pub hls_selection: Option<HlsTrackSelection>,
     #[serde(default)]
     pub encryption_method: Option<String>,
@@ -160,6 +170,10 @@ pub struct DownloadTask {
     pub segment_uris: Vec<String>,
     #[serde(default)]
     pub segment_durations: Vec<f32>,
+    #[serde(default)]
+    pub hls_init_segments: Vec<HlsInitSegmentInfo>,
+    #[serde(default)]
+    pub segment_init_indices: Vec<Option<usize>>,
     pub total_bytes: u64,
     pub speed_bytes_per_sec: u64,
     pub created_at: DateTime<Utc>,
@@ -335,6 +349,13 @@ pub struct ByteRangeSpec {
     pub offset: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HlsInitSegmentInfo {
+    pub index: usize,
+    pub uri: String,
+    pub byte_range: Option<ByteRangeSpec>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SegmentInfo {
     pub index: usize,
@@ -342,6 +363,7 @@ pub struct SegmentInfo {
     pub duration: f32,
     pub sequence_number: u64,
     pub byte_range: Option<ByteRangeSpec>,
+    pub init_segment_index: Option<usize>,
     pub encryption: Option<EncryptionInfo>,
 }
 
@@ -373,6 +395,8 @@ pub struct DownloadTaskSummary {
     pub file_type: FileType,
     #[serde(default)]
     pub hls_output_mode: HlsOutputMode,
+    #[serde(default)]
+    pub hls_media_kind: HlsMediaKind,
     #[serde(default)]
     pub hls_selection: Option<HlsTrackSelection>,
     pub encryption_method: Option<String>,

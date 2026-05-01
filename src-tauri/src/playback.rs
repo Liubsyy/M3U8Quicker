@@ -20,6 +20,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::downloader;
 use crate::error::AppError;
+use crate::models::HlsMediaKind;
 use crate::models::{DownloadId, DownloadStatus, DownloadTask, PlaybackSourceKind};
 
 pub const PLAYBACK_PRIORITY_WINDOW_SIZE: usize = 4;
@@ -239,6 +240,10 @@ fn build_playback_router(state: PlaybackHttpState) -> Router {
         .route("/playback/{task_id}/index.m3u8", get(serve_playlist))
         .route("/playback/{task_id}/file", get(serve_file))
         .route(
+            "/playback/{task_id}/init/{init_index}",
+            get(serve_init_segment),
+        )
+        .route(
             "/playback/{task_id}/segments/{segment_index}",
             get(serve_segment),
         )
@@ -428,6 +433,13 @@ pub fn build_playlist(task: &DownloadTask, token: &str) -> Result<String, AppErr
             "当前任务缺少完整的切片时长信息".to_string(),
         ));
     }
+    if task.hls_media_kind == HlsMediaKind::Fmp4
+        && task.segment_init_indices.len() != task.total_segments
+    {
+        return Err(AppError::InvalidInput(
+            "当前任务缺少完整的 fMP4 初始化片段信息".to_string(),
+        ));
+    }
 
     let target_duration = task
         .segment_durations
@@ -438,7 +450,10 @@ pub fn build_playlist(task: &DownloadTask, token: &str) -> Result<String, AppErr
 
     let mut lines = Vec::with_capacity(task.total_segments * 2 + 6);
     lines.push("#EXTM3U".to_string());
-    lines.push("#EXT-X-VERSION:3".to_string());
+    lines.push(match task.hls_media_kind {
+        HlsMediaKind::MpegTs => "#EXT-X-VERSION:3".to_string(),
+        HlsMediaKind::Fmp4 => "#EXT-X-VERSION:6".to_string(),
+    });
     lines.push(format!("#EXT-X-TARGETDURATION:{}", target_duration));
     lines.push("#EXT-X-MEDIA-SEQUENCE:0".to_string());
     // Even while downloading, the app already knows the full segment list up front.
@@ -447,7 +462,25 @@ pub fn build_playlist(task: &DownloadTask, token: &str) -> Result<String, AppErr
     lines.push("#EXT-X-PLAYLIST-TYPE:VOD".to_string());
     lines.push("#EXT-X-START:TIME-OFFSET=0,PRECISE=YES".to_string());
 
+    let mut last_init_index = None;
     for (segment_index, duration) in task.segment_durations.iter().enumerate() {
+        if task.hls_media_kind == HlsMediaKind::Fmp4 {
+            let init_index = task
+                .segment_init_indices
+                .get(segment_index)
+                .copied()
+                .flatten()
+                .ok_or_else(|| {
+                    AppError::InvalidInput("当前 fMP4 切片缺少 EXT-X-MAP".to_string())
+                })?;
+            if Some(init_index) != last_init_index {
+                lines.push(format!(
+                    "#EXT-X-MAP:URI=\"init/{}?token={}\"",
+                    init_index, token
+                ));
+                last_init_index = Some(init_index);
+            }
+        }
         lines.push(format!("#EXTINF:{:.3},", duration));
         lines.push(format!("segments/{}?token={}", segment_index, token));
     }
@@ -525,6 +558,52 @@ async fn serve_file(
     response
 }
 
+async fn serve_init_segment(
+    State(state): State<PlaybackHttpState>,
+    Path((task_id, init_index)): Path<(String, usize)>,
+    Query(query): Query<PlaybackTokenQuery>,
+) -> Response {
+    playback_log(&format!(
+        "init segment request task_id={} init_index={} token_suffix={}",
+        task_id,
+        init_index,
+        token_suffix(&query.token)
+    ));
+    let (lease, task) = match acquire_session_task(&state, &task_id, &query.token).await {
+        Ok(value) => value,
+        Err(error) => return error.into_response(),
+    };
+
+    if task.hls_media_kind != HlsMediaKind::Fmp4
+        || !task
+            .hls_init_segments
+            .iter()
+            .any(|init| init.index == init_index)
+    {
+        lease.finish().await;
+        return PlaybackHttpError::new(StatusCode::NOT_FOUND, "初始化片段不存在").into_response();
+    }
+
+    let response =
+        match read_or_wait_for_init_segment(&state, &task, &query.token, init_index).await {
+            Ok(bytes) => with_playback_headers(
+                (
+                    [(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"))],
+                    bytes,
+                )
+                    .into_response(),
+            ),
+            Err(error) => error.into_response(),
+        };
+    playback_log(&format!(
+        "init segment response task_id={} init_index={} current_status={:?}",
+        task.id, init_index, task.status
+    ));
+
+    lease.finish().await;
+    response
+}
+
 async fn serve_segment(
     State(state): State<PlaybackHttpState>,
     Path((task_id, segment_index)): Path<(String, usize)>,
@@ -550,7 +629,13 @@ async fn serve_segment(
     {
         Ok(bytes) => with_playback_headers(
             (
-                [(header::CONTENT_TYPE, HeaderValue::from_static("video/mp2t"))],
+                [(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static(match task.hls_media_kind {
+                        HlsMediaKind::MpegTs => "video/mp2t",
+                        HlsMediaKind::Fmp4 => "video/iso.segment",
+                    }),
+                )],
                 bytes,
             )
                 .into_response(),
@@ -682,10 +767,11 @@ async fn read_or_wait_for_segment(
     token: &str,
     segment_index: usize,
 ) -> Result<Bytes, PlaybackHttpError> {
-    let segment_path = downloader::segment_file_path(
-        &downloader::temp_dir_for_task(FsPath::new(&task.output_dir), &task.id),
-        segment_index,
-    );
+    let temp_dir = downloader::temp_dir_for_task(FsPath::new(&task.output_dir), &task.id);
+    let segment_path = match task.hls_media_kind {
+        HlsMediaKind::MpegTs => downloader::segment_file_path(&temp_dir, segment_index),
+        HlsMediaKind::Fmp4 => downloader::fmp4_segment_file_path(&temp_dir, segment_index),
+    };
 
     if let Ok(bytes) = tokio::fs::read(&segment_path).await {
         playback_log(&format!(
@@ -812,6 +898,93 @@ async fn read_or_wait_for_segment(
                 task.id, segment_index, wait_round, task_state.status
             ));
         }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn read_or_wait_for_init_segment(
+    state: &PlaybackHttpState,
+    task: &DownloadTask,
+    token: &str,
+    init_index: usize,
+) -> Result<Bytes, PlaybackHttpError> {
+    let init_path = downloader::hls_init_segment_file_path(
+        &downloader::temp_dir_for_task(FsPath::new(&task.output_dir), &task.id),
+        init_index,
+    );
+
+    if let Ok(bytes) = tokio::fs::read(&init_path).await {
+        playback_log(&format!(
+            "init cache hit task_id={} init_index={} path={}",
+            task.id,
+            init_index,
+            init_path.display()
+        ));
+        return Ok(Bytes::from(bytes));
+    }
+
+    playback_log(&format!(
+        "init cache miss task_id={} init_index={} path={}",
+        task.id,
+        init_index,
+        init_path.display()
+    ));
+
+    let mut wait_round = 0usize;
+    loop {
+        if let Ok(bytes) = tokio::fs::read(&init_path).await {
+            playback_log(&format!(
+                "init became available task_id={} init_index={} waited_rounds={}",
+                task.id, init_index, wait_round
+            ));
+            return Ok(Bytes::from(bytes));
+        }
+
+        {
+            let sessions = state.playback_sessions.lock().await;
+            let Some(session) = sessions.get(&task.id) else {
+                return Err(PlaybackHttpError::new(
+                    StatusCode::NOT_FOUND,
+                    "播放会话已关闭",
+                ));
+            };
+            if session.session_token != token {
+                return Err(PlaybackHttpError::new(
+                    StatusCode::FORBIDDEN,
+                    "播放会话已失效",
+                ));
+            }
+        }
+
+        let task_state = {
+            let downloads = state.downloads.lock().await;
+            downloads.get(&task.id).cloned()
+        };
+
+        let Some(task_state) = task_state else {
+            return Err(PlaybackHttpError::new(
+                StatusCode::NOT_FOUND,
+                "下载任务不存在",
+            ));
+        };
+
+        match task_state.status {
+            DownloadStatus::Cancelled => {
+                return Err(PlaybackHttpError::new(StatusCode::GONE, "下载任务已取消"));
+            }
+            DownloadStatus::Failed(message) => {
+                return Err(PlaybackHttpError::new(StatusCode::CONFLICT, message));
+            }
+            DownloadStatus::Completed => {
+                return Err(PlaybackHttpError::new(
+                    StatusCode::NOT_FOUND,
+                    "目标初始化片段不可用",
+                ));
+            }
+            _ => {}
+        }
+
+        wait_round += 1;
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -1068,6 +1241,7 @@ mod tests {
             filename: "video".to_string(),
             file_type: FileType::Hls,
             hls_output_mode: crate::models::HlsOutputMode::SingleStream,
+            hls_media_kind: HlsMediaKind::MpegTs,
             hls_selection: None,
             encryption_method: None,
             output_dir: "D:\\Downloads".to_string(),
@@ -1083,6 +1257,8 @@ mod tests {
                 "https://example.com/2.ts".to_string(),
             ],
             segment_durations: vec![5.0, 7.5, 6.0],
+            hls_init_segments: Vec::new(),
+            segment_init_indices: Vec::new(),
             total_bytes: 1024,
             speed_bytes_per_sec: 0,
             created_at: Utc::now(),
@@ -1121,6 +1297,25 @@ mod tests {
         assert!(playlist.contains("#EXTINF:5.000,"));
         assert!(playlist.contains("segments/1?token=token-1"));
         assert!(playlist.contains("#EXT-X-ENDLIST"));
+    }
+
+    #[test]
+    fn build_playlist_outputs_fmp4_map_lines() {
+        let mut task = build_task(DownloadStatus::Downloading);
+        task.hls_media_kind = HlsMediaKind::Fmp4;
+        task.hls_init_segments = vec![crate::models::HlsInitSegmentInfo {
+            index: 0,
+            uri: "https://example.com/init.mp4".to_string(),
+            byte_range: None,
+        }];
+        task.segment_init_indices = vec![Some(0), Some(0), Some(0)];
+
+        let playlist = build_playlist(&task, "token-fmp4").unwrap();
+
+        assert!(playlist.contains("#EXT-X-VERSION:6"));
+        assert!(playlist.contains("#EXT-X-MAP:URI=\"init/0?token=token-fmp4\""));
+        assert_eq!(playlist.matches("#EXT-X-MAP").count(), 1);
+        assert!(playlist.contains("segments/2?token=token-fmp4"));
     }
 
     #[test]

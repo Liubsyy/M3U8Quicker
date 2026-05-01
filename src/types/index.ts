@@ -26,6 +26,8 @@ export type DownloadMode = "hls" | "direct";
 
 export type HlsOutputMode = "single_stream" | "multi_track_bundle";
 
+export type HlsMediaKind = "mpeg_ts" | "fmp4";
+
 export type HlsPlaylistKind = "media" | "master";
 
 export type HlsTrackType = "video" | "audio" | "subtitle";
@@ -54,6 +56,7 @@ export interface DownloadTaskSummary {
   filename: string;
   file_type: FileType;
   hls_output_mode: HlsOutputMode;
+  hls_media_kind: HlsMediaKind;
   hls_selection: HlsTrackSelection | null;
   encryption_method: string | null;
   output_dir: string;
