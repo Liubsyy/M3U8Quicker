@@ -13,6 +13,7 @@ export interface AppSettings {
   download_concurrency: number;
   download_speed_limit_kbps: number;
   preview_columns: number;
+  preview_count: number;
   preview_thumbnail_width: number;
   preview_jpeg_quality: number;
   delete_ts_temp_dir_after_download: boolean;

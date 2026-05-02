@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,7 +13,6 @@ use crate::error::AppError;
 use crate::ffmpeg;
 use crate::state::AppState;
 
-const PREVIEW_THUMBNAIL_CONCURRENCY: usize = 3;
 const PREVIEW_WINDOW_LABEL_PREFIX: &str = "preview-";
 pub const MIN_THUMBNAIL_COUNT: usize = 9;
 pub const MAX_THUMBNAIL_COUNT: usize = 99;
@@ -28,7 +28,8 @@ pub struct PreviewSession {
     pub cache_dir: PathBuf,
     pub duration_secs: Mutex<Option<f64>>,
     pub operation_lock: RwLock<()>,
-    pub cancel_token: CancellationToken,
+    pub cancel_token: Mutex<CancellationToken>,
+    pub cancelled_runs: Mutex<HashSet<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +45,7 @@ pub struct PreviewThumbnailEvent {
     pub count: usize,
     pub target_width: u32,
     pub jpeg_quality: u8,
+    pub run_id: String,
     pub thumbnail: PreviewThumbnail,
 }
 
@@ -63,7 +65,8 @@ pub async fn create_session(
         cache_dir,
         duration_secs: Mutex::new(None),
         operation_lock: RwLock::new(()),
-        cancel_token: CancellationToken::new(),
+        cancel_token: Mutex::new(CancellationToken::new()),
+        cancelled_runs: Mutex::new(HashSet::new()),
     });
 
     let mut sessions = state.preview_sessions.lock().await;
@@ -78,6 +81,8 @@ pub async fn extract_thumbnails(
     count: usize,
     target_width: u32,
     jpeg_quality: u8,
+    run_id: &str,
+    force_refresh: bool,
 ) -> Result<Vec<PreviewThumbnail>, AppError> {
     if !(MIN_THUMBNAIL_COUNT..=MAX_THUMBNAIL_COUNT).contains(&count) {
         return Err(AppError::InvalidInput(format!(
@@ -105,15 +110,24 @@ pub async fn extract_thumbnails(
             .cloned()
             .ok_or_else(|| AppError::InvalidInput("预览会话不存在或已关闭".to_string()))?
     };
-    let _operation_guard = session.operation_lock.read().await;
-    if session.cancel_token.is_cancelled() {
-        return Err(AppError::InvalidInput("预览已取消".to_string()));
+    let _operation_guard = session.operation_lock.write().await;
+    {
+        let mut cancelled_runs = session.cancelled_runs.lock().await;
+        if cancelled_runs.remove(run_id) {
+            return Err(AppError::InvalidInput("预览已取消".to_string()));
+        }
     }
 
     let ffmpeg_path = ffmpeg::resolve_ffmpeg_path(app_handle)
         .await
         .ok_or_else(|| AppError::InvalidInput("请先在设置中开启并配置 FFmpeg".to_string()))?;
-    let cancel_token = session.cancel_token.clone();
+    let cancel_token = {
+        let mut guard = session.cancel_token.lock().await;
+        if guard.is_cancelled() {
+            *guard = CancellationToken::new();
+        }
+        guard.child_token()
+    };
     let proxy_url = {
         let proxy = state.proxy_settings.lock().await;
         if proxy.enabled && !proxy.url.trim().is_empty() {
@@ -148,7 +162,15 @@ pub async fn extract_thumbnails(
 
     let thumbnail_dir =
         thumbnail_dir_for_options(&session.cache_dir, count, target_width, jpeg_quality);
+    if force_refresh {
+        match tokio::fs::remove_dir_all(&thumbnail_dir).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     tokio::fs::create_dir_all(&thumbnail_dir).await?;
+    let preview_concurrency = (*state.max_concurrent_segments.lock().await).max(1);
 
     let results = stream::iter(0..count)
         .map(|index| {
@@ -157,6 +179,7 @@ pub async fn extract_thumbnails(
             let ffmpeg_path = ffmpeg_path.clone();
             let session = Arc::clone(&session);
             let token = token.to_string();
+            let run_id = run_id.to_string();
             let proxy_url = proxy_url.clone();
 
             async move {
@@ -199,20 +222,47 @@ pub async fn extract_thumbnails(
                         count,
                         target_width,
                         jpeg_quality,
+                        run_id,
                         thumbnail: thumbnail.clone(),
                     },
                 );
                 Ok(thumbnail)
             }
         })
-        .buffer_unordered(PREVIEW_THUMBNAIL_CONCURRENCY)
+        .buffer_unordered(preview_concurrency)
         .collect::<Vec<Result<PreviewThumbnail, AppError>>>()
         .await;
 
-    let mut results = results.into_iter().collect::<Result<Vec<_>, _>>()?;
+    let collected = results.into_iter().collect::<Result<Vec<_>, _>>();
+    {
+        let mut cancelled_runs = session.cancelled_runs.lock().await;
+        cancelled_runs.remove(run_id);
+    }
+    let mut results = collected?;
     results.sort_by_key(|thumbnail| thumbnail.index);
 
     Ok(results)
+}
+
+pub async fn cancel_extraction(state: &AppState, token: &str, run_id: &str) -> Result<(), AppError> {
+    let session = {
+        let sessions = state.preview_sessions.lock().await;
+        sessions
+            .get(token)
+            .cloned()
+            .ok_or_else(|| AppError::InvalidInput("预览会话不存在或已关闭".to_string()))?
+    };
+
+    {
+        let mut cancelled_runs = session.cancelled_runs.lock().await;
+        cancelled_runs.insert(run_id.to_string());
+    }
+    {
+        let guard = session.cancel_token.lock().await;
+        guard.cancel();
+    }
+
+    Ok(())
 }
 
 pub async fn close_session(state: &AppState, token: &str) {
@@ -221,7 +271,10 @@ pub async fn close_session(state: &AppState, token: &str) {
         sessions.remove(token)
     };
     if let Some(session) = session {
-        session.cancel_token.cancel();
+        {
+            let guard = session.cancel_token.lock().await;
+            guard.cancel();
+        }
         let _operation_guard = session.operation_lock.write().await;
         let _ = tokio::fs::remove_dir_all(&session.cache_dir).await;
     }

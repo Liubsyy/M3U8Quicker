@@ -935,6 +935,7 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         download_concurrency: *state.max_concurrent_segments.lock().await,
         download_speed_limit_kbps: state.download_rate_limiter.limit_kbps().await,
         preview_columns: *state.preview_columns.lock().await,
+        preview_count: *state.preview_count.lock().await,
         preview_thumbnail_width: *state.preview_thumbnail_width.lock().await,
         preview_jpeg_quality: *state.preview_jpeg_quality.lock().await,
         delete_ts_temp_dir_after_download: *state.delete_ts_temp_dir_after_download.lock().await,
@@ -1058,6 +1059,33 @@ pub async fn set_preview_columns(
 
     persistence::update_settings(&app_handle, |settings| {
         settings.preview_columns = normalized_columns;
+    })
+    .await;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_preview_count(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    preview_count: usize,
+) -> Result<(), AppError> {
+    if !(MIN_PREVIEW_COUNT..=MAX_PREVIEW_COUNT).contains(&preview_count) {
+        return Err(AppError::InvalidInput(format!(
+            "预览图数量必须在 {} 到 {} 之间",
+            MIN_PREVIEW_COUNT, MAX_PREVIEW_COUNT
+        )));
+    }
+
+    let normalized_count = normalize_preview_count(preview_count);
+    {
+        let mut count = state.preview_count.lock().await;
+        *count = normalized_count;
+    }
+
+    persistence::update_settings(&app_handle, |settings| {
+        settings.preview_count = normalized_count;
     })
     .await;
 
@@ -1818,6 +1846,8 @@ pub async fn extract_preview_thumbnails(
     count: usize,
     target_width: u32,
     jpeg_quality: u8,
+    run_id: String,
+    force_refresh: Option<bool>,
 ) -> Result<Vec<preview::PreviewThumbnail>, AppError> {
     preview::extract_thumbnails(
         &app_handle,
@@ -1826,8 +1856,19 @@ pub async fn extract_preview_thumbnails(
         count,
         target_width,
         jpeg_quality,
+        &run_id,
+        force_refresh.unwrap_or(false),
     )
     .await
+}
+
+#[tauri::command]
+pub async fn cancel_preview_thumbnails(
+    state: State<'_, AppState>,
+    token: String,
+    run_id: String,
+) -> Result<(), AppError> {
+    preview::cancel_extraction(&state, &token, &run_id).await
 }
 
 #[tauri::command]

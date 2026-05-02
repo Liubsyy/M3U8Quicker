@@ -101,6 +101,10 @@ pub fn run() {
                     *preview_columns = settings.preview_columns;
                 }
                 {
+                    let mut preview_count = state.preview_count.lock().await;
+                    *preview_count = settings.preview_count;
+                }
+                {
                     let mut preview_thumbnail_width =
                         state.preview_thumbnail_width.lock().await;
                     *preview_thumbnail_width = settings.preview_thumbnail_width;
@@ -177,6 +181,7 @@ pub fn run() {
             commands::set_download_concurrency,
             commands::set_download_speed_limit,
             commands::set_preview_columns,
+            commands::set_preview_count,
             commands::set_preview_thumbnail_settings,
             commands::set_download_output_settings,
             commands::open_file_location,
@@ -199,6 +204,7 @@ pub fn run() {
             commands::set_ffmpeg_enabled,
             commands::create_preview_session,
             commands::extract_preview_thumbnails,
+            commands::cancel_preview_thumbnails,
             commands::close_preview_session,
             commands::open_download_playback_session,
             commands::prioritize_download_playback_position,

@@ -242,6 +242,9 @@ pub const DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS: u64 = 0;
 pub const DEFAULT_PREVIEW_COLUMNS: usize = 3;
 pub const MIN_PREVIEW_COLUMNS: usize = 1;
 pub const MAX_PREVIEW_COLUMNS: usize = 12;
+pub const DEFAULT_PREVIEW_COUNT: usize = 9;
+pub const MIN_PREVIEW_COUNT: usize = 9;
+pub const MAX_PREVIEW_COUNT: usize = 99;
 pub const DEFAULT_PREVIEW_THUMBNAIL_WIDTH: u32 = 320;
 pub const MIN_PREVIEW_THUMBNAIL_WIDTH: u32 = 320;
 pub const MAX_PREVIEW_THUMBNAIL_WIDTH: u32 = 1920;
@@ -259,6 +262,10 @@ pub fn normalize_download_speed_limit_kbps(value: u64) -> u64 {
 
 pub fn normalize_preview_columns(value: usize) -> usize {
     value.clamp(MIN_PREVIEW_COLUMNS, MAX_PREVIEW_COLUMNS)
+}
+
+pub fn normalize_preview_count(value: usize) -> usize {
+    value.clamp(MIN_PREVIEW_COUNT, MAX_PREVIEW_COUNT)
 }
 
 pub fn normalize_preview_thumbnail_width(value: u32) -> u32 {
@@ -292,6 +299,7 @@ pub struct AppSettings {
     pub download_concurrency: usize,
     pub download_speed_limit_kbps: u64,
     pub preview_columns: usize,
+    pub preview_count: usize,
     pub preview_thumbnail_width: u32,
     pub preview_jpeg_quality: u8,
     pub delete_ts_temp_dir_after_download: bool,
@@ -309,6 +317,7 @@ impl Default for AppSettings {
             download_concurrency: DEFAULT_DOWNLOAD_CONCURRENCY,
             download_speed_limit_kbps: DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS,
             preview_columns: DEFAULT_PREVIEW_COLUMNS,
+            preview_count: DEFAULT_PREVIEW_COUNT,
             preview_thumbnail_width: DEFAULT_PREVIEW_THUMBNAIL_WIDTH,
             preview_jpeg_quality: DEFAULT_PREVIEW_JPEG_QUALITY,
             delete_ts_temp_dir_after_download: true,
@@ -329,6 +338,7 @@ impl AppSettings {
         self.download_speed_limit_kbps =
             normalize_download_speed_limit_kbps(self.download_speed_limit_kbps);
         self.preview_columns = normalize_preview_columns(self.preview_columns);
+        self.preview_count = normalize_preview_count(self.preview_count);
         self.preview_thumbnail_width =
             normalize_preview_thumbnail_width(self.preview_thumbnail_width);
         self.preview_jpeg_quality = normalize_preview_jpeg_quality(self.preview_jpeg_quality);

@@ -153,6 +153,10 @@ export async function setPreviewColumns(previewColumns: number): Promise<void> {
   return invoke("set_preview_columns", { previewColumns });
 }
 
+export async function setPreviewCount(previewCount: number): Promise<void> {
+  return invoke("set_preview_count", { previewCount });
+}
+
 export async function setPreviewThumbnailSettings(
   previewThumbnailWidth: number,
   previewJpegQuality: number
@@ -322,14 +326,25 @@ export async function extractPreviewThumbnails(
   token: string,
   count: number,
   targetWidth: number,
-  jpegQuality: number
+  jpegQuality: number,
+  runId: string,
+  forceRefresh = false
 ): Promise<PreviewThumbnail[]> {
   return invoke<PreviewThumbnail[]>("extract_preview_thumbnails", {
     token,
     count,
     targetWidth,
     jpegQuality,
+    runId,
+    forceRefresh,
   });
+}
+
+export async function cancelPreviewThumbnails(
+  token: string,
+  runId: string
+): Promise<void> {
+  return invoke("cancel_preview_thumbnails", { token, runId });
 }
 
 export async function closePreviewSession(token: string): Promise<void> {

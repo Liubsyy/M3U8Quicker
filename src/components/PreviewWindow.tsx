@@ -7,7 +7,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { Alert, Empty, Image, Select, Space, Spin, Tag, Tooltip, Typography, message, theme } from "antd";
+import { Alert, Button, Empty, Image, Progress, Select, Space, Spin, Tooltip, Typography, message, theme } from "antd";
 import type { GlobalToken } from "antd";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
@@ -16,13 +16,17 @@ import {
   MinusOutlined,
   PictureOutlined,
   PlusOutlined,
+  ReloadOutlined,
+  StopOutlined,
 } from "@ant-design/icons";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
+  cancelPreviewThumbnails,
   extractPreviewThumbnails,
   getAppSettings,
   setPreviewColumns,
+  setPreviewCount,
   setPreviewThumbnailSettings,
   type PreviewThumbnail,
 } from "../services/api";
@@ -119,8 +123,11 @@ interface PreviewThumbnailEvent {
   count: number;
   target_width: number;
   jpeg_quality: number;
+  run_id: string;
   thumbnail: PreviewThumbnail;
 }
+
+type PreviewStatus = "loading" | "done" | "stopped" | "error";
 
 export function PreviewWindow() {
   const token = useMemo(
@@ -132,9 +139,19 @@ export function PreviewWindow() {
   const [thumbnailWidth, setThumbnailWidth] = useState(DEFAULT_THUMBNAIL_WIDTH);
   const [jpegQuality, setJpegQuality] = useState(DEFAULT_JPEG_QUALITY);
   const [thumbnails, setThumbnails] = useState<PreviewThumbnail[]>([]);
-  const [loadedKey, setLoadedKey] = useState<number | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [runKey, setRunKey] = useState(0);
+  const [refreshRunKey, setRefreshRunKey] = useState<number | null>(null);
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>(
+    token ? "loading" : "error"
+  );
   const [errorText, setErrorText] = useState<string | null>(
     token ? null : "预览参数缺失，无法打开窗口。"
+  );
+  const forceRefresh = refreshRunKey === runKey;
+  const runId = useMemo(
+    () => `${runKey}:${count}:${thumbnailWidth}:${jpegQuality}`,
+    [runKey, count, thumbnailWidth, jpegQuality]
   );
   const countOptions = useMemo(
     () =>
@@ -147,10 +164,13 @@ export function PreviewWindow() {
       ),
     []
   );
-  const loading = Boolean(token) && loadedKey !== count;
+  const loading = Boolean(token) && previewStatus === "loading";
+  const loadedCount = previewStatus === "done" ? count : thumbnails.length;
+  const progressPercent =
+    count > 0 ? Math.min(100, Math.round((loadedCount / count) * 100)) : 0;
 
   useEffect(() => {
-    if (!token) return;
+    if (!token || !settingsLoaded) return;
     let cancelled = false;
     let unlisten: (() => void) | undefined;
 
@@ -160,7 +180,8 @@ export function PreviewWindow() {
         payload.token !== token ||
         payload.count !== count ||
         payload.target_width !== thumbnailWidth ||
-        payload.jpeg_quality !== jpegQuality
+        payload.jpeg_quality !== jpegQuality ||
+        payload.run_id !== runId
       ) {
         return;
       }
@@ -173,23 +194,35 @@ export function PreviewWindow() {
         return [];
       }
       unlisten = fn;
-      return extractPreviewThumbnails(token, count, thumbnailWidth, jpegQuality);
+      return extractPreviewThumbnails(
+        token,
+        count,
+        thumbnailWidth,
+        jpegQuality,
+        runId,
+        forceRefresh
+      );
     }).then((items) => {
       if (cancelled) return;
       setThumbnails(sortThumbnails(items));
       setErrorText(null);
-      setLoadedKey(count);
+      setPreviewStatus("done");
     }).catch((error) => {
       if (cancelled) return;
+      if (isPreviewCancelledError(error)) {
+        setErrorText(null);
+        setPreviewStatus("stopped");
+        return;
+      }
       setErrorText(formatError(error));
-      setLoadedKey(count);
+      setPreviewStatus("error");
     });
 
     return () => {
       cancelled = true;
       unlisten?.();
     };
-  }, [token, count, thumbnailWidth, jpegQuality]);
+  }, [token, settingsLoaded, count, thumbnailWidth, jpegQuality, runId, forceRefresh]);
 
   useEffect(() => {
     let disposed = false;
@@ -197,11 +230,16 @@ export function PreviewWindow() {
       .then((settings) => {
         if (disposed) return;
         setColumns(clampColumns(settings.preview_columns));
+        setCount(clampCount(settings.preview_count));
         setThumbnailWidth(clampThumbnailWidth(settings.preview_thumbnail_width));
         setJpegQuality(clampJpegQuality(settings.preview_jpeg_quality));
       })
       .catch((error) => {
         console.debug("Failed to load preview columns setting", error);
+      })
+      .finally(() => {
+        if (disposed) return;
+        setSettingsLoaded(true);
       });
 
     return () => {
@@ -211,22 +249,28 @@ export function PreviewWindow() {
 
   const resetPreviewState = () => {
     setThumbnails([]);
-    setLoadedKey(null);
     setErrorText(null);
+    setRefreshRunKey(null);
+    setPreviewStatus(token ? "loading" : "error");
   };
 
   const handleDecrement = () => {
-    resetPreviewState();
-    setCount((current) => Math.max(MIN_COUNT, current - STEP));
+    updateCount(count - STEP);
   };
   const handleIncrement = () => {
-    resetPreviewState();
-    setCount((current) => Math.min(MAX_COUNT, current + STEP));
+    updateCount(count + STEP);
   };
   const handleCountChange = (nextCount: number) => {
-    if (nextCount === count) return;
+    updateCount(nextCount);
+  };
+  const updateCount = (nextCount: number) => {
+    const normalizedCount = clampCount(nextCount);
+    if (normalizedCount === count) return;
     resetPreviewState();
-    setCount(clampCount(nextCount));
+    setCount(normalizedCount);
+    void setPreviewCount(normalizedCount).catch((error) => {
+      console.debug("Failed to save preview count setting", error);
+    });
   };
   const handleThumbnailWidthChange = (nextWidth: number) => {
     const normalizedWidth = clampThumbnailWidth(nextWidth);
@@ -260,6 +304,25 @@ export function PreviewWindow() {
       console.debug("Failed to save preview columns setting", error);
     });
   };
+  const handleStopPreview = () => {
+    if (!token || !loading) return;
+    setPreviewStatus("stopped");
+    setErrorText(null);
+    void cancelPreviewThumbnails(token, runId).catch((error) => {
+      console.debug("Failed to stop preview extraction", error);
+      message.error("停止预览失败");
+      setPreviewStatus("loading");
+    });
+  };
+  const handleRefreshPreview = () => {
+    if (!token || loading) return;
+    setThumbnails([]);
+    setErrorText(null);
+    setPreviewStatus("loading");
+    const nextRunKey = runKey + 1;
+    setRefreshRunKey(nextRunKey);
+    setRunKey(nextRunKey);
+  };
   const { token: themeToken } = theme.useToken();
   const iconStyle: CSSProperties = { color: themeToken.colorPrimary };
   return (
@@ -286,9 +349,58 @@ export function PreviewWindow() {
       >
         <Space>
           <Typography.Text strong>视频预览</Typography.Text>
-          <Tag color="blue" style={{ marginInlineEnd: 0 }}>当前 {count} 张</Tag>
         </Space>
         <Space size={10} wrap>
+          <div
+            style={{
+              ...buildStepperWrapperStyle(themeToken),
+              alignItems: "center",
+              paddingLeft: 10,
+              gap: 8,
+            }}
+          >
+            <div style={{ position: "relative", width: 132, height: "100%" }}>
+              <Typography.Text
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  top: 2,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 12,
+                  lineHeight: 1,
+                  color: themeToken.colorText,
+                  pointerEvents: "none",
+                }}
+              >
+                已加载 {loadedCount}/{count} 张
+              </Typography.Text>
+              <Progress
+                percent={progressPercent}
+                size="small"
+                showInfo={false}
+                status={loading ? "active" : previewStatus === "error" ? "exception" : "normal"}
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: 2,
+                  lineHeight: 1,
+                }}
+              />
+            </div>
+            <Tooltip title={loading ? "停止生成预览图" : "重新生成预览"}>
+              <Button
+                aria-label={loading ? "停止生成预览图" : "重新生成预览"}
+                icon={loading ? <StopOutlined /> : <ReloadOutlined />}
+                size="small"
+                type="text"
+                onClick={loading ? handleStopPreview : handleRefreshPreview}
+              />
+            </Tooltip>
+          </div>
           <CompactSelectControl
             icon={<PictureOutlined style={iconStyle} />}
             label="宽度"
@@ -726,4 +838,8 @@ function formatError(error: unknown): string {
     /^(Invalid input|Conversion error|Network error|IO error):\s*/i,
     ""
   );
+}
+
+function isPreviewCancelledError(error: unknown): boolean {
+  return formatError(error).includes("预览已取消");
 }
