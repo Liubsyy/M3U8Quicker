@@ -102,6 +102,7 @@ function renderSegmentGrid(segmentState: DownloadTaskSegmentState) {
 
   return (
     <div
+      className="segment-grid"
       style={{
         display: "grid",
         gridTemplateColumns: "repeat(5, minmax(36px, max-content))",
@@ -114,28 +115,19 @@ function renderSegmentGrid(segmentState: DownloadTaskSegmentState) {
       {segmentItems.map((segmentNumber) => {
         const completed = completedSet.has(segmentNumber);
         const failed = failedSet.has(segmentNumber);
-        const border = completed
-          ? "1px solid #95de64"
+        const segmentClassName = completed
+          ? "segment-chip segment-chip-completed"
           : failed
-            ? "1px solid #ff7875"
-            : "1px solid #d9d9d9";
-        const background = completed
-          ? "#f6ffed"
-          : failed
-            ? "#fff2f0"
-            : "#fafafa";
-        const color = completed ? "#389e0d" : failed ? "#cf1322" : "#8c8c8c";
+            ? "segment-chip segment-chip-failed"
+            : "segment-chip segment-chip-pending";
 
         return (
           <div
             key={segmentNumber}
+            className={segmentClassName}
             style={{
               minWidth: 36,
               padding: "2px 8px",
-              borderRadius: 999,
-              border,
-              background,
-              color,
               textAlign: "center",
               fontSize: 12,
               lineHeight: "20px",

@@ -7,6 +7,15 @@
   --app-scrollbar-thumb-hover: #484f58;
   --app-table-border: #21262d;
   --app-primary: #4096ff;
+  --segment-completed-bg: #15321f;
+  --segment-completed-border: #4cc469;
+  --segment-completed-text: #95f0a6;
+  --segment-failed-bg: #3a1719;
+  --segment-failed-border: #ff6b64;
+  --segment-failed-text: #ffb1ad;
+  --segment-pending-bg: #262d36;
+  --segment-pending-border: #4a5563;
+  --segment-pending-text: #b7c0cc;
 }
 
 :root[data-theme-mode="light"] {
@@ -18,6 +27,15 @@
   --app-scrollbar-thumb-hover: #aab7cb;
   --app-table-border: #e6ebf2;
   --app-primary: #1668dc;
+  --segment-completed-bg: #f6ffed;
+  --segment-completed-border: #95de64;
+  --segment-completed-text: #389e0d;
+  --segment-failed-bg: #fff2f0;
+  --segment-failed-border: #ff7875;
+  --segment-failed-text: #cf1322;
+  --segment-pending-bg: #fafafa;
+  --segment-pending-border: #d9d9d9;
+  --segment-pending-text: #8c8c8c;
 }
 
 html,
@@ -115,6 +133,32 @@ body,
 
 .toolbar-download-actions .ant-btn + .ant-btn::before {
   display: none !important;
+}
+
+.segment-chip {
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-weight: 600;
+}
+
+.segment-chip-completed {
+  background: var(--segment-completed-bg);
+  border-color: var(--segment-completed-border);
+  color: var(--segment-completed-text);
+  box-shadow: inset 0 0 0 1px rgba(149, 240, 166, 0.12);
+}
+
+.segment-chip-failed {
+  background: var(--segment-failed-bg);
+  border-color: var(--segment-failed-border);
+  color: var(--segment-failed-text);
+  box-shadow: inset 0 0 0 1px rgba(255, 177, 173, 0.12);
+}
+
+.segment-chip-pending {
+  background: var(--segment-pending-bg);
+  border-color: var(--segment-pending-border);
+  color: var(--segment-pending-text);
 }
 
 .preview-count-select.ant-select-sm {
