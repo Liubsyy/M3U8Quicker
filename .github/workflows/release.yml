@@ -5,22 +5,48 @@ on:
     types:
       - published
   workflow_dispatch:
-    inputs:
-      tag_name:
-        description: "Existing release tag to upload assets to"
-        required: true
-        type: string
-      release_id:
-        description: "Optional existing GitHub Release ID"
-        required: false
-        type: string
 
 permissions:
   contents: write
 
 jobs:
+  resolve-release:
+    name: Resolve release metadata
+    runs-on: ubuntu-22.04
+    outputs:
+      release_id: ${{ steps.create-release.outputs.release_id || steps.event-release.outputs.release_id }}
+      tag_name: ${{ steps.create-release.outputs.tag_name || steps.event-release.outputs.tag_name }}
+      prerelease: ${{ steps.create-release.outputs.prerelease || steps.event-release.outputs.prerelease }}
+
+    steps:
+      - name: Checkout repository
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Create GitHub Release
+        if: github.event_name == 'workflow_dispatch'
+        id: create-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/create-release.mjs
+
+      - name: Use published release metadata
+        if: github.event_name == 'release'
+        id: event-release
+        run: |
+          echo "release_id=${{ github.event.release.id }}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${{ github.event.release.prerelease }}" >> "$GITHUB_OUTPUT"
+
   publish-tauri:
-    if: github.event_name == 'release' || github.event.inputs.tag_name != ''
+    needs: resolve-release
+    if: needs.resolve-release.outputs.tag_name != ''
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +82,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.tag_name }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -96,10 +124,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          releaseId: ${{ github.event.inputs.release_id || github.event.release.id || '' }}
-          tagName: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
+          releaseId: ${{ needs.resolve-release.outputs.release_id }}
+          tagName: ${{ needs.resolve-release.outputs.tag_name }}
           releaseDraft: false
-          prerelease: ${{ github.event.release.prerelease || false }}
+          prerelease: ${{ needs.resolve-release.outputs.prerelease }}
           assetNamePattern: "[name]_[version]_${{ matrix.os_name }}_[arch][_setup][ext]"
           args: ${{ matrix.args }}
 
@@ -158,13 +186,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
+          tag_name: ${{ needs.resolve-release.outputs.tag_name }}
           files: ${{ steps.portable-windows.outputs.archive_path }}
 
   update-readme-download-links:
     name: Update README download links
-    needs: publish-tauri
-    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
+    needs:
+      - resolve-release
+      - publish-tauri
+    if: needs.resolve-release.outputs.prerelease == 'false'
     runs-on: ubuntu-22.04
 
     steps:
@@ -182,13 +212,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          RELEASE_ID: ${{ github.event.inputs.release_id || github.event.release.id || '' }}
-          RELEASE_TAG: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
-        run: node scripts/update-readme-download-links.mjs
+          RELEASE_ID: ${{ needs.resolve-release.outputs.release_id }}
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.tag_name }}
+        run: node .github/scripts/update-readme-download-links.mjs
 
       - name: Commit README changes
         env:
-          RELEASE_TAG: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.tag_name }}
         run: |
           if git diff --quiet -- README.md; then
             echo "README download links are already up to date."
