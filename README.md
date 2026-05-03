@@ -5,19 +5,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Liubsyy/M3U8Quicker/releases/latest"><img src="https://img.shields.io/github/v/release/Liubsyy/M3U8Quicker?display_name=tag&style=flat-square&logo=github&label=version&color=4c8eda" alt="Latest release" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/github/license/Liubsyy/M3U8Quicker?style=flat-square&color=607d8b" alt="License" /></a>
-  <a href="https://github.com/Liubsyy/M3U8Quicker/releases"><img src="https://img.shields.io/github/downloads/Liubsyy/M3U8Quicker/total?style=flat-square&logo=github&label=downloads&color=4caf50" alt="Total downloads" /></a>
-
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNiAxNiI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0wIDJsNy0xdjZIMHpNOCAxbDgtMXY3SDh6TTAgOWg3djZsLTctMXpNOCA5aDh2N2wtOC0xeiIvPjwvc3ZnPg%3D%3D" alt="Windows" />
-  <img src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS" />
+  <img src="https://img.shields.io/badge/MacOS-000000?style=flat-square&logo=apple&logoColor=white" alt="MacOS" />
   <img src="https://img.shields.io/badge/Linux-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux" />
 </p>
+<p align="center">
+  <a href="https://github.com/Liubsyy/M3U8Quicker/releases/latest"><img src="https://img.shields.io/github/v/release/Liubsyy/M3U8Quicker?display_name=tag&style=flat-square&logo=github&label=version&color=0ea5e9" alt="Latest release" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/Liubsyy/M3U8Quicker?style=flat-square&color=f97316" alt="License" /></a>
+  <a href="https://github.com/Liubsyy/M3U8Quicker/releases"><img src="https://img.shields.io/github/downloads/Liubsyy/M3U8Quicker/total?style=flat-square&logo=github&label=downloads&color=10b981" alt="Total downloads" /></a>
 
-**M3U8 Quicker** 是一个基于 `Tauri + Rust + React + TypeScript` 构建的桌面应用，用于下载、管理与播放 `M3U8` 视频，支持 Windows、macOS 和 Linux。
+</p>
+
+
+**M3U8 Quicker** 是一个基于 `Tauri + Rust + React + TypeScript` 构建的桌面应用，用于下载、管理与播放 `M3U8` 视频，支持 Windows、MacOS 和 Linux。
 
 项目同时包含一个可选的 浏览器 扩展：自动检测网页中 `M3U8` 视频，一键快速新建下载任务并预填下载信息。
 
@@ -52,7 +52,7 @@
 
 | 系统 | 文件 | 说明 |
 | :--- | :--- | :--- |
-| <img src="./doc/img/icons/windows.png" width="18" height="18" alt="Windows" /> **Windows** | **x64**：[安装包](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_windows_x64_setup.exe) \| [免安装包](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_windows_x64.zip)<br>**x86**：[安装包](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_windows_x86_setup.exe) \| [免安装包](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_windows_x86.zip) | 大多数电脑选 x64<br>32 位系统选 x86 |
+| <img src="./doc/img/icons/windows.svg" width="18" height="18" alt="Windows" /> **Windows** | **x64**：[安装包](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_windows_x64_setup.exe) \| [免安装包](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_windows_x64.zip)<br>**x86**：[安装包](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_windows_x86_setup.exe) \| [免安装包](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_windows_x86.zip) | 大多数电脑选 x64<br>32 位系统选 x86 |
 | <img src="./doc/img/icons/macos.svg" width="18" height="18" alt="MacOS" /> **MacOS** | **Apple Silicon**：[安装包](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_macos_aarch64.dmg) \| [应用包压缩](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_macos_aarch64.app.tar.gz)<br>**Intel**：[安装包](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_macos_x64.dmg) \| [应用包压缩](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_macos_x64.app.tar.gz) | M芯片选 Apple Silicon<br>Intel 芯片选 Intel |
 | <img src="./doc/img/icons/linux.svg" width="18" height="18" alt="Linux" /> **Linux** | **安装包**：[deb](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_linux_amd64.deb) \| [rpm](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_linux_x86_64.rpm)<br>**免安装**：[AppImage](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.0.9_linux_amd64.AppImage) | Ubuntu/Debian/Linux Mint选deb<br>Fedora/RHEL/CentOS Stream/openSUSE选rpm |
 
