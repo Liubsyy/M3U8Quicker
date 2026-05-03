@@ -6,24 +6,15 @@
 
 <p align="center">
   <a href="https://github.com/Liubsyy/M3U8Quicker/releases/latest"><img src="https://img.shields.io/github/v/release/Liubsyy/M3U8Quicker?display_name=tag&style=flat-square&logo=github&label=version&color=4c8eda" alt="Latest release" /></a>
-  <a href="https://github.com/Liubsyy/M3U8Quicker/releases"><img src="https://img.shields.io/github/downloads/Liubsyy/M3U8Quicker/total?style=flat-square&logo=github&label=downloads&color=4caf50" alt="Total downloads" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/github/license/Liubsyy/M3U8Quicker?style=flat-square&color=607d8b" alt="License" /></a>
-  <a href="https://github.com/Liubsyy/M3U8Quicker/stargazers"><img src="https://img.shields.io/github/stars/Liubsyy/M3U8Quicker?style=flat-square&logo=github&color=fbc02d" alt="GitHub stars" /></a>
-  <a href="https://github.com/Liubsyy/M3U8Quicker/network/members"><img src="https://img.shields.io/github/forks/Liubsyy/M3U8Quicker?style=flat-square&logo=github&color=ff9800" alt="GitHub forks" /></a>
-  <a href="https://github.com/Liubsyy/M3U8Quicker/issues"><img src="https://img.shields.io/github/issues/Liubsyy/M3U8Quicker?style=flat-square&logo=github&color=e53935" alt="GitHub issues" /></a>
+  <a href="https://github.com/Liubsyy/M3U8Quicker/releases"><img src="https://img.shields.io/github/downloads/Liubsyy/M3U8Quicker/total?style=flat-square&logo=github&label=downloads&color=4caf50" alt="Total downloads" /></a>
+
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNiAxNiI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0wIDJsNy0xdjZIMHpNOCAxbDgtMXY3SDh6TTAgOWg3djZsLTctMXpNOCA5aDh2N2wtOC0xeiIvPjwvc3ZnPg%3D%3D" alt="Windows" />
   <img src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS" />
   <img src="https://img.shields.io/badge/Linux-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux" />
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Tauri-2-FFC131?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2" />
-  <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React 19" />
-  <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/Rust-1.88%2B-DEA584?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
 </p>
 
 **M3U8 Quicker** 是一个基于 `Tauri + Rust + React + TypeScript` 构建的桌面应用，用于下载、管理与播放 `M3U8` 视频，支持 Windows、macOS 和 Linux。
