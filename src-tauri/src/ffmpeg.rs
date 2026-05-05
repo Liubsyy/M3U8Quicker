@@ -594,40 +594,17 @@ pub async fn download_ffmpeg(app_handle: AppHandle) -> Result<PathBuf, AppError>
     let final_path = tokio::task::spawn_blocking(move || -> Result<PathBuf, AppError> {
         std::fs::create_dir_all(&dest_dir)?;
 
-        let archive_path = ffmpeg_sidecar::download::download_ffmpeg_package_with_progress(
-            &download_url,
-            &dest_dir,
-            |event| {
-                use ffmpeg_sidecar::download::FfmpegDownloadProgressEvent as P;
-                let progress = match event {
-                    P::Starting => FfmpegDownloadProgress {
-                        downloaded_bytes: 0,
-                        total_bytes: 0,
-                        stage: FfmpegDownloadStage::Downloading,
-                    },
-                    P::Downloading {
-                        total_bytes,
-                        downloaded_bytes,
-                    } => FfmpegDownloadProgress {
-                        downloaded_bytes,
-                        total_bytes,
-                        stage: FfmpegDownloadStage::Downloading,
-                    },
-                    P::UnpackingArchive => FfmpegDownloadProgress {
-                        downloaded_bytes: 0,
-                        total_bytes: 0,
-                        stage: FfmpegDownloadStage::Unpacking,
-                    },
-                    P::Done => FfmpegDownloadProgress {
-                        downloaded_bytes: 0,
-                        total_bytes: 0,
-                        stage: FfmpegDownloadStage::Done,
-                    },
-                };
-                let _ = app_handle_progress.emit("ffmpeg-download-progress", &progress);
+        let archive_path =
+            download_archive_with_auto_proxy(&download_url, &dest_dir, None, &app_handle_progress)?;
+
+        let _ = app_handle_progress.emit(
+            "ffmpeg-download-progress",
+            &FfmpegDownloadProgress {
+                downloaded_bytes: 0,
+                total_bytes: 0,
+                stage: FfmpegDownloadStage::Unpacking,
             },
-        )
-        .map_err(|e| AppError::Internal(format!("Failed to download ffmpeg: {}", e)))?;
+        );
 
         ffmpeg_sidecar::download::unpack_ffmpeg(&archive_path, &dest_dir)
             .map_err(|e| AppError::Internal(format!("Failed to unpack ffmpeg: {}", e)))?;
@@ -676,22 +653,25 @@ pub async fn download_ffmpeg(app_handle: AppHandle) -> Result<PathBuf, AppError>
     Ok(final_path)
 }
 
-#[cfg(target_os = "macos")]
-fn download_macos_ffprobe(
-    dest_dir: &Path,
+fn download_archive_with_auto_proxy(
+    url: &str,
+    download_dir: &Path,
+    archive_filename: Option<&str>,
     app_handle: &AppHandle,
-) -> Result<(), AppError> {
+) -> Result<PathBuf, AppError> {
     use std::io::{Read, Write};
 
-    // evermeet.cx serves Intel binaries; osxexperts.net publishes Apple
-    // Silicon builds. Match ffmpeg-sidecar's per-arch source choice so the
-    // ffprobe build is consistent with the ffmpeg we just installed.
-    #[cfg(target_arch = "x86_64")]
-    const FFPROBE_URL: &str = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
-    #[cfg(target_arch = "aarch64")]
-    const FFPROBE_URL: &str = "https://www.osxexperts.net/ffprobe80arm.zip";
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    compile_error!("Unsupported macOS architecture for ffprobe download");
+    let archive_name = match archive_filename {
+        Some(name) => name.to_string(),
+        None => Path::new(url)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                AppError::Internal("Failed to get filename for ffmpeg download".to_string())
+            })?
+            .to_string(),
+    };
+    let archive_path = download_dir.join(archive_name);
 
     let _ = app_handle.emit(
         "ffmpeg-download-progress",
@@ -702,44 +682,67 @@ fn download_macos_ffprobe(
         },
     );
 
-    let response = reqwest::blocking::get(FFPROBE_URL)
-        .map_err(|e| AppError::Internal(format!("Failed to request ffprobe: {}", e)))?;
-    if !response.status().is_success() {
-        return Err(AppError::Internal(format!(
-            "ffprobe download HTTP {}",
-            response.status()
-        )));
-    }
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("M3U8Quicker/1.0 ffmpeg-downloader")
+        .build()
+        .map_err(|e| {
+            AppError::Internal(format!("Failed to create ffmpeg download client: {}", e))
+        })?;
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| AppError::Internal(format!("Failed to request ffmpeg archive: {}", e)))?
+        .error_for_status()
+        .map_err(|e| AppError::Internal(format!("Failed to download ffmpeg archive: {}", e)))?;
 
     let total_bytes = response.content_length().unwrap_or(0);
     let mut downloaded_bytes: u64 = 0;
     let mut reader = response;
+    let mut out = std::fs::File::create(&archive_path)
+        .map_err(|e| AppError::Internal(format!("Failed to create ffmpeg archive: {}", e)))?;
+    let mut buf = [0u8; 64 * 1024];
 
-    let archive_path = dest_dir.join("ffprobe-download.zip");
-    {
-        let mut out = std::fs::File::create(&archive_path)
-            .map_err(|e| AppError::Internal(format!("Failed to create ffprobe archive: {}", e)))?;
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .map_err(|e| AppError::Internal(format!("Failed reading ffprobe stream: {}", e)))?;
-            if n == 0 {
-                break;
-            }
-            out.write_all(&buf[..n])
-                .map_err(|e| AppError::Internal(format!("Failed writing ffprobe archive: {}", e)))?;
-            downloaded_bytes += n as u64;
-            let _ = app_handle.emit(
-                "ffmpeg-download-progress",
-                &FfmpegDownloadProgress {
-                    downloaded_bytes,
-                    total_bytes,
-                    stage: FfmpegDownloadStage::Downloading,
-                },
-            );
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| AppError::Internal(format!("Failed reading ffmpeg archive: {}", e)))?;
+        if n == 0 {
+            break;
         }
+        out.write_all(&buf[..n])
+            .map_err(|e| AppError::Internal(format!("Failed writing ffmpeg archive: {}", e)))?;
+        downloaded_bytes = downloaded_bytes.saturating_add(n as u64);
+        let _ = app_handle.emit(
+            "ffmpeg-download-progress",
+            &FfmpegDownloadProgress {
+                downloaded_bytes,
+                total_bytes,
+                stage: FfmpegDownloadStage::Downloading,
+            },
+        );
     }
+
+    Ok(archive_path)
+}
+
+#[cfg(target_os = "macos")]
+fn download_macos_ffprobe(dest_dir: &Path, app_handle: &AppHandle) -> Result<(), AppError> {
+    // evermeet.cx serves Intel binaries; osxexperts.net publishes Apple
+    // Silicon builds. Match ffmpeg-sidecar's per-arch source choice so the
+    // ffprobe build is consistent with the ffmpeg we just installed.
+    #[cfg(target_arch = "x86_64")]
+    const FFPROBE_URL: &str = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
+    #[cfg(target_arch = "aarch64")]
+    const FFPROBE_URL: &str = "https://www.osxexperts.net/ffprobe80arm.zip";
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    compile_error!("Unsupported macOS architecture for ffprobe download");
+
+    let archive_path = download_archive_with_auto_proxy(
+        FFPROBE_URL,
+        dest_dir,
+        Some("ffprobe-download.zip"),
+        app_handle,
+    )?;
 
     let _ = app_handle.emit(
         "ffmpeg-download-progress",
@@ -777,10 +780,7 @@ fn download_macos_ffprobe(
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    &out_path,
-                    std::fs::Permissions::from_mode(0o755),
-                );
+                let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o755));
             }
             extracted = true;
             break;
@@ -2451,7 +2451,8 @@ mod tests {
 
     #[test]
     fn format_ffmpeg_headers_normalizes_lines_to_crlf() {
-        let formatted = format_ffmpeg_headers(Some("referer: https://a.com\norigin:https://b.com\n"));
+        let formatted =
+            format_ffmpeg_headers(Some("referer: https://a.com\norigin:https://b.com\n"));
         assert_eq!(
             formatted.as_deref(),
             Some("referer: https://a.com\r\norigin: https://b.com\r\n")
