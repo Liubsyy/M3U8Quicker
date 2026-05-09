@@ -1,5 +1,6 @@
 (() => {
   const DETECT_EVENT = "m3u8quicker:detected";
+  const CUSTOM_MANIFEST_EVENT = "m3u8quicker:custom-manifest";
   const BACKGROUND_DETECT_MESSAGE = "m3u8quicker:network-detected";
   const FRAME_DETECT_MESSAGE = "m3u8quicker:frame-detected";
   const SYNC_DETECTIONS_MESSAGE = "m3u8quicker:sync-detections";
@@ -9,8 +10,9 @@
   const APP_DEEP_LINK_BASE_URL = "m3u8quicker://new-task";
   const APP_BATCH_DEEP_LINK_BASE_URL = "m3u8quicker://batch-download";
   const APP_PREVIEW_DEEP_LINK_BASE_URL = "m3u8quicker://preview";
-  const CHECK_PATTERN = /(png|image|ts|jpg|mp4|jpeg|EXTINF)/i;
+  const CHECK_PATTERN = /(png|image|ts|jpg|mp4|jpeg|EXTINF|MPD|SegmentTemplate|Representation)/i;
   const M3U8_PATTERN = /\.m3u8(?:$|[?#])/i;
+  const DASH_PATTERN = /\.mpd(?:$|[?#])/i;
   const DIRECT_VIDEO_PATTERN = /\.(mp4|mkv|avi|wmv|flv|webm|mov|rmvb)(?:$|[?#])/i;
   const BUTTON_LABEL = "M3U8 Quicker";
   const BUTTON_ICON_URL = browser.runtime.getURL("icon.png");
@@ -21,8 +23,8 @@
   let buttonPosition = { top: 20, right: 20 };
   let uiRoot = null;
 
-  // Background webRequest already sees m3u8 requests; avoid monkey-patching page networking on heavy SPAs.
   bindDetectionListener();
+  injectSiteHooks();
   bindRuntimeListener();
   syncPendingDetections();
   waitForDomReady(() => {
@@ -30,23 +32,45 @@
     window.setInterval(scanVideos, 3000);
   });
 
-  function injectNetworkHook() {
-    if (document.documentElement.dataset.m3u8quickerInjected === "true") {
+  function injectSiteHooks() {
+    if (!isTopLevelContext) {
       return;
     }
-
-    const script = document.createElement("script");
-    script.src = browser.runtime.getURL("injected-network.js");
-    script.async = false;
-    script.onload = () => script.remove();
-    (document.head || document.documentElement).appendChild(script);
-    document.documentElement.dataset.m3u8quickerInjected = "true";
+    const registry = Array.isArray(globalThis.__m3u8quickerInjects)
+      ? globalThis.__m3u8quickerInjects
+      : [];
+    const hostname = window.location.hostname;
+    registry.forEach((entry) => {
+      if (!entry || !entry.hostPattern || !entry.script || !entry.flag) {
+        return;
+      }
+      if (!entry.hostPattern.test(hostname)) {
+        return;
+      }
+      if (document.documentElement.dataset[entry.flag] === "true") {
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = browser.runtime.getURL(entry.script);
+      script.async = false;
+      script.onload = () => script.remove();
+      (document.head || document.documentElement).appendChild(script);
+      document.documentElement.dataset[entry.flag] = "true";
+    });
   }
 
   function bindDetectionListener() {
     window.addEventListener(DETECT_EVENT, (event) => {
       const url = event && event.detail ? event.detail.url : "";
       reportDetection(url);
+    });
+    window.addEventListener(CUSTOM_MANIFEST_EVENT, (event) => {
+      const detail = event && event.detail ? event.detail : {};
+      registerCustomManifest({
+        source: detail.source,
+        manifestJson: detail.manifest,
+        title: detail.title,
+      });
     });
   }
 
@@ -256,7 +280,7 @@
       return;
     }
 
-    if (isM3u8Url(url)) {
+    if (isM3u8Url(url) || isDashUrl(url)) {
       checkM3u8Url(url);
     }
   }
@@ -292,11 +316,15 @@
   }
 
   function isSupportedMediaUrl(url) {
-    return isM3u8Url(url) || isDirectVideoUrl(url);
+    return isM3u8Url(url) || isDashUrl(url) || isDirectVideoUrl(url);
   }
 
   function isM3u8Url(url) {
     return typeof url === "string" && M3U8_PATTERN.test(url);
+  }
+
+  function isDashUrl(url) {
+    return typeof url === "string" && DASH_PATTERN.test(url);
   }
 
   function isDirectVideoUrl(url) {
@@ -308,8 +336,10 @@
     var directPatternLoose = /\.(mp4|mkv|avi|wmv|flv|webm|mov|rmvb)(?:$|[?#])/i;
     try {
       var pathname = new URL(url, window.location.href).pathname;
+      if (/\.mpd$/i.test(pathname)) return "dash";
       return directPattern.test(pathname) ? "mp4" : "hls";
     } catch (error) {
+      if (/\.mpd(?:$|[?#])/i.test(url)) return "dash";
       return directPatternLoose.test(url) ? "mp4" : "hls";
     }
   }
@@ -325,6 +355,8 @@
       var ext = detectFileExt(rawUrl);
       var fallback = type === "mp4"
         ? `video-${detectedTargets.length + 1}.${ext}`
+        : type === "dash"
+          ? `dash-${detectedTargets.length + 1}.mpd`
         : `m3u8-${detectedTargets.length + 1}.m3u8`;
       detectedTargets.push({
         url: normalizedUrl,
@@ -339,6 +371,29 @@
       }
     }
 
+    appendButton();
+    updateButtonVisibility(true);
+  }
+
+  function registerCustomManifest({ source, manifestJson, title }) {
+    if (!isTopLevelContext) {
+      return;
+    }
+    if (!manifestJson || typeof manifestJson !== "string") {
+      return;
+    }
+    if (detectedTargets.find((item) => item.url === manifestJson)) {
+      return;
+    }
+    const fallback = source ? `${source}-dash` : "custom-dash";
+    const name = sanitizeFilename(title || getPageTitle(), fallback);
+    detectedTargets.push({
+      url: manifestJson,
+      fileName: `${name}.json`,
+      fileType: "dash",
+      thumbnail: null,
+    });
+    checkedTargets.add(manifestJson);
     appendButton();
     updateButtonVisibility(true);
   }
@@ -367,6 +422,14 @@
     const cleanUrl = String(url || "");
     const name = cleanUrl.slice(cleanUrl.lastIndexOf("/") + 1).split("?")[0];
     return name || fallback || "video.m3u8";
+  }
+
+  function sanitizeFilename(name, fallback) {
+    const cleaned = String(name || "")
+      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+      .replace(/^\.+|\.+$/g, "")
+      .trim();
+    return cleaned || fallback;
   }
 
   function appendButton() {
@@ -529,9 +592,13 @@
     };
 
     selectAllButton.addEventListener("click", () => {
-      detectedTargets.forEach((item) => selectedUrls.add(item.url));
+      detectedTargets.forEach((item) => {
+        if (!isInlineDashJsonTarget(item)) {
+          selectedUrls.add(item.url);
+        }
+      });
       selectionInputs.forEach((input) => {
-        input.checked = true;
+        input.checked = !input.disabled;
       });
       updateBatchButtonState();
     });
@@ -579,8 +646,16 @@
       checkbox.checked = false;
       checkbox.style.margin = "3px 0 0";
       checkbox.style.cursor = "pointer";
+      if (isInlineDashJsonTarget(item)) {
+        checkbox.disabled = true;
+        checkbox.title = "B 站 DASH JSON 暂不支持批量下载";
+        checkbox.style.cursor = "not-allowed";
+      }
       selectionInputs.push(checkbox);
       checkbox.addEventListener("change", () => {
+        if (checkbox.disabled) {
+          return;
+        }
         if (checkbox.checked) {
           selectedUrls.add(item.url);
         } else {
@@ -628,7 +703,7 @@
 
       const content = document.createElement("button");
       content.type = "button";
-      content.title = item.url;
+      content.title = isInlineDashJsonTarget(item) ? item.displayName : item.url;
       content.style.flex = "1";
       content.style.border = "none";
       content.style.padding = "0";
@@ -711,7 +786,9 @@
       actions.style.gap = "2px";
       actions.style.flex = "0 0 auto";
       actions.appendChild(copyButton);
-      actions.appendChild(previewButton);
+      if (!isInlineDashJsonTarget(item)) {
+        actions.appendChild(previewButton);
+      }
       actions.appendChild(downloadButton);
 
       entry.appendChild(checkbox);
@@ -742,6 +819,10 @@
 
     const url = `${APP_DEEP_LINK_BASE_URL}?${params.toString()}`;
     window.location.href = url;
+  }
+
+  function isInlineDashJsonTarget(item) {
+    return item && item.fileType === "dash" && typeof item.url === "string" && item.url.trim().startsWith("{");
   }
 
   function openPreview(target) {

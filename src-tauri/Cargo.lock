@@ -2335,6 +2335,7 @@ dependencies = [
  "m3u8-rs",
  "mp4",
  "open",
+ "quick-xml",
  "reqwest 0.12.28",
  "semver",
  "serde",

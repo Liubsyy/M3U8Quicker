@@ -11,7 +11,10 @@ use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit};
 use chrono::Utc;
 use futures::StreamExt;
+use quick_xml::events::{BytesStart, Event};
+use quick_xml::Reader;
 use reqwest::{header, StatusCode};
+use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore, TryAcquireError};
@@ -458,6 +461,1023 @@ pub async fn prepare_hls_download(
             }))
         }
     }
+}
+
+pub async fn inspect_dash_tracks(
+    client: &reqwest::Client,
+    source: &str,
+    headers: &RequestHeaders,
+    source_kind: DownloadSourceKind,
+) -> Result<InspectHlsTracksResult, AppError> {
+    let manifest = fetch_or_parse_dash_manifest(client, source, headers, source_kind).await?;
+    Ok(build_dash_inspection(&manifest))
+}
+
+pub async fn prepare_dash_download(
+    client: &reqwest::Client,
+    source: &str,
+    headers: &RequestHeaders,
+    source_kind: DownloadSourceKind,
+    selection: Option<&HlsTrackSelection>,
+) -> Result<PreparedBundleHlsDownload, AppError> {
+    let manifest = fetch_or_parse_dash_manifest(client, source, headers, source_kind).await?;
+    build_dash_bundle_download(&manifest, selection)
+}
+
+async fn fetch_or_parse_dash_manifest(
+    client: &reqwest::Client,
+    source: &str,
+    headers: &RequestHeaders,
+    source_kind: DownloadSourceKind,
+) -> Result<DashManifest, AppError> {
+    match source_kind {
+        DownloadSourceKind::Url => fetch_dash_manifest(client, source, headers).await,
+        DownloadSourceKind::InlineDashJson => parse_dash_json_manifest(source),
+    }
+}
+
+async fn fetch_dash_manifest(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &RequestHeaders,
+) -> Result<DashManifest, AppError> {
+    let base_url = Url::parse(url)?;
+    let response = build_request_with_headers(client, url, headers)
+        .timeout(M3U8_METADATA_TIMEOUT)
+        .send()
+        .await?
+        .error_for_status()?;
+    let body = response.text().await?;
+    parse_dash_mpd_manifest(&body, &base_url)
+}
+
+#[derive(Debug, Clone)]
+struct DashManifest {
+    video_tracks: Vec<DashTrack>,
+    audio_tracks: Vec<DashTrack>,
+    default_selection: HlsTrackSelection,
+}
+
+#[derive(Debug, Clone)]
+struct DashTrack {
+    option: HlsTrackOption,
+    init: Option<DashResource>,
+    segments: Vec<DashSegment>,
+}
+
+#[derive(Debug, Clone)]
+struct DashResource {
+    uri: String,
+    byte_range: Option<ByteRangeSpec>,
+}
+
+#[derive(Debug, Clone)]
+struct DashSegment {
+    uri: String,
+    duration: f32,
+    sequence_number: u64,
+    byte_range: Option<ByteRangeSpec>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DashSegmentTemplate {
+    timescale: u64,
+    initialization: Option<String>,
+    media: Option<String>,
+    start_number: u64,
+    duration: Option<u64>,
+    timeline: Vec<DashTimelineItem>,
+}
+
+#[derive(Debug, Clone)]
+struct DashTimelineItem {
+    start_time: Option<u64>,
+    duration: u64,
+    repeat: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DashAdaptationBuild {
+    content_type: Option<String>,
+    mime_type: Option<String>,
+    lang: Option<String>,
+    base_url: Option<String>,
+    segment_template: Option<DashSegmentTemplate>,
+    representations: Vec<DashRepresentationBuild>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DashRepresentationBuild {
+    id: String,
+    bandwidth: Option<u64>,
+    width: Option<u64>,
+    height: Option<u64>,
+    codecs: Option<String>,
+    base_url: Option<String>,
+    segment_template: Option<DashSegmentTemplate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DashTemplateTarget {
+    Adaptation,
+    Representation,
+}
+
+#[derive(Debug, Deserialize)]
+struct DashJsonManifest {
+    format: String,
+    title: Option<String>,
+    base_url: String,
+    tracks: DashJsonTracks,
+    #[serde(default)]
+    default_selection: HlsTrackSelection,
+}
+
+#[derive(Debug, Deserialize)]
+struct DashJsonTracks {
+    #[serde(default)]
+    video: Vec<DashJsonTrack>,
+    #[serde(default)]
+    audio: Vec<DashJsonTrack>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DashJsonTrack {
+    id: String,
+    label: Option<String>,
+    bandwidth: Option<u64>,
+    resolution: Option<String>,
+    codecs: Option<String>,
+    language: Option<String>,
+    #[serde(default)]
+    init: Option<String>,
+    #[serde(default)]
+    byte_range: Option<String>,
+    segments: Vec<DashJsonSegment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DashJsonSegment {
+    uri: String,
+    duration: f32,
+    #[serde(default)]
+    byte_range: Option<String>,
+}
+
+fn build_dash_inspection(manifest: &DashManifest) -> InspectHlsTracksResult {
+    InspectHlsTracksResult {
+        kind: HlsPlaylistKind::Master,
+        requires_selection: manifest.video_tracks.len() > 1 || manifest.audio_tracks.len() > 1,
+        video_tracks: manifest
+            .video_tracks
+            .iter()
+            .map(|track| track.option.clone())
+            .collect(),
+        audio_tracks: manifest
+            .audio_tracks
+            .iter()
+            .map(|track| track.option.clone())
+            .collect(),
+        subtitle_tracks: Vec::new(),
+        default_selection: manifest.default_selection.clone(),
+    }
+}
+
+fn build_dash_bundle_download(
+    manifest: &DashManifest,
+    selection: Option<&HlsTrackSelection>,
+) -> Result<PreparedBundleHlsDownload, AppError> {
+    let inspection = build_dash_inspection(manifest);
+    let requested = selection.cloned().unwrap_or_default();
+    let video_id = requested
+        .video_id
+        .or(inspection.default_selection.video_id.clone())
+        .or_else(|| inspection.video_tracks.first().map(|track| track.id.clone()))
+        .ok_or_else(|| AppError::M3u8Parse("DASH manifest missing video track".to_string()))?;
+    let selected_video = manifest
+        .video_tracks
+        .iter()
+        .find(|track| track.option.id == video_id)
+        .ok_or_else(|| AppError::InvalidInput("所选 DASH 视频轨道不存在，请重新解析后再下载".to_string()))?;
+
+    let audio_id = requested
+        .audio_id
+        .or(inspection.default_selection.audio_id.clone())
+        .or_else(|| manifest.audio_tracks.first().map(|track| track.option.id.clone()));
+    let selected_audio = audio_id
+        .as_deref()
+        .and_then(|id| manifest.audio_tracks.iter().find(|track| track.option.id == id));
+
+    let resolved_selection = HlsTrackSelection {
+        video_id: Some(selected_video.option.id.clone()),
+        audio_id: selected_audio.map(|track| track.option.id.clone()),
+        subtitle_id: None,
+    };
+
+    let mut plan = build_dash_track_bundle_plan(selected_video, "video")?;
+    if let Some(selected_audio) = selected_audio {
+        plan.extend(build_dash_track_bundle_plan(selected_audio, "audio")?);
+    }
+
+    Ok(PreparedBundleHlsDownload {
+        selection: resolved_selection,
+        playlist_files: plan.playlist_files,
+        entries: plan.entries,
+    })
+}
+
+fn build_dash_track_bundle_plan(
+    track: &DashTrack,
+    subdir: &str,
+) -> Result<BundleTrackPlanBuild, AppError> {
+    let mut entries = Vec::with_capacity(track.segments.len() + 1);
+    let init_file_name = if let Some(init) = &track.init {
+        let name = format!("init_000001.{}", infer_file_extension(&init.uri, "mp4"));
+        entries.push(BundleDownloadEntry {
+            index: 0,
+            uri: init.uri.clone(),
+            duration: 0.0,
+            sequence_number: 0,
+            byte_range: init.byte_range.clone(),
+            encryption: None,
+            relative_path: PathBuf::from(subdir).join(&name),
+        });
+        Some(name)
+    } else {
+        None
+    };
+
+    let mut local_segments = Vec::with_capacity(track.segments.len());
+    for (index, segment) in track.segments.iter().enumerate() {
+        let local_segment_name = format!(
+            "seg_{:06}.{}",
+            index + 1,
+            infer_file_extension(&segment.uri, "m4s")
+        );
+        entries.push(BundleDownloadEntry {
+            index: entries.len(),
+            uri: segment.uri.clone(),
+            duration: segment.duration,
+            sequence_number: segment.sequence_number,
+            byte_range: segment.byte_range.clone(),
+            encryption: None,
+            relative_path: PathBuf::from(subdir).join(&local_segment_name),
+        });
+
+        let mut local_segment = m3u8_rs::MediaSegment {
+            uri: local_segment_name,
+            duration: segment.duration,
+            title: None,
+            map: None,
+            ..Default::default()
+        };
+        if index == 0 {
+            if let Some(init_name) = &init_file_name {
+                local_segment.map = Some(m3u8_rs::Map {
+                    uri: init_name.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+        local_segments.push(local_segment);
+    }
+
+    let target_duration = local_segments.iter().fold(1u64, |max_duration, segment| {
+        max_duration.max(segment.duration.ceil().max(1.0) as u64)
+    });
+    let local_playlist = m3u8_rs::MediaPlaylist {
+        version: Some(6),
+        target_duration,
+        media_sequence: 0,
+        segments: local_segments,
+        discontinuity_sequence: 0,
+        end_list: true,
+        playlist_type: Some(m3u8_rs::MediaPlaylistType::Vod),
+        i_frames_only: false,
+        start: None,
+        independent_segments: true,
+        unknown_tags: Vec::new(),
+    };
+
+    Ok(BundleTrackPlanBuild {
+        playlist_files: vec![BundlePlaylistFile {
+            relative_path: PathBuf::from(subdir).join("index.m3u8"),
+            content: media_playlist_to_string(&local_playlist)?,
+        }],
+        entries,
+    })
+}
+
+fn parse_dash_json_manifest(raw: &str) -> Result<DashManifest, AppError> {
+    let parsed: DashJsonManifest = serde_json::from_str(raw)
+        .map_err(|error| AppError::M3u8Parse(format!("DASH JSON 解析失败: {}", error)))?;
+    if parsed.format != "m3u8quicker-dash-v1" {
+        return Err(AppError::M3u8Parse(
+            "DASH JSON format 必须为 m3u8quicker-dash-v1".to_string(),
+        ));
+    }
+    let base_url = Url::parse(&parsed.base_url)?;
+    let audio_group_id = (!parsed.tracks.audio.is_empty()).then_some("dash-audio".to_string());
+    let video_tracks = parsed
+        .tracks
+        .video
+        .iter()
+        .enumerate()
+        .map(|(index, track)| {
+            dash_json_track_to_track(
+                &base_url,
+                track,
+                HlsTrackType::Video,
+                index,
+                audio_group_id.clone(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let audio_tracks = parsed
+        .tracks
+        .audio
+        .iter()
+        .enumerate()
+        .map(|(index, track)| dash_json_track_to_track(&base_url, track, HlsTrackType::Audio, index, None))
+        .collect::<Result<Vec<_>, _>>()?;
+    if video_tracks.is_empty() {
+        return Err(AppError::M3u8Parse("DASH JSON 缺少 video 轨道".to_string()));
+    }
+
+    let default_selection = HlsTrackSelection {
+        video_id: parsed
+            .default_selection
+            .video_id
+            .or_else(|| video_tracks.first().map(|track| track.option.id.clone())),
+        audio_id: parsed
+            .default_selection
+            .audio_id
+            .or_else(|| audio_tracks.first().map(|track| track.option.id.clone())),
+        subtitle_id: None,
+    };
+
+    let _ = parsed.title;
+    Ok(DashManifest {
+        video_tracks,
+        audio_tracks,
+        default_selection,
+    })
+}
+
+fn dash_json_track_to_track(
+    base_url: &Url,
+    track: &DashJsonTrack,
+    track_type: HlsTrackType,
+    index: usize,
+    audio_group_id: Option<String>,
+) -> Result<DashTrack, AppError> {
+    let init = match track.init.as_deref() {
+        Some(init_url) => Some(DashResource {
+            uri: resolve_url(base_url, init_url),
+            byte_range: track
+                .byte_range
+                .as_deref()
+                .map(parse_dash_byte_range)
+                .transpose()?,
+        }),
+        None => None,
+    };
+    let segments = track
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(segment_index, segment)| {
+            Ok(DashSegment {
+                uri: resolve_url(base_url, &segment.uri),
+                duration: segment.duration,
+                sequence_number: segment_index as u64 + 1,
+                byte_range: segment
+                    .byte_range
+                    .as_deref()
+                    .map(parse_dash_byte_range)
+                    .transpose()?,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    if segments.is_empty() {
+        return Err(AppError::M3u8Parse(format!(
+            "DASH JSON 轨道 {} 缺少 segments",
+            track.id
+        )));
+    }
+
+    let group_id = (track_type == HlsTrackType::Audio).then_some("dash-audio".to_string());
+    Ok(DashTrack {
+        option: HlsTrackOption {
+            id: track.id.clone(),
+            track_type,
+            label: track.label.clone().unwrap_or_else(|| {
+                if let Some(resolution) = &track.resolution {
+                    resolution.clone()
+                } else {
+                    format!("轨道 {}", index + 1)
+                }
+            }),
+            name: track.label.clone(),
+            language: track.language.clone(),
+            group_id,
+            audio_group_id,
+            subtitle_group_id: None,
+            bandwidth: track.bandwidth,
+            resolution: track.resolution.clone(),
+            codecs: track.codecs.clone(),
+            is_default: index == 0,
+            is_autoselect: index == 0,
+            is_forced: false,
+        },
+        init,
+        segments,
+    })
+}
+
+fn parse_dash_mpd_manifest(raw: &str, manifest_url: &Url) -> Result<DashManifest, AppError> {
+    let mut reader = Reader::from_str(raw);
+    reader.config_mut().trim_text(true);
+
+    let mut manifest_base = manifest_url.clone();
+    let mut media_presentation_duration = None;
+    let mut adaptations = Vec::<DashAdaptationBuild>::new();
+    let mut current_adaptation: Option<DashAdaptationBuild> = None;
+    let mut current_representation: Option<DashRepresentationBuild> = None;
+    let mut editing_template: Option<(DashTemplateTarget, DashSegmentTemplate)> = None;
+    let mut collecting_base_url = false;
+    let mut base_url_text = String::new();
+    let mut tag_stack: Vec<Vec<u8>> = Vec::new();
+
+    loop {
+        match reader
+            .read_event()
+            .map_err(|error| AppError::M3u8Parse(format!("DASH MPD XML 解析失败: {}", error)))?
+        {
+            Event::Start(event) => {
+                let name = event.name().as_ref().to_vec();
+                if name.as_slice() == b"MPD" {
+                    if attr_value(&reader, &event, b"type")?
+                        .as_deref()
+                        .is_some_and(|value| value.eq_ignore_ascii_case("dynamic"))
+                    {
+                        return Err(AppError::M3u8Parse("暂不支持 dynamic/live DASH".to_string()));
+                    }
+                    media_presentation_duration =
+                        attr_value(&reader, &event, b"mediaPresentationDuration")?
+                            .and_then(|value| parse_iso8601_duration_seconds(&value));
+                } else if name.as_slice() == b"ContentProtection" {
+                    return Err(AppError::M3u8Parse("暂不支持 DRM/encrypted DASH".to_string()));
+                } else if name.as_slice() == b"AdaptationSet" {
+                    current_adaptation = Some(DashAdaptationBuild {
+                        content_type: attr_value(&reader, &event, b"contentType")?,
+                        mime_type: attr_value(&reader, &event, b"mimeType")?,
+                        lang: attr_value(&reader, &event, b"lang")?,
+                        ..Default::default()
+                    });
+                } else if name.as_slice() == b"Representation" {
+                    current_representation = Some(DashRepresentationBuild {
+                        id: attr_value(&reader, &event, b"id")?.unwrap_or_default(),
+                        bandwidth: attr_value(&reader, &event, b"bandwidth")?
+                            .and_then(|value| value.parse().ok()),
+                        width: attr_value(&reader, &event, b"width")?.and_then(|value| value.parse().ok()),
+                        height: attr_value(&reader, &event, b"height")?.and_then(|value| value.parse().ok()),
+                        codecs: attr_value(&reader, &event, b"codecs")?,
+                        ..Default::default()
+                    });
+                } else if name.as_slice() == b"SegmentTemplate" {
+                    let target = if current_representation.is_some() {
+                        DashTemplateTarget::Representation
+                    } else {
+                        DashTemplateTarget::Adaptation
+                    };
+                    editing_template = Some((target, parse_dash_segment_template_attrs(&reader, &event)?));
+                } else if name.as_slice() == b"S" {
+                    if let Some((_, template)) = editing_template.as_mut() {
+                        template.timeline.push(parse_dash_timeline_item(&reader, &event)?);
+                    }
+                } else if name.as_slice() == b"BaseURL" {
+                    collecting_base_url = true;
+                    base_url_text.clear();
+                } else if matches!(
+                    name.as_slice(),
+                    b"SegmentBase" | b"SegmentList" | b"SegmentURL"
+                ) {
+                    return Err(AppError::M3u8Parse(
+                        "暂不支持 SegmentBase/SegmentList DASH".to_string(),
+                    ));
+                }
+                tag_stack.push(name);
+            }
+            Event::Empty(event) => {
+                let name = event.name().as_ref().to_vec();
+                if name.as_slice() == b"ContentProtection" {
+                    return Err(AppError::M3u8Parse("暂不支持 DRM/encrypted DASH".to_string()));
+                } else if name.as_slice() == b"SegmentTemplate" {
+                    let target = if current_representation.is_some() {
+                        DashTemplateTarget::Representation
+                    } else {
+                        DashTemplateTarget::Adaptation
+                    };
+                    assign_dash_template(
+                        target,
+                        parse_dash_segment_template_attrs(&reader, &event)?,
+                        current_adaptation.as_mut(),
+                        current_representation.as_mut(),
+                    );
+                } else if name.as_slice() == b"S" {
+                    if let Some((_, template)) = editing_template.as_mut() {
+                        template.timeline.push(parse_dash_timeline_item(&reader, &event)?);
+                    }
+                } else if name.as_slice() == b"Representation" {
+                    if let Some(adaptation) = current_adaptation.as_mut() {
+                        let mut representation = DashRepresentationBuild {
+                            id: attr_value(&reader, &event, b"id")?.unwrap_or_default(),
+                            bandwidth: attr_value(&reader, &event, b"bandwidth")?
+                                .and_then(|value| value.parse().ok()),
+                            width: attr_value(&reader, &event, b"width")?
+                                .and_then(|value| value.parse().ok()),
+                            height: attr_value(&reader, &event, b"height")?
+                                .and_then(|value| value.parse().ok()),
+                            codecs: attr_value(&reader, &event, b"codecs")?,
+                            ..Default::default()
+                        };
+                        if representation.id.trim().is_empty() {
+                            representation.id =
+                                format!("rep-{}", adaptation.representations.len() + 1);
+                        }
+                        adaptation.representations.push(representation);
+                    }
+                } else if matches!(
+                    name.as_slice(),
+                    b"SegmentBase" | b"SegmentList" | b"SegmentURL"
+                ) {
+                    return Err(AppError::M3u8Parse(
+                        "暂不支持 SegmentBase/SegmentList DASH".to_string(),
+                    ));
+                }
+            }
+            Event::Text(event) => {
+                if collecting_base_url {
+                    base_url_text.push_str(&String::from_utf8_lossy(event.as_ref()));
+                }
+            }
+            Event::End(event) => {
+                let name = event.name().as_ref().to_vec();
+                if name.as_slice() == b"BaseURL" {
+                    let value = base_url_text.trim().to_string();
+                    if !value.is_empty() {
+                        if let Some(representation) = current_representation.as_mut() {
+                            representation.base_url = Some(value);
+                        } else if let Some(adaptation) = current_adaptation.as_mut() {
+                            adaptation.base_url = Some(value);
+                        } else {
+                            manifest_base = manifest_base.join(&value)?;
+                        }
+                    }
+                    collecting_base_url = false;
+                    base_url_text.clear();
+                } else if name.as_slice() == b"SegmentTemplate" {
+                    if let Some((target, template)) = editing_template.take() {
+                        assign_dash_template(
+                            target,
+                            template,
+                            current_adaptation.as_mut(),
+                            current_representation.as_mut(),
+                        );
+                    }
+                } else if name.as_slice() == b"Representation" {
+                    if let (Some(adaptation), Some(mut representation)) =
+                        (current_adaptation.as_mut(), current_representation.take())
+                    {
+                        if representation.id.trim().is_empty() {
+                            representation.id = format!("rep-{}", adaptation.representations.len() + 1);
+                        }
+                        adaptation.representations.push(representation);
+                    }
+                } else if name.as_slice() == b"AdaptationSet" {
+                    if let Some(adaptation) = current_adaptation.take() {
+                        adaptations.push(adaptation);
+                    }
+                }
+                let _ = tag_stack.pop();
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    dash_adaptations_to_manifest(&manifest_base, &adaptations, media_presentation_duration)
+}
+
+fn attr_value(
+    reader: &Reader<&[u8]>,
+    event: &BytesStart<'_>,
+    key: &[u8],
+) -> Result<Option<String>, AppError> {
+    for attr in event.attributes().with_checks(false) {
+        let attr =
+            attr.map_err(|error| AppError::M3u8Parse(format!("DASH MPD 属性解析失败: {}", error)))?;
+        if attr.key.as_ref() == key {
+            return attr
+                .decode_and_unescape_value(reader.decoder())
+                .map(|value| Some(value.into_owned()))
+                .map_err(|error| AppError::M3u8Parse(format!("DASH MPD 属性解析失败: {}", error)));
+        }
+    }
+    Ok(None)
+}
+
+fn parse_dash_segment_template_attrs(
+    reader: &Reader<&[u8]>,
+    event: &BytesStart<'_>,
+) -> Result<DashSegmentTemplate, AppError> {
+    Ok(DashSegmentTemplate {
+        timescale: attr_value(reader, event, b"timescale")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1),
+        initialization: attr_value(reader, event, b"initialization")?,
+        media: attr_value(reader, event, b"media")?,
+        start_number: attr_value(reader, event, b"startNumber")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1),
+        duration: attr_value(reader, event, b"duration")?.and_then(|value| value.parse().ok()),
+        timeline: Vec::new(),
+    })
+}
+
+fn parse_dash_timeline_item(
+    reader: &Reader<&[u8]>,
+    event: &BytesStart<'_>,
+) -> Result<DashTimelineItem, AppError> {
+    let duration = attr_value(reader, event, b"d")?
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| AppError::M3u8Parse("DASH SegmentTimeline S 缺少 d".to_string()))?;
+    Ok(DashTimelineItem {
+        start_time: attr_value(reader, event, b"t")?.and_then(|value| value.parse().ok()),
+        duration,
+        repeat: attr_value(reader, event, b"r")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0),
+    })
+}
+
+fn assign_dash_template(
+    target: DashTemplateTarget,
+    template: DashSegmentTemplate,
+    adaptation: Option<&mut DashAdaptationBuild>,
+    representation: Option<&mut DashRepresentationBuild>,
+) {
+    match target {
+        DashTemplateTarget::Adaptation => {
+            if let Some(adaptation) = adaptation {
+                adaptation.segment_template = Some(template);
+            }
+        }
+        DashTemplateTarget::Representation => {
+            if let Some(representation) = representation {
+                representation.segment_template = Some(template);
+            }
+        }
+    }
+}
+
+fn dash_adaptations_to_manifest(
+    manifest_base: &Url,
+    adaptations: &[DashAdaptationBuild],
+    media_presentation_duration: Option<f64>,
+) -> Result<DashManifest, AppError> {
+    let has_audio = adaptations.iter().any(|adaptation| dash_adaptation_kind(adaptation) == Some(HlsTrackType::Audio));
+    let audio_group_id = has_audio.then_some("dash-audio".to_string());
+    let mut video_tracks = Vec::new();
+    let mut audio_tracks = Vec::new();
+
+    for adaptation in adaptations {
+        let Some(track_type) = dash_adaptation_kind(adaptation) else {
+            continue;
+        };
+        let base = adaptation
+            .base_url
+            .as_deref()
+            .map(|value| manifest_base.join(value))
+            .transpose()?
+            .unwrap_or_else(|| manifest_base.clone());
+
+        for representation in &adaptation.representations {
+            let template = representation
+                .segment_template
+                .as_ref()
+                .or(adaptation.segment_template.as_ref())
+                .ok_or_else(|| AppError::M3u8Parse("DASH Representation 缺少 SegmentTemplate".to_string()))?;
+            let rep_base = representation
+                .base_url
+                .as_deref()
+                .map(|value| base.join(value))
+                .transpose()?
+                .unwrap_or_else(|| base.clone());
+            let track = build_dash_track_from_template(
+                &rep_base,
+                adaptation,
+                representation,
+                template,
+                track_type,
+                media_presentation_duration,
+                match track_type {
+                    HlsTrackType::Video => video_tracks.len(),
+                    HlsTrackType::Audio => audio_tracks.len(),
+                    HlsTrackType::Subtitle => 0,
+                },
+                audio_group_id.clone(),
+            )?;
+            match track_type {
+                HlsTrackType::Video => video_tracks.push(track),
+                HlsTrackType::Audio => audio_tracks.push(track),
+                HlsTrackType::Subtitle => {}
+            }
+        }
+    }
+
+    if video_tracks.is_empty() {
+        return Err(AppError::M3u8Parse("DASH MPD 未找到可下载的视频轨道".to_string()));
+    }
+
+    let default_selection = HlsTrackSelection {
+        video_id: video_tracks.first().map(|track| track.option.id.clone()),
+        audio_id: audio_tracks.first().map(|track| track.option.id.clone()),
+        subtitle_id: None,
+    };
+
+    Ok(DashManifest {
+        video_tracks,
+        audio_tracks,
+        default_selection,
+    })
+}
+
+fn dash_adaptation_kind(adaptation: &DashAdaptationBuild) -> Option<HlsTrackType> {
+    if adaptation
+        .content_type
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("video"))
+        || adaptation
+            .mime_type
+            .as_deref()
+            .is_some_and(|value| value.starts_with("video/"))
+    {
+        Some(HlsTrackType::Video)
+    } else if adaptation
+        .content_type
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("audio"))
+        || adaptation
+            .mime_type
+            .as_deref()
+            .is_some_and(|value| value.starts_with("audio/"))
+    {
+        Some(HlsTrackType::Audio)
+    } else {
+        None
+    }
+}
+
+fn build_dash_track_from_template(
+    base_url: &Url,
+    adaptation: &DashAdaptationBuild,
+    representation: &DashRepresentationBuild,
+    template: &DashSegmentTemplate,
+    track_type: HlsTrackType,
+    media_presentation_duration: Option<f64>,
+    index: usize,
+    audio_group_id: Option<String>,
+) -> Result<DashTrack, AppError> {
+    let initialization = template
+        .initialization
+        .as_deref()
+        .ok_or_else(|| AppError::M3u8Parse("DASH SegmentTemplate 缺少 initialization".to_string()))?;
+    let media = template
+        .media
+        .as_deref()
+        .ok_or_else(|| AppError::M3u8Parse("DASH SegmentTemplate 缺少 media".to_string()))?;
+    let init_uri = resolve_url(
+        base_url,
+        &apply_dash_template(initialization, representation, template.start_number, None)?,
+    );
+    let segments = expand_dash_segments(media, representation, template, media_presentation_duration)?
+        .into_iter()
+        .map(|(number, duration)| {
+            Ok(DashSegment {
+                uri: resolve_url(
+                    base_url,
+                    &apply_dash_template(media, representation, number, None)?,
+                ),
+                duration,
+                sequence_number: number,
+                byte_range: None,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    if segments.is_empty() {
+        return Err(AppError::M3u8Parse("DASH 轨道没有可展开的分片".to_string()));
+    }
+
+    let resolution = match (representation.width, representation.height) {
+        (Some(width), Some(height)) => Some(format!("{}x{}", width, height)),
+        _ => None,
+    };
+    let label = if let Some(resolution) = &resolution {
+        match representation.bandwidth {
+            Some(bandwidth) => format!("{} · {} kbps", resolution, bandwidth / 1000),
+            None => resolution.clone(),
+        }
+    } else if let Some(language) = &adaptation.lang {
+        language.clone()
+    } else {
+        format!("轨道 {}", index + 1)
+    };
+
+    Ok(DashTrack {
+        option: HlsTrackOption {
+            id: representation.id.clone(),
+            track_type,
+            label: label.clone(),
+            name: Some(label),
+            language: adaptation.lang.clone(),
+            group_id: (track_type == HlsTrackType::Audio).then_some("dash-audio".to_string()),
+            audio_group_id: (track_type == HlsTrackType::Video)
+                .then(|| audio_group_id)
+                .flatten(),
+            subtitle_group_id: None,
+            bandwidth: representation.bandwidth,
+            resolution,
+            codecs: representation.codecs.clone(),
+            is_default: index == 0,
+            is_autoselect: index == 0,
+            is_forced: false,
+        },
+        init: Some(DashResource {
+            uri: init_uri,
+            byte_range: None,
+        }),
+        segments,
+    })
+}
+
+fn expand_dash_segments(
+    media_template: &str,
+    representation: &DashRepresentationBuild,
+    template: &DashSegmentTemplate,
+    media_presentation_duration: Option<f64>,
+) -> Result<Vec<(u64, f32)>, AppError> {
+    let timescale = template.timescale.max(1);
+    let mut number = template.start_number;
+    let mut segments = Vec::new();
+    if !template.timeline.is_empty() {
+        for item in &template.timeline {
+            if item.repeat < 0 {
+                return Err(AppError::M3u8Parse(
+                    "暂不支持 DASH SegmentTimeline 负数 repeat".to_string(),
+                ));
+            }
+            let _ = item.start_time;
+            for _ in 0..=item.repeat {
+                segments.push((number, item.duration as f32 / timescale as f32));
+                number = number.saturating_add(1);
+            }
+        }
+        return Ok(segments);
+    }
+
+    let Some(duration) = template.duration else {
+        return Err(AppError::M3u8Parse(
+            "DASH SegmentTemplate 缺少 SegmentTimeline 或 duration".to_string(),
+        ));
+    };
+    let Some(total_duration) = media_presentation_duration else {
+        return Err(AppError::M3u8Parse(
+            "DASH MPD 缺少 mediaPresentationDuration，无法展开 duration 模板".to_string(),
+        ));
+    };
+    let segment_duration = duration as f64 / timescale as f64;
+    let count = (total_duration / segment_duration).ceil().max(1.0) as u64;
+    for _ in 0..count {
+        let _ = apply_dash_template(media_template, representation, number, None)?;
+        segments.push((number, segment_duration as f32));
+        number = number.saturating_add(1);
+    }
+    Ok(segments)
+}
+
+fn apply_dash_template(
+    template: &str,
+    representation: &DashRepresentationBuild,
+    number: u64,
+    time: Option<u64>,
+) -> Result<String, AppError> {
+    let mut result = String::new();
+    let mut chars = template.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '$' {
+            result.push(ch);
+            continue;
+        }
+        if matches!(chars.peek(), Some('$')) {
+            chars.next();
+            result.push('$');
+            continue;
+        }
+        let mut token = String::new();
+        while let Some(next) = chars.next() {
+            if next == '$' {
+                break;
+            }
+            token.push(next);
+        }
+        let (name, format_width) = parse_dash_template_token(&token);
+        let replacement = match name {
+            "RepresentationID" => representation.id.clone(),
+            "Bandwidth" => representation.bandwidth.unwrap_or(0).to_string(),
+            "Number" => format_dash_template_number(number, format_width),
+            "Time" => format_dash_template_number(time.unwrap_or(0), format_width),
+            _ => {
+                return Err(AppError::M3u8Parse(format!(
+                    "暂不支持 DASH 模板变量 ${}$",
+                    token
+                )))
+            }
+        };
+        result.push_str(&replacement);
+    }
+    Ok(result)
+}
+
+fn parse_dash_template_token(token: &str) -> (&str, Option<usize>) {
+    if let Some((name, format)) = token.split_once('%') {
+        let width = format
+            .trim_end_matches('d')
+            .trim_start_matches('0')
+            .parse::<usize>()
+            .ok();
+        (name, width)
+    } else {
+        (token, None)
+    }
+}
+
+fn format_dash_template_number(value: u64, width: Option<usize>) -> String {
+    match width {
+        Some(width) => format!("{:0width$}", value, width = width),
+        None => value.to_string(),
+    }
+}
+
+fn parse_iso8601_duration_seconds(value: &str) -> Option<f64> {
+    let mut raw = value.strip_prefix("PT")?;
+    let mut total = 0.0;
+    while !raw.is_empty() {
+        let number_len = raw
+            .find(|ch: char| !ch.is_ascii_digit() && ch != '.')
+            .unwrap_or(raw.len());
+        if number_len == 0 || number_len >= raw.len() {
+            return None;
+        }
+        let number: f64 = raw[..number_len].parse().ok()?;
+        let unit = raw.as_bytes()[number_len] as char;
+        total += match unit {
+            'H' => number * 3600.0,
+            'M' => number * 60.0,
+            'S' => number,
+            _ => return None,
+        };
+        raw = &raw[number_len + 1..];
+    }
+    Some(total)
+}
+
+fn parse_dash_byte_range(value: &str) -> Result<ByteRangeSpec, AppError> {
+    let (start, end) = value
+        .split_once('-')
+        .ok_or_else(|| AppError::M3u8Parse(format!("无效 DASH byte_range: {}", value)))?;
+    let start = start
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| AppError::M3u8Parse(format!("无效 DASH byte_range: {}", value)))?;
+    if end.trim().is_empty() {
+        return Ok(ByteRangeSpec {
+            length: 0,
+            offset: Some(start),
+        });
+    }
+    let end = end
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| AppError::M3u8Parse(format!("无效 DASH byte_range: {}", value)))?;
+    if end < start {
+        return Err(AppError::M3u8Parse(format!("无效 DASH byte_range: {}", value)));
+    }
+    Ok(ByteRangeSpec {
+        length: end - start + 1,
+        offset: Some(start),
+    })
 }
 
 async fn fetch_hls_playlist(
@@ -3067,6 +4087,7 @@ async fn download_segment(
     let mut request = build_request_with_headers(&active_client, url, headers.as_ref());
     if let Some(byte_range) = byte_range {
         let range_value = match byte_range.offset {
+            Some(offset) if byte_range.length == 0 => format!("bytes={}-", offset),
             Some(offset) if byte_range.length > 0 => {
                 format!(
                     "bytes={}-{}",
@@ -4225,6 +5246,84 @@ seg.ts
             "vtt"
         );
         assert_eq!(infer_file_extension("media/seg.m4s#frag", "bin"), "m4s");
+    }
+
+    #[test]
+    fn parse_dash_json_manifest_reads_tracks() {
+        let raw = r#"{
+          "format": "m3u8quicker-dash-v1",
+          "base_url": "https://example.com/dash/",
+          "tracks": {
+            "video": [{
+              "id": "v1",
+              "label": "1080p",
+              "bandwidth": 3000000,
+              "resolution": "1920x1080",
+              "codecs": "avc1.640028",
+              "init": "video/init.mp4",
+              "segments": [{ "uri": "video/seg-1.m4s", "duration": 6.0 }]
+            }],
+            "audio": [{
+              "id": "a1",
+              "label": "audio",
+              "language": "und",
+              "codecs": "mp4a.40.2",
+              "init": "audio/init.mp4",
+              "segments": [{ "uri": "audio/seg-1.m4s", "duration": 6.0 }]
+            }]
+          },
+          "default_selection": { "video_id": "v1", "audio_id": "a1" }
+        }"#;
+
+        let manifest = parse_dash_json_manifest(raw).expect("dash json");
+
+        assert_eq!(
+            manifest.video_tracks[0].init.as_ref().expect("init").uri,
+            "https://example.com/dash/video/init.mp4"
+        );
+        assert_eq!(
+            manifest.video_tracks[0].segments[0].uri,
+            "https://example.com/dash/video/seg-1.m4s"
+        );
+        assert_eq!(manifest.audio_tracks[0].option.group_id.as_deref(), Some("dash-audio"));
+        assert_eq!(
+            manifest.video_tracks[0].option.audio_group_id.as_deref(),
+            Some("dash-audio")
+        );
+    }
+
+    #[test]
+    fn parse_dash_mpd_manifest_expands_segment_template() {
+        let base_url = Url::parse("https://example.com/dash/manifest.mpd").expect("url");
+        let mpd = r#"<?xml version="1.0"?>
+<MPD type="static" mediaPresentationDuration="PT12S">
+  <Period>
+    <AdaptationSet contentType="video" mimeType="video/mp4">
+      <SegmentTemplate timescale="1" initialization="init-$RepresentationID$.m4s" media="chunk-$RepresentationID$-$Number%05d$.m4s" startNumber="1">
+        <SegmentTimeline>
+          <S d="6" r="1" />
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="0" bandwidth="2500000" width="1920" height="1080" codecs="avc1.640028" />
+    </AdaptationSet>
+  </Period>
+</MPD>"#;
+
+        let manifest = parse_dash_mpd_manifest(mpd, &base_url).expect("mpd");
+
+        assert_eq!(manifest.video_tracks.len(), 1);
+        assert_eq!(
+            manifest.video_tracks[0].init.as_ref().expect("init").uri,
+            "https://example.com/dash/init-0.m4s"
+        );
+        assert_eq!(
+            manifest.video_tracks[0].segments[0].uri,
+            "https://example.com/dash/chunk-0-00001.m4s"
+        );
+        assert_eq!(
+            manifest.video_tracks[0].segments[1].uri,
+            "https://example.com/dash/chunk-0-00002.m4s"
+        );
     }
 
     fn unique_temp_path(name: &str) -> PathBuf {

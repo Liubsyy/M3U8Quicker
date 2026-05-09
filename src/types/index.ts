@@ -20,9 +20,11 @@ export type DirectFileType =
   | "mov"
   | "rmvb";
 
-export type FileType = "hls" | DirectFileType;
+export type FileType = "hls" | "dash" | DirectFileType;
 
-export type DownloadMode = "hls" | "direct";
+export type DownloadMode = "hls" | "dash" | "direct";
+
+export type DownloadSourceKind = "url" | "inline_dash_json";
 
 export type HlsOutputMode = "single_stream" | "multi_track_bundle";
 
@@ -45,6 +47,7 @@ export const DIRECT_FILE_TYPES: DirectFileType[] = [
 
 export const FILE_TYPE_OPTIONS: Array<{ value: FileType; label: string }> = [
   { value: "hls", label: "HLS" },
+  { value: "dash", label: "DASH" },
   ...DIRECT_FILE_TYPES.map((value) => ({
     value,
     label: value.toUpperCase(),
@@ -115,6 +118,8 @@ export interface DownloadProgressEvent {
 
 export interface CreateDownloadParams {
   url: string;
+  source_kind?: DownloadSourceKind;
+  source_text?: string;
   filename?: string;
   output_dir?: string;
   extra_headers?: string;
@@ -148,6 +153,13 @@ export interface HlsTrackOption {
 
 export interface InspectHlsTracksParams {
   url: string;
+  extra_headers?: string;
+}
+
+export interface InspectDashTracksParams {
+  url: string;
+  source_kind?: DownloadSourceKind;
+  source_text?: string;
   extra_headers?: string;
 }
 
@@ -222,7 +234,7 @@ export interface MediaAnalysisResult {
 export function isDirectFileType(
   fileType: FileType | null | undefined
 ): fileType is DirectFileType {
-  return fileType !== undefined && fileType !== null && fileType !== "hls";
+  return fileType !== undefined && fileType !== null && fileType !== "hls" && fileType !== "dash";
 }
 
 export function parseFileType(value: string | null | undefined): FileType | undefined {
@@ -233,6 +245,9 @@ export function parseFileType(value: string | null | undefined): FileType | unde
   const normalized = value.trim().toLowerCase();
   if (normalized === "hls") {
     return "hls";
+  }
+  if (normalized === "dash") {
+    return "dash";
   }
 
   return DIRECT_FILE_TYPES.find((fileType) => fileType === normalized);
@@ -276,7 +291,9 @@ export function inferDirectFileTypeFromUrl(
 }
 
 export function getFileTypeLabel(fileType: FileType): string {
-  return fileType === "hls" ? "HLS" : fileType.toUpperCase();
+  if (fileType === "hls") return "HLS";
+  if (fileType === "dash") return "DASH";
+  return fileType.toUpperCase();
 }
 
 export function supportsProgressivePlayback(fileType: FileType): boolean {
@@ -301,8 +318,21 @@ export function canOpenInProgressPlayback(
 }
 
 export function deriveFilenameFromUrl(url: string): string {
+  const trimmed = url.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as { title?: unknown };
+      if (typeof parsed.title === "string" && parsed.title.trim()) {
+        return normalizeDownloadFilename(parsed.title);
+      }
+    } catch {
+      // fall through to URL parsing
+    }
+    return "";
+  }
+
   try {
-    const parsed = new URL(url.trim());
+    const parsed = new URL(trimmed);
     const queryKeys = ["title", "name", "filename", "file", "videoTitle"];
 
     const rawName =
@@ -335,6 +365,9 @@ function normalizeDownloadFilename(name: string): string {
   const lower = sanitized.toLowerCase();
   if (lower.endsWith(".m3u8")) {
     return sanitized.slice(0, -5);
+  }
+  if (lower.endsWith(".mpd")) {
+    return sanitized.slice(0, -4);
   }
   if (lower.endsWith(".ts")) {
     return sanitized.slice(0, -3);

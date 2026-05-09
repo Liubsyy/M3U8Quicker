@@ -12,7 +12,6 @@
 行为说明：
 
 - 扩展会通过后台 `webRequest` 监听浏览器网络层中的 `.m3u8` 请求，包含 iframe 内的请求
-- 当页面里的 `XMLHttpRequest` 或 `fetch` 请求 URL 含有 `.m3u8` 时，扩展也会在页面上下文中补充检测
 - 当页面中的 `<video>` 元素 `currentSrc` 或 `src` 含有 `.m3u8` 时，扩展也会校验该地址
 - 校验通过后，页面右上角会出现按钮“M3U8 Quicker”，按钮图标与桌面端 `src-tauri/icons/icon.png` 保持一致
 - 按钮支持拖动调整位置；只有点击才会触发唤起下载，拖动不会触发
@@ -28,5 +27,6 @@
 - `manifest.json`：扩展清单
 - `background.js`：后台 `service worker`，通过 `webRequest` 捕获网络请求并转发给页面
 - `icon.png`：复用桌面端主图标
-- `content.js`：接收后台检测结果、页面注入、校验与按钮 UI
-- `injected-network.js`：注入页面上下文，拦截 `XMLHttpRequest` 与 `fetch`
+- `content.js`：接收后台检测结果、按需注入站点脚本、校验与按钮 UI
+- `injects/registry.js`：站点注入清单，按域名映射到对应注入脚本
+- `injects/bilibili.js`：注入到 bilibili 页面读取 `__playinfo__`，输出 DASH manifest

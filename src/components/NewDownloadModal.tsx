@@ -9,6 +9,7 @@ import {
   getAppSettings,
   getDefaultDownloadDir,
   getFfmpegStatus,
+  inspectDashTracks,
   inspectHlsTracks,
   setDefaultDownloadDir,
 } from "../services/api";
@@ -65,7 +66,11 @@ export function NewDownloadModal({
       setPendingHlsParams(null);
       setHlsInspection(null);
       setHlsSelection({});
-      const mode: DownloadMode = isDirectFileType(initialFileType) ? "direct" : "hls";
+      const mode: DownloadMode = isDirectFileType(initialFileType)
+        ? "direct"
+        : initialFileType === "dash"
+          ? "dash"
+          : "hls";
       setDownloadMode(mode);
       form.resetFields();
       form.setFieldsValue({
@@ -151,7 +156,8 @@ export function NewDownloadModal({
       const values = await form.validateFields();
       const url = values.url.trim();
       const fileType =
-        downloadMode === "direct" ? inferDirectFileTypeFromUrl(url) : "hls";
+        downloadMode === "direct" ? inferDirectFileTypeFromUrl(url) : downloadMode;
+      const isInlineDashJson = downloadMode === "dash" && url.startsWith("{");
 
       if (!fileType) {
         form.setFields([
@@ -169,7 +175,9 @@ export function NewDownloadModal({
 
       setSubmitting(true);
       const nextParams: CreateDownloadParams = {
-        url,
+        url: isInlineDashJson ? "inline-dash-json" : url,
+        source_kind: isInlineDashJson ? "inline_dash_json" : "url",
+        source_text: isInlineDashJson ? url : undefined,
         filename: values.filename?.trim() || undefined,
         output_dir: outputDir || undefined,
         extra_headers: values.extra_headers?.trim() || undefined,
@@ -197,6 +205,35 @@ export function NewDownloadModal({
           normalizedSelection &&
           !(await ensureMultiTrackFfmpegReady(inspection, normalizedSelection))
         ) {
+          return;
+        }
+
+        await submitDownload({
+          ...nextParams,
+          hls_selection: normalizedSelection,
+        });
+        return;
+      }
+
+      if (downloadMode === "dash") {
+        const inspection = await inspectDashTracks({
+          url: isInlineDashJson ? "inline-dash-json" : url,
+          source_kind: isInlineDashJson ? "inline_dash_json" : "url",
+          source_text: isInlineDashJson ? url : undefined,
+          extra_headers: nextParams.extra_headers,
+        });
+        if (inspection.requires_selection) {
+          setPendingHlsParams(nextParams);
+          setHlsInspection(inspection);
+          setHlsSelection(normalizeTrackSelection(inspection, inspection.default_selection));
+          return;
+        }
+
+        const normalizedSelection = normalizeTrackSelection(
+          inspection,
+          inspection.default_selection
+        );
+        if (!(await ensureMultiTrackFfmpegReady(inspection, normalizedSelection))) {
           return;
         }
 
@@ -329,14 +366,21 @@ export function NewDownloadModal({
   };
 
   const inferredDirectFileType = inferDirectFileTypeFromUrl(watchedUrl);
-  const urlLabel = downloadMode === "direct" ? "地址" : "M3U8 地址";
+  const urlLabel =
+    downloadMode === "direct" ? "地址" : downloadMode === "dash" ? "DASH 地址 / JSON" : "M3U8 地址";
   const supportedDirectTypes = DIRECT_FILE_TYPES.join(" / ");
   const urlPlaceholder =
     downloadMode === "direct"
       ? `https://example.com/video/file.mp4\n支持 ${supportedDirectTypes} 格式`
-      : "https://example.com/video/playlist.m3u8";
+      : downloadMode === "dash"
+        ? "https://example.com/video/manifest.mpd\n或粘贴 m3u8quicker-dash-v1 JSON"
+        : "https://example.com/video/playlist.m3u8";
   const urlRequiredMessage =
-    downloadMode === "direct" ? "请输入 Direct 地址" : "请输入 M3U8 地址";
+    downloadMode === "direct"
+      ? "请输入 Direct 地址"
+      : downloadMode === "dash"
+        ? "请输入 DASH 地址或 JSON"
+        : "请输入 M3U8 地址";
   const urlExtra =
     downloadMode === "direct"
       ? inferredDirectFileType
@@ -371,6 +415,7 @@ export function NewDownloadModal({
             }}
           >
             <Radio.Button value="hls">HLS</Radio.Button>
+            <Radio.Button value="dash">DASH</Radio.Button>
             <Radio.Button value="direct">Direct</Radio.Button>
           </Radio.Group>
         </Form.Item>

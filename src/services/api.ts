@@ -10,6 +10,7 @@ import type {
   DownloadTaskSegmentState,
   DownloadTaskSummary,
   InspectHlsTracksParams,
+  InspectDashTracksParams,
   InspectHlsTracksResult,
   OpenPlaybackSessionResponse,
   ResumeDownloadCheckResult,
@@ -28,6 +29,12 @@ export async function inspectHlsTracks(
   params: InspectHlsTracksParams
 ): Promise<InspectHlsTracksResult> {
   return invoke<InspectHlsTracksResult>("inspect_hls_tracks", { params });
+}
+
+export async function inspectDashTracks(
+  params: InspectDashTracksParams
+): Promise<InspectHlsTracksResult> {
+  return invoke<InspectHlsTracksResult>("inspect_dash_tracks", { params });
 }
 
 export async function cancelDownload(id: string): Promise<void> {

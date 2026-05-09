@@ -9,6 +9,7 @@ pub type RequestHeaders = HashMap<String, String>;
 #[serde(rename_all = "snake_case")]
 pub enum FileType {
     Hls,
+    Dash,
     Mp4,
     Mkv,
     Avi,
@@ -23,7 +24,16 @@ pub enum FileType {
 #[serde(rename_all = "snake_case")]
 pub enum DownloadMode {
     Hls,
+    Dash,
     Direct,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadSourceKind {
+    #[default]
+    Url,
+    InlineDashJson,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -90,6 +100,16 @@ pub struct InspectHlsTracksParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InspectDashTracksParams {
+    pub url: String,
+    #[serde(default)]
+    pub source_kind: DownloadSourceKind,
+    #[serde(default)]
+    pub source_text: Option<String>,
+    pub extra_headers: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InspectHlsTracksResult {
     pub kind: HlsPlaylistKind,
     pub requires_selection: bool,
@@ -107,7 +127,7 @@ impl Default for FileType {
 
 impl FileType {
     pub fn is_direct_download(self) -> bool {
-        !matches!(self, FileType::Hls)
+        !matches!(self, FileType::Hls | FileType::Dash)
     }
 
     pub fn supports_progressive_playback(self) -> bool {
@@ -116,7 +136,7 @@ impl FileType {
 
     pub fn default_extension(self) -> Option<&'static str> {
         match self {
-            FileType::Hls => None,
+            FileType::Hls | FileType::Dash => None,
             FileType::Mp4 => Some("mp4"),
             FileType::Mkv => Some("mkv"),
             FileType::Avi => Some("avi"),
@@ -145,6 +165,10 @@ pub enum DownloadStatus {
 pub struct DownloadTask {
     pub id: DownloadId,
     pub url: String,
+    #[serde(default)]
+    pub source_kind: DownloadSourceKind,
+    #[serde(default)]
+    pub source_text: Option<String>,
     pub filename: String,
     #[serde(default)]
     pub file_type: FileType,
@@ -217,6 +241,10 @@ pub struct DownloadProgressEvent {
 #[derive(Debug, Deserialize)]
 pub struct CreateDownloadParams {
     pub url: String,
+    #[serde(default)]
+    pub source_kind: DownloadSourceKind,
+    #[serde(default)]
+    pub source_text: Option<String>,
     pub filename: Option<String>,
     pub output_dir: Option<String>,
     pub extra_headers: Option<String>,

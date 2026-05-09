@@ -1,8 +1,8 @@
 const BACKGROUND_DETECT_MESSAGE = "m3u8quicker:network-detected";
 const FRAME_DETECT_MESSAGE = "m3u8quicker:frame-detected";
 const SYNC_DETECTIONS_MESSAGE = "m3u8quicker:sync-detections";
-const M3U8_PATTERN = /\.m3u8(?:$|[?#])/i;
-const M3U8_REQUEST_FILTERS = ["*://*/*.m3u8*"];
+const STREAM_MANIFEST_PATTERN = /\.(m3u8|mpd)(?:$|[?#])/i;
+const STREAM_MANIFEST_REQUEST_FILTERS = ["*://*/*.m3u8*", "*://*/*.mpd*"];
 const pendingDetectionsByTab = new Map();
 
 browser.webRequest.onBeforeRequest.addListener(
@@ -14,7 +14,7 @@ browser.webRequest.onBeforeRequest.addListener(
     queueAndDispatch(details.tabId, details.url);
   },
   {
-    urls: M3U8_REQUEST_FILTERS
+    urls: STREAM_MANIFEST_REQUEST_FILTERS
   }
 );
 
@@ -37,7 +37,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
 });
 
 function shouldTrackRequest(details) {
-  return details.tabId >= 0 && typeof details.url === "string" && M3U8_PATTERN.test(details.url);
+  return details.tabId >= 0 && typeof details.url === "string" && STREAM_MANIFEST_PATTERN.test(details.url);
 }
 
 function queueAndDispatch(tabId, url) {

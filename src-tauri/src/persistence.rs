@@ -30,6 +30,10 @@ impl Default for DownloadStoreMeta {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct DownloadTaskDetail {
     url: String,
+    #[serde(default)]
+    source_kind: crate::models::DownloadSourceKind,
+    #[serde(default)]
+    source_text: Option<String>,
     extra_headers: Option<String>,
     #[serde(default)]
     completed_segment_indices: Vec<usize>,
@@ -152,6 +156,8 @@ fn sort_summaries_desc(items: &mut [DownloadTaskSummary]) {
 fn task_to_detail(task: &DownloadTask) -> DownloadTaskDetail {
     DownloadTaskDetail {
         url: task.url.clone(),
+        source_kind: task.source_kind,
+        source_text: task.source_text.clone(),
         extra_headers: task.extra_headers.clone(),
         completed_segment_indices: task.completed_segment_indices.clone(),
         failed_segment_indices: task.failed_segment_indices.clone(),
@@ -219,6 +225,8 @@ fn task_from_parts(
     Ok(DownloadTask {
         id: summary.id,
         url: detail.url,
+        source_kind: detail.source_kind,
+        source_text: detail.source_text,
         filename: summary.filename,
         file_type: summary.file_type,
         hls_output_mode: summary.hls_output_mode,

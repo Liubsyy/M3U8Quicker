@@ -1238,6 +1238,8 @@ mod tests {
         DownloadTask {
             id: "task-1".to_string(),
             url: "https://example.com/video.m3u8".to_string(),
+            source_kind: crate::models::DownloadSourceKind::Url,
+            source_text: None,
             filename: "video".to_string(),
             file_type: FileType::Hls,
             hls_output_mode: crate::models::HlsOutputMode::SingleStream,

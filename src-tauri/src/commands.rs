@@ -46,6 +46,17 @@ pub async fn inspect_hls_tracks(
 }
 
 #[tauri::command]
+pub async fn inspect_dash_tracks(
+    state: State<'_, AppState>,
+    params: InspectDashTracksParams,
+) -> Result<InspectHlsTracksResult, AppError> {
+    let client = state.http_client.read().await.clone();
+    let request_headers = parse_request_headers(params.extra_headers.as_deref())?;
+    let source = dash_source_from_parts(&params.url, params.source_text.as_deref(), params.source_kind)?;
+    downloader::inspect_dash_tracks(&client, &source, &request_headers, params.source_kind).await
+}
+
+#[tauri::command]
 pub async fn create_download(
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -57,7 +68,7 @@ pub async fn create_download(
     let file_type = resolve_create_download_file_type(&params)?;
 
     let output_dir =
-        if let Some(output_dir) = params.output_dir.filter(|dir| !dir.trim().is_empty()) {
+        if let Some(output_dir) = params.output_dir.clone().filter(|dir| !dir.trim().is_empty()) {
             let output_dir = output_dir.trim().to_string();
             let mut default_download_dir = state.default_download_dir.lock().await;
             if *default_download_dir != output_dir {
@@ -74,6 +85,7 @@ pub async fn create_download(
     let filename = normalize_download_filename(
         params
             .filename
+            .clone()
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| derive_filename_from_url(&params.url)),
     );
@@ -92,6 +104,8 @@ pub async fn create_download(
         let task = DownloadTask {
             id: id.clone(),
             url: params.url.clone(),
+            source_kind: params.source_kind,
+            source_text: params.source_text.clone(),
             filename: filename.clone(),
             file_type,
             hls_output_mode: HlsOutputMode::SingleStream,
@@ -137,6 +151,73 @@ pub async fn create_download(
         .await;
 
         Ok(persistence::task_to_summary(&task))
+    } else if file_type == FileType::Dash {
+        let source_text = normalized_dash_source_text(&params)?;
+        let task_url = dash_task_url(&params.url, source_text.as_deref(), params.source_kind);
+        let dash_source =
+            dash_source_from_parts(&params.url, source_text.as_deref(), params.source_kind)?;
+        let prepared = downloader::prepare_dash_download(
+            &client,
+            &dash_source,
+            &request_headers,
+            params.source_kind,
+            params.hls_selection.as_ref(),
+        )
+        .await?;
+        let bundle_dir = resolve_bundle_output_dir(Path::new(&output_dir), &filename)
+            .to_string_lossy()
+            .to_string();
+        let task = DownloadTask {
+            id: id.clone(),
+            url: task_url,
+            source_kind: params.source_kind,
+            source_text,
+            filename: filename.clone(),
+            file_type: FileType::Dash,
+            hls_output_mode: HlsOutputMode::MultiTrackBundle,
+            hls_media_kind: HlsMediaKind::MpegTs,
+            hls_selection: Some(prepared.selection.clone()),
+            encryption_method: prepared.encryption_method(),
+            output_dir: output_dir.clone(),
+            extra_headers: params.extra_headers.clone(),
+            status: DownloadStatus::Downloading,
+            total_segments: prepared.total_units(),
+            completed_segments: 0,
+            completed_segment_indices: Vec::new(),
+            failed_segment_indices: Vec::new(),
+            segment_uris: prepared.source_uris(),
+            segment_durations: prepared.durations(),
+            hls_init_segments: Vec::new(),
+            segment_init_indices: Vec::new(),
+            total_bytes: 0,
+            speed_bytes_per_sec: 0,
+            created_at,
+            completed_at: None,
+            updated_at: Some(created_at),
+            playback_available: false,
+            file_path: Some(bundle_dir.clone()),
+        };
+
+        {
+            let mut downloads = state.downloads.lock().await;
+            downloads.insert(id.clone(), task.clone());
+        }
+        persistence::save_task(&app_handle, &task).await?;
+
+        start_hls_bundle_download_worker(
+            app_handle.clone(),
+            state.downloads.clone(),
+            state.cancel_tokens.clone(),
+            state.http_client.clone(),
+            task.clone(),
+            PathBuf::from(bundle_dir),
+            prepared,
+            request_headers,
+            state.max_concurrent_segments.clone(),
+        )
+        .await;
+
+        Ok(persistence::task_to_summary(&task))
     } else {
         match downloader::prepare_hls_download(
             &client,
@@ -150,6 +231,8 @@ pub async fn create_download(
                 let task = DownloadTask {
                     id: id.clone(),
                     url: params.url.clone(),
+                    source_kind: params.source_kind,
+                    source_text: params.source_text.clone(),
                     filename: filename.clone(),
                     file_type: FileType::Hls,
                     hls_output_mode: HlsOutputMode::SingleStream,
@@ -207,6 +290,8 @@ pub async fn create_download(
                 let task = DownloadTask {
                     id: id.clone(),
                     url: params.url.clone(),
+                    source_kind: params.source_kind,
+                    source_text: params.source_text.clone(),
                     filename: filename.clone(),
                     file_type: FileType::Hls,
                     hls_output_mode: HlsOutputMode::MultiTrackBundle,
@@ -387,6 +472,73 @@ pub async fn resume_download(
     }
 
     let client = state.http_client.read().await.clone();
+    if task.file_type == FileType::Dash {
+        let dash_source =
+            dash_source_from_parts(&task.url, task.source_text.as_deref(), task.source_kind)?;
+        let prepared = downloader::prepare_dash_download(
+            &client,
+            &dash_source,
+            &request_headers,
+            task.source_kind,
+            task.hls_selection.as_ref(),
+        )
+        .await?;
+        if task.hls_output_mode != HlsOutputMode::MultiTrackBundle {
+            return Err(AppError::InvalidInput(
+                "检测到远端 DASH 结构已变化，请重新创建下载任务".to_string(),
+            ));
+        }
+        validate_bundle_layout(&task, &prepared.source_uris())?;
+        let bundle_dir = task
+            .file_path
+            .clone()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| resolve_bundle_output_dir(Path::new(&task.output_dir), &task.filename));
+
+        let updated_task = {
+            let mut downloads = state.downloads.lock().await;
+            downloads.entry(id.clone()).or_insert_with(|| task.clone());
+            let task = downloads
+                .get_mut(&id)
+                .ok_or_else(|| AppError::InvalidInput(format!("Download {} not found", id)))?;
+            task.status = DownloadStatus::Downloading;
+            task.speed_bytes_per_sec = 0;
+            task.completed_at = None;
+            task.file_path = Some(bundle_dir.to_string_lossy().to_string());
+            task.total_segments = prepared.total_units();
+            task.segment_uris = prepared.source_uris();
+            task.segment_durations = prepared.durations();
+            task.hls_media_kind = HlsMediaKind::MpegTs;
+            task.hls_init_segments = Vec::new();
+            task.segment_init_indices = Vec::new();
+            task.encryption_method = prepared.encryption_method();
+            task.hls_selection = Some(prepared.selection.clone());
+            task.hls_output_mode = HlsOutputMode::MultiTrackBundle;
+            task.playback_available = false;
+            task.touch();
+            task.clone()
+        };
+
+        persistence::save_task(&app_handle, &updated_task).await?;
+        let progress = task_to_progress(&updated_task);
+        let _ = app_handle.emit("download-progress", &progress);
+
+        start_hls_bundle_download_worker(
+            app_handle.clone(),
+            state.downloads.clone(),
+            state.cancel_tokens.clone(),
+            state.http_client.clone(),
+            updated_task.clone(),
+            bundle_dir,
+            prepared,
+            request_headers,
+            state.max_concurrent_segments.clone(),
+        )
+        .await;
+
+        return Ok(persistence::task_to_summary(&updated_task));
+    }
+
     match downloader::prepare_hls_download(
         &client,
         &task.url,
@@ -583,6 +735,74 @@ pub async fn retry_failed_segments(
 
     let client = state.http_client.read().await.clone();
     let request_headers = parse_request_headers(task.extra_headers.as_deref())?;
+    if task.file_type == FileType::Dash {
+        let dash_source =
+            dash_source_from_parts(&task.url, task.source_text.as_deref(), task.source_kind)?;
+        let prepared = downloader::prepare_dash_download(
+            &client,
+            &dash_source,
+            &request_headers,
+            task.source_kind,
+            task.hls_selection.as_ref(),
+        )
+        .await?;
+        if task.hls_output_mode != HlsOutputMode::MultiTrackBundle {
+            return Err(AppError::InvalidInput(
+                "检测到远端 DASH 结构已变化，请重新创建下载任务".to_string(),
+            ));
+        }
+        validate_bundle_layout(&task, &prepared.source_uris())?;
+        let bundle_dir = task
+            .file_path
+            .clone()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| resolve_bundle_output_dir(Path::new(&task.output_dir), &task.filename));
+
+        let updated_task = {
+            let mut downloads = state.downloads.lock().await;
+            downloads.entry(id.clone()).or_insert_with(|| task.clone());
+            let task = downloads
+                .get_mut(&id)
+                .ok_or_else(|| AppError::InvalidInput(format!("Download {} not found", id)))?;
+            task.status = DownloadStatus::Downloading;
+            task.speed_bytes_per_sec = 0;
+            task.completed_at = None;
+            task.file_path = Some(bundle_dir.to_string_lossy().to_string());
+            task.failed_segment_indices.clear();
+            task.total_segments = prepared.total_units();
+            task.segment_uris = prepared.source_uris();
+            task.segment_durations = prepared.durations();
+            task.hls_media_kind = HlsMediaKind::MpegTs;
+            task.hls_init_segments = Vec::new();
+            task.segment_init_indices = Vec::new();
+            task.encryption_method = prepared.encryption_method();
+            task.hls_selection = Some(prepared.selection.clone());
+            task.hls_output_mode = HlsOutputMode::MultiTrackBundle;
+            task.playback_available = false;
+            task.touch();
+            task.clone()
+        };
+
+        persistence::save_task(&app_handle, &updated_task).await?;
+        let progress = task_to_progress(&updated_task);
+        let _ = app_handle.emit("download-progress", &progress);
+
+        start_hls_bundle_download_worker(
+            app_handle.clone(),
+            state.downloads.clone(),
+            state.cancel_tokens.clone(),
+            state.http_client.clone(),
+            updated_task.clone(),
+            bundle_dir,
+            prepared,
+            request_headers,
+            state.max_concurrent_segments.clone(),
+        )
+        .await;
+
+        return Ok(persistence::task_to_summary(&updated_task));
+    }
+
     match downloader::prepare_hls_download(
         &client,
         &task.url,
@@ -2729,6 +2949,7 @@ fn resolve_create_download_file_type(params: &CreateDownloadParams) -> Result<Fi
     if let Some(download_mode) = params.download_mode {
         return match download_mode {
             DownloadMode::Hls => Ok(FileType::Hls),
+            DownloadMode::Dash => Ok(FileType::Dash),
             DownloadMode::Direct => infer_direct_file_type_from_url(&params.url)
                 .or_else(|| params.file_type.filter(|file_type| file_type.is_direct_download()))
                 .ok_or_else(|| {
@@ -2745,10 +2966,76 @@ fn resolve_create_download_file_type(params: &CreateDownloadParams) -> Result<Fi
             return Ok(infer_direct_file_type_from_url(&params.url).unwrap_or(file_type));
         }
 
-        return Ok(FileType::Hls);
+        return Ok(file_type);
+    }
+
+    if looks_like_dash_input(&params.url) || params.source_kind == DownloadSourceKind::InlineDashJson {
+        return Ok(FileType::Dash);
     }
 
     Ok(infer_direct_file_type_from_url(&params.url).unwrap_or(FileType::Hls))
+}
+
+fn looks_like_dash_input(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.starts_with('{') {
+        return true;
+    }
+    if let Ok(parsed) = url::Url::parse(trimmed) {
+        if parsed.path().to_ascii_lowercase().ends_with(".mpd") {
+            return true;
+        }
+    }
+    trimmed.to_ascii_lowercase().contains(".mpd?")
+        || trimmed.to_ascii_lowercase().contains(".mpd#")
+        || trimmed.to_ascii_lowercase().ends_with(".mpd")
+}
+
+fn normalized_dash_source_text(params: &CreateDownloadParams) -> Result<Option<String>, AppError> {
+    if params.source_kind != DownloadSourceKind::InlineDashJson {
+        return Ok(None);
+    }
+    let source = params
+        .source_text
+        .as_deref()
+        .unwrap_or(params.url.as_str())
+        .trim();
+    if source.is_empty() {
+        return Err(AppError::InvalidInput("DASH JSON 不能为空".to_string()));
+    }
+    Ok(Some(source.to_string()))
+}
+
+fn dash_source_from_parts(
+    url: &str,
+    source_text: Option<&str>,
+    source_kind: DownloadSourceKind,
+) -> Result<String, AppError> {
+    match source_kind {
+        DownloadSourceKind::Url => Ok(url.trim().to_string()),
+        DownloadSourceKind::InlineDashJson => {
+            let source = source_text.unwrap_or(url).trim();
+            if source.is_empty() {
+                return Err(AppError::InvalidInput("DASH JSON 不能为空".to_string()));
+            }
+            Ok(source.to_string())
+        }
+    }
+}
+
+fn dash_task_url(url: &str, source_text: Option<&str>, source_kind: DownloadSourceKind) -> String {
+    match source_kind {
+        DownloadSourceKind::Url => url.to_string(),
+        DownloadSourceKind::InlineDashJson => source_text
+            .and_then(extract_dash_json_base_url)
+            .unwrap_or_else(|| "inline-dash-json".to_string()),
+    }
+}
+
+fn extract_dash_json_base_url(raw: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("base_url").and_then(|value| value.as_str()).map(str::to_string))
 }
 
 fn infer_direct_file_type_from_url(url: &str) -> Option<FileType> {
@@ -3294,6 +3581,8 @@ mod tests {
         DownloadTask {
             id: "task-id".to_string(),
             url: "https://example.com/video.m3u8".to_string(),
+            source_kind: DownloadSourceKind::Url,
+            source_text: None,
             filename: "video".to_string(),
             file_type: FileType::Hls,
             hls_output_mode: HlsOutputMode::SingleStream,
@@ -3377,6 +3666,8 @@ mod tests {
     fn resolve_create_download_file_type_infers_direct_type_from_url() {
         let params = CreateDownloadParams {
             url: "https://example.com/media/movie.webm?token=abc".to_string(),
+            source_kind: DownloadSourceKind::Url,
+            source_text: None,
             filename: None,
             output_dir: None,
             extra_headers: None,
@@ -3395,6 +3686,8 @@ mod tests {
     fn resolve_create_download_file_type_keeps_hls_mode_even_for_direct_url() {
         let params = CreateDownloadParams {
             url: "https://example.com/media/movie.mp4".to_string(),
+            source_kind: DownloadSourceKind::Url,
+            source_text: None,
             filename: None,
             output_dir: None,
             extra_headers: None,
@@ -3413,6 +3706,8 @@ mod tests {
     fn resolve_create_download_file_type_updates_legacy_direct_type_from_url() {
         let params = CreateDownloadParams {
             url: "https://example.com/media/movie.mkv".to_string(),
+            source_kind: DownloadSourceKind::Url,
+            source_text: None,
             filename: None,
             output_dir: None,
             extra_headers: None,
@@ -3431,6 +3726,8 @@ mod tests {
     fn resolve_create_download_file_type_rejects_unknown_direct_url_extension() {
         let params = CreateDownloadParams {
             url: "https://example.com/media/download".to_string(),
+            source_kind: DownloadSourceKind::Url,
+            source_text: None,
             filename: None,
             output_dir: None,
             extra_headers: None,

@@ -19,6 +19,7 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "default-tls", "stream", "system-proxy"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "query", "tokio"] }
 m3u8-rs = "6"
+quick-xml = "0.38"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
 url = "2"

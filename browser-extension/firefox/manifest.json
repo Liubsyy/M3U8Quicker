@@ -27,6 +27,7 @@
         "<all_urls>"
       ],
       "js": [
+        "injects/registry.js",
         "content.js"
       ],
       "run_at": "document_start",
@@ -34,7 +35,7 @@
     }
   ],
   "web_accessible_resources": [
-    "injected-network.js",
+    "injects/bilibili.js",
     "icon.png"
   ]
 }

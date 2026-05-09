@@ -162,6 +162,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::inspect_hls_tracks,
+            commands::inspect_dash_tracks,
             commands::create_download,
             commands::pause_download,
             commands::check_resume_download,

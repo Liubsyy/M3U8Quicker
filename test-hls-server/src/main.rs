@@ -16,6 +16,7 @@ use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
 use chrono::Local;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use uuid::Uuid;
@@ -48,6 +49,8 @@ struct JobSummary {
     meta: JobMeta,
     segment_count: usize,
     playlist_path: String,
+    dash_manifest_path: Option<String>,
+    dash_json_path: Option<String>,
     aes128_playlist_path: Option<String>,
     aes192_playlist_path: Option<String>,
     aes256_playlist_path: Option<String>,
@@ -188,20 +191,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/dash", get(dash_index))
         .route("/healthz", get(healthz))
         .route(
             "/generate/upload",
             post(generate_from_upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
         )
         .route(
+            "/generate/dash/upload",
+            post(generate_dash_from_upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
+        .route(
             "/generate/local-file",
             post(generate_from_local_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
         )
+        .route(
+            "/generate/dash/local-file",
+            post(generate_dash_from_local_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
         .route("/hls/{job_id}/{*file}", get(serve_hls_file))
+        .route("/dash-test/{job_id}/{*file}", get(serve_dash_file))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 7878));
     println!("Test HLS server listening at http://{}", addr);
+    println!("DASH generation page: http://{}/dash", addr);
+    println!(
+        "DASH test MPD URL template: http://{}/dash-test/<job_id>/manifest.mpd",
+        addr
+    );
+    println!(
+        "DASH test JSON URL template: http://{}/dash-test/<job_id>/manifest.json",
+        addr
+    );
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -221,6 +243,22 @@ async fn index(
     let base_url = request_base_url(&headers);
 
     Ok(Html(render_index_page(
+        &jobs,
+        ffmpeg_ready,
+        &base_url,
+        &state.root_dir,
+    )))
+}
+
+async fn dash_index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, AppError> {
+    let jobs = load_dash_jobs(&state).await?;
+    let ffmpeg_ready = ffmpeg_available().await;
+    let base_url = request_base_url(&headers);
+
+    Ok(Html(render_dash_page(
         &jobs,
         ffmpeg_ready,
         &base_url,
@@ -402,6 +440,176 @@ async fn generate_from_local_file(
     Ok(Redirect::to("/"))
 }
 
+async fn generate_dash_from_upload(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Redirect, AppError> {
+    ensure_ffmpeg_available().await?;
+
+    let upload_id = Uuid::new_v4().to_string();
+    let upload_dir = state.temp_dir.join(&upload_id);
+    tokio::fs::create_dir_all(&upload_dir)
+        .await
+        .map_err(|e| AppError::internal(format!("创建上传临时目录失败: {}", e)))?;
+
+    let mut video_path: Option<PathBuf> = None;
+    let mut source_name = String::new();
+    let mut playlist_name: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::bad_request(format!("解析上传内容失败: {}", e)))?
+    {
+        let field_name = field.name().unwrap_or_default().to_string();
+
+        if field_name == "playlist_name" {
+            let text = field
+                .text()
+                .await
+                .map_err(|e| AppError::bad_request(format!("读取表单字段失败: {}", e)))?;
+            if !text.trim().is_empty() {
+                playlist_name = Some(text);
+            }
+            continue;
+        }
+
+        if field_name != "video" {
+            continue;
+        }
+
+        let original_name = field
+            .file_name()
+            .map(str::to_string)
+            .unwrap_or_else(|| "upload.mp4".to_string());
+        source_name = original_name.clone();
+        let safe_name = sanitize_filename(&original_name, "upload.mp4");
+        let file_path = upload_dir.join(safe_name);
+        let mut file = tokio::fs::File::create(&file_path)
+            .await
+            .map_err(|e| AppError::internal(format!("创建上传文件失败: {}", e)))?;
+        let mut field = field;
+
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| AppError::bad_request(format!("读取上传文件失败: {}", e)))?
+        {
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| AppError::internal(format!("写入上传文件失败: {}", e)))?;
+        }
+
+        video_path = Some(file_path);
+    }
+
+    let video_path =
+        video_path.ok_or_else(|| AppError::bad_request("请先选择一个视频文件再上传"))?;
+    let source_name = if source_name.is_empty() {
+        video_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("upload.mp4")
+            .to_string()
+    } else {
+        source_name
+    };
+
+    let result = create_dash_job(&state, &video_path, playlist_name, source_name).await;
+    let _ = tokio::fs::remove_dir_all(&upload_dir).await;
+    result?;
+    Ok(Redirect::to("/dash"))
+}
+
+async fn generate_dash_from_local_file(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Redirect, AppError> {
+    ensure_ffmpeg_available().await?;
+
+    let upload_id = Uuid::new_v4().to_string();
+    let upload_dir = state.temp_dir.join(&upload_id);
+    tokio::fs::create_dir_all(&upload_dir)
+        .await
+        .map_err(|e| AppError::internal(format!("创建本地文件上传临时目录失败: {}", e)))?;
+
+    let mut playlist_name: Option<String> = None;
+    let mut video_path: Option<PathBuf> = None;
+    let mut source_name: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::bad_request(format!("解析本地文件上传内容失败: {}", e)))?
+    {
+        let field_name = field.name().unwrap_or_default().to_string();
+
+        if field_name == "playlist_name" {
+            let text = field
+                .text()
+                .await
+                .map_err(|e| AppError::bad_request(format!("读取表单字段失败: {}", e)))?;
+            if !text.trim().is_empty() {
+                playlist_name = Some(text);
+            }
+            continue;
+        }
+
+        if field_name != "local_video" {
+            continue;
+        }
+
+        let original_name = field.file_name().unwrap_or_default().to_string();
+        if !is_supported_video_file(&original_name) {
+            continue;
+        }
+        if video_path.is_some() {
+            let _ = tokio::fs::remove_dir_all(&upload_dir).await;
+            return Err(AppError::bad_request("请只选择一个本地视频文件"));
+        }
+
+        let safe_name = sanitize_filename(
+            Path::new(&original_name)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("video.mp4"),
+            "video.mp4",
+        );
+        let file_path = upload_dir.join(&safe_name);
+        let mut file = tokio::fs::File::create(&file_path)
+            .await
+            .map_err(|e| AppError::internal(format!("创建本地文件上传失败: {}", e)))?;
+        let mut field = field;
+
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| AppError::bad_request(format!("读取本地文件上传失败: {}", e)))?
+        {
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| AppError::internal(format!("写入本地文件上传失败: {}", e)))?;
+        }
+
+        source_name = Some(original_name);
+        video_path = Some(file_path);
+    }
+
+    let video_path = video_path.ok_or_else(|| AppError::bad_request("请先选择一个本地视频文件"))?;
+    let source_name = source_name.unwrap_or_else(|| {
+        video_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("video.mp4")
+            .to_string()
+    });
+
+    let result = create_dash_job(&state, &video_path, playlist_name, source_name).await;
+    let _ = tokio::fs::remove_dir_all(&upload_dir).await;
+    result?;
+    Ok(Redirect::to("/dash"))
+}
+
 async fn serve_hls_file(
     State(state): State<AppState>,
     AxumPath((job_id, file)): AxumPath<(String, String)>,
@@ -441,6 +649,37 @@ async fn serve_hls_file(
     };
 
     Ok((StatusCode::OK, headers, Body::from_stream(stream)).into_response())
+}
+
+async fn serve_dash_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath((job_id, file)): AxumPath<(String, String)>,
+) -> Result<Response, AppError> {
+    let clean_file = sanitize_relative_hls_path(&file)
+        .ok_or_else(|| AppError::bad_request("无效的 DASH 文件路径"))?;
+    let job_dir = state.data_dir.join(sanitize_slug(&job_id, "job"));
+    let file_path = job_dir.join(&clean_file);
+
+    if clean_file == PathBuf::from("manifest.json") {
+        let base_url = format!("{}/dash-test/{}/", request_base_url(&headers), job_id);
+        let body = build_dash_json_manifest(&job_dir, &base_url).await?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+            body,
+        )
+            .into_response());
+    }
+
+    if !file_path.is_file() {
+        return Err(AppError::bad_request("DASH 文件不存在"));
+    }
+
+    let bytes = tokio::fs::read(&file_path)
+        .await
+        .map_err(|e| AppError::internal(format!("读取 DASH 文件失败: {}", e)))?;
+    let content_type = content_type_for_path(&file_path);
+    Ok(([(header::CONTENT_TYPE, content_type)], bytes).into_response())
 }
 
 async fn create_hls_job(
@@ -498,6 +737,170 @@ async fn create_hls_job(
         .map_err(|e| AppError::internal(format!("写入任务信息失败: {}", e)))?;
 
     Ok(())
+}
+
+async fn create_dash_job(
+    state: &AppState,
+    input_path: &Path,
+    playlist_name: Option<String>,
+    source_name: String,
+) -> Result<(), AppError> {
+    let job_id = Uuid::new_v4().to_string();
+    let requested_name = playlist_name.unwrap_or_else(|| {
+        input_path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("dash-sample")
+            .to_string()
+    });
+    let playlist_name = sanitize_slug(&requested_name, "dash-sample");
+    let job_dir = state.data_dir.join(&job_id);
+
+    tokio::fs::create_dir_all(&job_dir)
+        .await
+        .map_err(|e| AppError::internal(format!("创建 DASH 输出目录失败: {}", e)))?;
+
+    if let Err(error) = run_ffmpeg_dash_encode(input_path, &job_dir.join("manifest.mpd")).await {
+        let _ = tokio::fs::remove_dir_all(&job_dir).await;
+        return Err(error);
+    }
+
+    let meta = JobMeta {
+        id: job_id.clone(),
+        playlist_name,
+        source_name,
+        created_at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+    };
+    let meta_json = serde_json::to_vec_pretty(&meta)
+        .map_err(|e| AppError::internal(format!("序列化 DASH 任务信息失败: {}", e)))?;
+    tokio::fs::write(job_dir.join("job.json"), meta_json)
+        .await
+        .map_err(|e| AppError::internal(format!("写入 DASH 任务信息失败: {}", e)))?;
+
+    Ok(())
+}
+
+async fn run_ffmpeg_dash_encode(input_path: &Path, manifest_path: &Path) -> Result<(), AppError> {
+    let mut command = Command::new("ffmpeg");
+    command
+        .arg("-y")
+        .arg("-i")
+        .arg(input_path)
+        .args(["-map", "0:v:0"])
+        .args(["-map", "0:a:0?"])
+        .args(["-c:v", "libx264"])
+        .args(["-c:a", "aac"])
+        .args(["-f", "dash"])
+        .args(["-seg_duration", "6"])
+        .args(["-use_template", "1"])
+        .args(["-use_timeline", "1"])
+        .args(["-init_seg_name", "init-stream$RepresentationID$.m4s"])
+        .args(["-media_seg_name", "chunk-stream$RepresentationID$-$Number%05d$.m4s"])
+        .arg(manifest_path);
+
+    let output = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| AppError::internal(format!("启动 ffmpeg DASH 失败: {}", e)))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr
+        .trim()
+        .lines()
+        .rev()
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" | ");
+    Err(AppError::internal(format!(
+        "ffmpeg 生成 DASH 失败，退出码: {}。错误详情: {}",
+        output.status.code().unwrap_or(-1),
+        if detail.is_empty() { "未返回额外错误信息" } else { &detail }
+    )))
+}
+
+async fn build_dash_json_manifest(job_dir: &Path, base_url: &str) -> Result<String, AppError> {
+    let mut video_segments = Vec::new();
+    let mut audio_segments = Vec::new();
+    let mut files = tokio::fs::read_dir(job_dir)
+        .await
+        .map_err(|e| AppError::internal(format!("读取 DASH 目录失败: {}", e)))?;
+
+    while let Some(file) = files
+        .next_entry()
+        .await
+        .map_err(|e| AppError::internal(format!("读取 DASH 文件失败: {}", e)))?
+    {
+        let Some(name) = file.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if name.starts_with("chunk-stream0-") && name.ends_with(".m4s") {
+            video_segments.push(name);
+        } else if name.starts_with("chunk-stream1-") && name.ends_with(".m4s") {
+            audio_segments.push(name);
+        }
+    }
+
+    video_segments.sort();
+    audio_segments.sort();
+    if video_segments.is_empty() {
+        return Err(AppError::bad_request("DASH 视频分片不存在"));
+    }
+
+    let video_track = json!({
+        "id": "0",
+        "label": "DASH Video",
+        "bandwidth": 2500000,
+        "resolution": null,
+        "codecs": "avc1",
+        "init": "init-stream0.m4s",
+        "segments": video_segments
+            .into_iter()
+            .map(|uri| json!({ "uri": uri, "duration": 6.0 }))
+            .collect::<Vec<_>>()
+    });
+    let audio_tracks = if audio_segments.is_empty() || !job_dir.join("init-stream1.m4s").is_file() {
+        Vec::new()
+    } else {
+        vec![json!({
+            "id": "1",
+            "label": "DASH Audio",
+            "language": "und",
+            "codecs": "mp4a.40.2",
+            "init": "init-stream1.m4s",
+            "segments": audio_segments
+                .into_iter()
+                .map(|uri| json!({ "uri": uri, "duration": 6.0 }))
+                .collect::<Vec<_>>()
+        })]
+    };
+    let default_selection = if audio_tracks.is_empty() {
+        json!({ "video_id": "0" })
+    } else {
+        json!({ "video_id": "0", "audio_id": "1" })
+    };
+
+    let manifest = json!({
+        "format": "m3u8quicker-dash-v1",
+        "title": "dash-test",
+        "base_url": base_url,
+        "tracks": {
+            "video": [video_track],
+            "audio": audio_tracks
+        },
+        "default_selection": default_selection
+    });
+
+    serde_json::to_string_pretty(&manifest)
+        .map_err(|e| AppError::internal(format!("生成 DASH JSON 失败: {}", e)))
 }
 
 async fn run_ffmpeg_hls_encode(
@@ -758,6 +1161,8 @@ async fn load_jobs(state: &AppState) -> Result<Vec<JobSummary>, AppError> {
 
         jobs.push(JobSummary {
             playlist_path: format!("/hls/{}/index.m3u8", meta.id),
+            dash_manifest_path: None,
+            dash_json_path: None,
             aes128_playlist_path: path
                 .join(HlsEncryptionMode::Aes128.playlist_file_name())
                 .is_file()
@@ -770,6 +1175,70 @@ async fn load_jobs(state: &AppState) -> Result<Vec<JobSummary>, AppError> {
                 .join(HlsEncryptionMode::Aes256.playlist_file_name())
                 .is_file()
                 .then(|| format!("/hls/{}/index-aes256.m3u8", meta.id)),
+            meta,
+            segment_count,
+        });
+    }
+
+    jobs.sort_by(|a, b| b.meta.created_at.cmp(&a.meta.created_at));
+    Ok(jobs)
+}
+
+async fn load_dash_jobs(state: &AppState) -> Result<Vec<JobSummary>, AppError> {
+    let mut jobs = Vec::new();
+    let mut entries = tokio::fs::read_dir(&state.data_dir)
+        .await
+        .map_err(|e| AppError::internal(format!("读取数据目录失败: {}", e)))?;
+
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| AppError::internal(format!("读取任务目录失败: {}", e)))?
+    {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let meta_path = path.join("job.json");
+        let manifest_path = path.join("manifest.mpd");
+        if !meta_path.is_file() || !manifest_path.is_file() {
+            continue;
+        }
+
+        let meta_bytes = tokio::fs::read(&meta_path)
+            .await
+            .map_err(|e| AppError::internal(format!("读取 DASH 任务信息失败: {}", e)))?;
+        let meta: JobMeta = serde_json::from_slice(&meta_bytes)
+            .map_err(|e| AppError::internal(format!("解析 DASH 任务信息失败: {}", e)))?;
+
+        let mut segment_count = 0usize;
+        let mut files = tokio::fs::read_dir(&path)
+            .await
+            .map_err(|e| AppError::internal(format!("读取 DASH 切片目录失败: {}", e)))?;
+        while let Some(file) = files
+            .next_entry()
+            .await
+            .map_err(|e| AppError::internal(format!("读取 DASH 切片文件失败: {}", e)))?
+        {
+            let file_path = file.path();
+            let is_dash_segment = file_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with(".m4s") && name.starts_with("chunk-"))
+                .unwrap_or(false);
+            if is_dash_segment {
+                segment_count += 1;
+            }
+        }
+
+        jobs.push(JobSummary {
+            playlist_path: String::new(),
+            dash_manifest_path: Some(format!("/dash-test/{}/manifest.mpd", meta.id)),
+            dash_json_path: Some(format!("/dash-test/{}/manifest.json", meta.id)),
+            aes128_playlist_path: None,
+            aes192_playlist_path: None,
+            aes256_playlist_path: None,
             meta,
             segment_count,
         });
@@ -1058,6 +1527,7 @@ fn render_index_page(
                </div>\
                <p>服务根目录：<code>{}</code></p>\
                <p>生成后的文件会放在 <code>{}</code>。</p>\
+               <p><a href=\"/dash\">打开 DASH 独立测试页面</a></p>\
              </section>\
              <section class=\"grid\">\
                <form class=\"panel\" action=\"/generate/upload\" method=\"post\" enctype=\"multipart/form-data\">\
@@ -1105,6 +1575,133 @@ fn render_index_page(
         escape_html(&root_dir.to_string_lossy()),
         escape_html(&root_dir.join("data").to_string_lossy()),
         player_html,
+        jobs_html,
+    )
+}
+
+fn render_dash_page(
+    jobs: &[JobSummary],
+    ffmpeg_ready: bool,
+    base_url: &str,
+    root_dir: &Path,
+) -> String {
+    let status_badge = if ffmpeg_ready {
+        "<span class=\"badge badge-ok\">ffmpeg 已就绪</span>".to_string()
+    } else {
+        "<span class=\"badge badge-warn\">未检测到 ffmpeg</span>".to_string()
+    };
+    let jobs_html = if jobs.is_empty() {
+        "<div class=\"empty\">还没有生成过 DASH 测试流。上传一个视频试试。</div>".to_string()
+    } else {
+        jobs.iter()
+            .map(|job| {
+                let mpd_path = job.dash_manifest_path.as_deref().unwrap_or_default();
+                let json_path = job.dash_json_path.as_deref().unwrap_or_default();
+                let mpd_url = format!("{}{}", base_url, mpd_path);
+                let json_url = format!("{}{}", base_url, json_path);
+                format!(
+                    "<article class=\"job-card\">\
+                       <div class=\"job-top\">\
+                         <div><h3>{}</h3><p>来源文件：{}</p></div>\
+                         <span class=\"job-time\">{}</span>\
+                       </div>\
+                       <p>任务 ID：<code>{}</code></p>\
+                       <p>DASH 分片数量：<strong>{}</strong></p>\
+                       <p>DASH MPD：<code>{}</code></p>\
+                       <p>DASH JSON：<code>{}</code></p>\
+                       <div class=\"actions\">\
+                         <a href=\"{}\" target=\"_blank\" rel=\"noreferrer\">打开 MPD</a>\
+                         <a href=\"{}\" target=\"_blank\" rel=\"noreferrer\">打开 JSON</a>\
+                         <a href=\"{}\" download>下载 MPD</a>\
+                       </div>\
+                     </article>",
+                    escape_html(&job.meta.playlist_name),
+                    escape_html(&job.meta.source_name),
+                    escape_html(&job.meta.created_at),
+                    escape_html(&job.meta.id),
+                    job.segment_count,
+                    escape_html(&mpd_url),
+                    escape_html(&json_url),
+                    mpd_path,
+                    json_path,
+                    mpd_path,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    format!(
+        "<!doctype html>\
+         <html lang=\"zh-CN\">\
+         <head>\
+           <meta charset=\"utf-8\">\
+           <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+           <title>Test DASH Server</title>\
+           <style>\
+             :root{{color-scheme:light;background:#f5f7fb;color:#101828}}\
+             *{{box-sizing:border-box}}\
+             body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;color:#0f172a}}\
+             main{{max-width:1100px;margin:0 auto;padding:32px 20px 48px}}\
+             .hero,.panel,.job-card{{background:#fff;border:1px solid #dbe5f0;border-radius:20px;padding:22px;box-shadow:0 10px 30px rgba(15,23,42,.05)}}\
+             .hero{{border-radius:24px;padding:28px}}\
+             h1{{margin:0;font-size:32px}}h2{{margin:0 0 16px;font-size:20px}}h3{{margin:0 0 8px;font-size:18px}}\
+             p{{margin:8px 0;color:#475467}}\
+             code{{font-family:'SFMono-Regular',Consolas,monospace;background:#f2f4f7;padding:2px 6px;border-radius:6px;word-break:break-all}}\
+             .hero-top,.job-top{{display:flex;justify-content:space-between;align-items:start;gap:16px;flex-wrap:wrap}}\
+             .badge{{display:inline-flex;align-items:center;padding:6px 12px;border-radius:999px;font-size:14px;font-weight:600}}\
+             .badge-ok{{background:#dcfce7;color:#166534}}.badge-warn{{background:#fef3c7;color:#92400e}}\
+             .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px;margin-top:24px}}\
+             label{{display:block;font-weight:600;margin-bottom:8px}}\
+             input[type='text'],input[type='file']{{width:100%;padding:12px 14px;border:1px solid #cbd5e1;border-radius:12px;font:inherit;background:#fff}}\
+             .field{{display:grid;gap:8px;margin-bottom:16px}}\
+             button{{appearance:none;border:none;border-radius:12px;background:#2563eb;color:#fff;padding:12px 16px;font:inherit;font-weight:700;cursor:pointer}}\
+             .hint{{font-size:14px;color:#667085}}\
+             .section-head{{margin:28px 0 16px}}.jobs{{display:grid;gap:16px}}\
+             .job-time{{font-size:13px;color:#667085}}\
+             .actions{{display:flex;gap:12px;flex-wrap:wrap;margin-top:14px}}\
+             a,.actions a{{color:#2563eb;font-weight:600;text-decoration:none}}\
+             .empty{{background:#fff;border:1px dashed #cbd5e1;border-radius:18px;padding:28px;color:#475467}}\
+           </style>\
+         </head>\
+         <body>\
+           <main>\
+             <section class=\"hero\">\
+               <div class=\"hero-top\">\
+                 <div>\
+                   <h1>Test DASH Server</h1>\
+                   <p>这个页面只生成 DASH 测试流，不生成 M3U8。</p>\
+                 </div>\
+                 {}\
+               </div>\
+               <p>服务根目录：<code>{}</code></p>\
+               <p><a href=\"/\">返回 HLS 测试页面</a></p>\
+             </section>\
+             <section class=\"grid\">\
+               <form class=\"panel\" action=\"/generate/dash/upload\" method=\"post\" enctype=\"multipart/form-data\">\
+                 <h2>上传视频并生成 DASH</h2>\
+                 <div class=\"field\"><label for=\"dash_video\">视频文件</label><input id=\"dash_video\" type=\"file\" name=\"video\" accept=\"video/*\" required></div>\
+                 <div class=\"field\"><label for=\"dash_upload_name\">名称（可选）</label><input id=\"dash_upload_name\" type=\"text\" name=\"playlist_name\" placeholder=\"例如 dash-demo\"></div>\
+                 <p class=\"hint\">生成后会得到独立的 <code>manifest.mpd</code> 和 <code>manifest.json</code>。</p>\
+                 <button type=\"submit\">生成 DASH</button>\
+               </form>\
+               <form class=\"panel\" action=\"/generate/dash/local-file\" method=\"post\" enctype=\"multipart/form-data\">\
+                 <h2>选择本地视频并生成 DASH</h2>\
+                 <div class=\"field\"><label for=\"dash_local_video\">本地视频文件</label><input id=\"dash_local_video\" type=\"file\" name=\"local_video\" accept=\"video/*,.ts,.mkv,.flv,.avi,.mpeg,.mpg\" required></div>\
+                 <div class=\"field\"><label for=\"dash_path_name\">名称（可选）</label><input id=\"dash_path_name\" type=\"text\" name=\"playlist_name\" placeholder=\"例如 dash-local-sample\"></div>\
+                 <p class=\"hint\">直接选择一个本地视频文件，不需要手写路径。</p>\
+                 <button type=\"submit\">按本地视频生成 DASH</button>\
+               </form>\
+             </section>\
+             <section>\
+               <div class=\"section-head\"><h2>已生成的 DASH 测试流</h2><p>把 MPD 地址或 JSON 内容喂给主应用的 DASH 下载模式。</p></div>\
+               <div class=\"jobs\">{}</div>\
+             </section>\
+           </main>\
+         </body>\
+         </html>",
+        status_badge,
+        escape_html(&root_dir.to_string_lossy()),
         jobs_html,
     )
 }
@@ -1170,6 +1767,8 @@ fn sanitize_relative_hls_path(path: &str) -> Option<PathBuf> {
 fn content_type_for_path(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()).unwrap_or_default() {
         "m3u8" => "application/vnd.apple.mpegurl",
+        "mpd" => "application/dash+xml",
+        "m4s" | "mp4" => "video/iso.segment",
         "ts" => "video/mp2t",
         "json" => "application/json; charset=utf-8",
         _ => "application/octet-stream",
