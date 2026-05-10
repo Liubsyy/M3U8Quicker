@@ -148,6 +148,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
 
       const singleDraft = parseDownloadDraft(deepLink);
       if (singleDraft) {
+        void bringMainWindowToFront();
         setDownloadDraft({
           ...singleDraft,
           nonce: Date.now(),
@@ -174,6 +175,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         return;
       }
 
+      void bringMainWindowToFront();
       setBatchDownloadDraft({
         ...batchDraft,
         nonce: Date.now(),
@@ -960,6 +962,20 @@ function shouldHandleDeepLink(deepLink: string): boolean {
 function dispatchDeepLink(deepLink: string): void {
   for (const handler of deepLinkHandlers) {
     handler(deepLink);
+  }
+}
+
+async function bringMainWindowToFront(): Promise<void> {
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const win = getCurrentWindow();
+    if (await win.isMinimized()) {
+      await win.unminimize();
+    }
+    await win.show();
+    await win.setFocus();
+  } catch (error) {
+    console.debug("[m3u8quicker] bring main window to front failed", error);
   }
 }
 
