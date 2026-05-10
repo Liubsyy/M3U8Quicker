@@ -3,11 +3,13 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use aes::{Aes128, Aes192, Aes256};
+use axum::Json;
 use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, Multipart, Path as AxumPath, State};
+use axum::extract::{DefaultBodyLimit, Form, Multipart, Path as AxumPath, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -17,8 +19,9 @@ use chrono::Local;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 type Aes128CbcEnc = cbc::Encryptor<Aes128>;
@@ -30,6 +33,7 @@ struct AppState {
     root_dir: PathBuf,
     data_dir: PathBuf,
     temp_dir: PathBuf,
+    mp4_source_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
 const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024 * 1024;
@@ -143,6 +147,18 @@ struct PlaylistVariant {
     path: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct Mp4PathForm {
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct Mp4PickResponse {
+    selected: bool,
+    path: Option<String>,
+    message: Option<String>,
+}
+
 impl AppError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
@@ -187,11 +203,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         root_dir,
         data_dir,
         temp_dir,
+        mp4_source_path: Arc::new(Mutex::new(
+            std::env::var_os("TEST_HLS_SERVER_MP4_PATH").map(PathBuf::from),
+        )),
     };
 
     let app = Router::new()
         .route("/", get(index))
         .route("/dash", get(dash_index))
+        .route("/mp4", get(mp4_index).post(set_mp4_source))
+        .route("/mp4/pick", post(pick_mp4_source))
         .route("/healthz", get(healthz))
         .route(
             "/generate/upload",
@@ -211,11 +232,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/hls/{job_id}/{*file}", get(serve_hls_file))
         .route("/dash-test/{job_id}/{*file}", get(serve_dash_file))
+        .route("/mp4/local-file.mp4", get(serve_mp4_test_file))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 7878));
     println!("Test HLS server listening at http://{}", addr);
     println!("DASH generation page: http://{}/dash", addr);
+    println!("Direct MP4 playback page: http://{}/mp4", addr);
+    println!(
+        "Direct MP4 test URL: http://{}/mp4/local-file.mp4",
+        addr
+    );
     println!(
         "DASH test MPD URL template: http://{}/dash-test/<job_id>/manifest.mpd",
         addr
@@ -264,6 +291,51 @@ async fn dash_index(
         &base_url,
         &state.root_dir,
     )))
+}
+
+async fn mp4_index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, AppError> {
+    let base_url = request_base_url(&headers);
+    let mp4_url = format!("{}/mp4/local-file.mp4", base_url);
+    let current_path = state.mp4_source_path.lock().await.clone();
+    Ok(Html(render_mp4_page(
+        &mp4_url,
+        &state.root_dir,
+        current_path.as_deref(),
+    )))
+}
+
+async fn set_mp4_source(
+    State(state): State<AppState>,
+    Form(form): Form<Mp4PathForm>,
+) -> Result<Redirect, AppError> {
+    let canonical = normalize_mp4_source_path(&form.path)?;
+    *state.mp4_source_path.lock().await = Some(canonical);
+    Ok(Redirect::to("/mp4"))
+}
+
+async fn pick_mp4_source(
+    State(state): State<AppState>,
+) -> Result<Json<Mp4PickResponse>, AppError> {
+    let Some(selected_path) = pick_mp4_file_with_system_dialog().await? else {
+        return Ok(Json(Mp4PickResponse {
+            selected: false,
+            path: None,
+            message: Some("已取消选择".to_string()),
+        }));
+    };
+
+    let canonical = normalize_mp4_source_path(&selected_path)?;
+    let display_path = canonical.to_string_lossy().to_string();
+    *state.mp4_source_path.lock().await = Some(canonical);
+
+    Ok(Json(Mp4PickResponse {
+        selected: true,
+        path: Some(display_path),
+        message: None,
+    }))
 }
 
 async fn generate_from_upload(
@@ -680,6 +752,73 @@ async fn serve_dash_file(
         .map_err(|e| AppError::internal(format!("读取 DASH 文件失败: {}", e)))?;
     let content_type = content_type_for_path(&file_path);
     Ok(([(header::CONTENT_TYPE, content_type)], bytes).into_response())
+}
+
+async fn serve_mp4_test_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let file_path = state
+        .mp4_source_path
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| AppError::bad_request("请先在 /mp4 页面设置本机 MP4 文件路径"))?;
+    let metadata = tokio::fs::metadata(&file_path)
+        .await
+        .map_err(|e| AppError::internal(format!("读取 MP4 文件信息失败: {}", e)))?;
+    if !metadata.is_file() {
+        return Err(AppError::bad_request("当前 MP4 路径不是文件"));
+    }
+
+    let total_len = metadata.len();
+    if total_len == 0 {
+        return Err(AppError::internal("MP4 文件为空"));
+    }
+
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| parse_single_byte_range(value, total_len));
+    let (status, start, end) = range.unwrap_or((StatusCode::OK, 0, total_len - 1));
+    let content_length = end - start + 1;
+
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
+    response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    if let Ok(value) = HeaderValue::from_str(&content_length.to_string()) {
+        response_headers.insert(header::CONTENT_LENGTH, value);
+    }
+    if status == StatusCode::PARTIAL_CONTENT {
+        if let Ok(value) = HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_len)) {
+            response_headers.insert(header::CONTENT_RANGE, value);
+        }
+    }
+
+    let stream = async_stream::stream! {
+        let mut file = match tokio::fs::File::open(&file_path).await {
+            Ok(file) => file,
+            Err(_) => return,
+        };
+        if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+            return;
+        }
+
+        let mut remaining = content_length;
+        let mut buffer = vec![0u8; 64 * 1024];
+        while remaining > 0 {
+            let read_len = min(buffer.len() as u64, remaining) as usize;
+            let bytes_read = match file.read(&mut buffer[..read_len]).await {
+                Ok(0) => break,
+                Ok(bytes_read) => bytes_read,
+                Err(_) => break,
+            };
+            remaining = remaining.saturating_sub(bytes_read as u64);
+            yield Result::<Bytes, Infallible>::Ok(Bytes::copy_from_slice(&buffer[..bytes_read]));
+        }
+    };
+
+    Ok((status, response_headers, Body::from_stream(stream)).into_response())
 }
 
 async fn create_hls_job(
@@ -1111,6 +1250,71 @@ async fn ensure_ffmpeg_available() -> Result<(), AppError> {
     }
 }
 
+fn normalize_mp4_source_path(input: &str) -> Result<PathBuf, AppError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::bad_request("请填写本机 MP4 文件路径"));
+    }
+
+    let file_path = PathBuf::from(trimmed);
+    if !file_path.is_file() {
+        return Err(AppError::bad_request("本机 MP4 文件不存在"));
+    }
+    if !matches!(
+        file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("mp4")
+    ) {
+        return Err(AppError::bad_request("请选择 .mp4 文件"));
+    }
+
+    Ok(file_path.canonicalize().unwrap_or(file_path))
+}
+
+async fn pick_mp4_file_with_system_dialog() -> Result<Option<String>, AppError> {
+    if !cfg!(target_os = "windows") {
+        return Err(AppError::bad_request(
+            "当前只支持在 Windows 上通过按钮选择本机 MP4",
+        ));
+    }
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-STA", "-Command"])
+        .arg(
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
+             Add-Type -AssemblyName System.Windows.Forms; \
+             $dialog = New-Object System.Windows.Forms.OpenFileDialog; \
+             $dialog.Filter = 'MP4 文件 (*.mp4)|*.mp4'; \
+             $dialog.Multiselect = $false; \
+             if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { \
+                 Write-Output $dialog.FileName \
+             }",
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| AppError::internal(format!("打开文件选择框失败: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::internal(format!(
+            "文件选择框退出失败: {}",
+            stderr.trim()
+        )));
+    }
+
+    let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if selected.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(selected))
+    }
+}
+
 async fn load_jobs(state: &AppState) -> Result<Vec<JobSummary>, AppError> {
     let mut jobs = Vec::new();
     let mut entries = tokio::fs::read_dir(&state.data_dir)
@@ -1527,7 +1731,7 @@ fn render_index_page(
                </div>\
                <p>服务根目录：<code>{}</code></p>\
                <p>生成后的文件会放在 <code>{}</code>。</p>\
-               <p><a href=\"/dash\">打开 DASH 独立测试页面</a></p>\
+               <p><a href=\"/dash\">打开 DASH 独立测试页面</a> · <a href=\"/mp4\">打开 Direct MP4 播放测试页</a></p>\
              </section>\
              <section class=\"grid\">\
                <form class=\"panel\" action=\"/generate/upload\" method=\"post\" enctype=\"multipart/form-data\">\
@@ -1706,6 +1910,116 @@ fn render_dash_page(
     )
 }
 
+fn render_mp4_page(mp4_url: &str, root_dir: &Path, current_path: Option<&Path>) -> String {
+    let current_path_value = current_path
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let current_path_html = current_path
+        .map(|path| format!("<p>当前本地文件：<code>{}</code></p>", escape_html(&path.to_string_lossy())))
+        .unwrap_or_else(|| "<p>当前还没有设置本地 MP4 文件。</p>".to_string());
+    format!(
+        "<!doctype html>\
+         <html lang=\"zh-CN\">\
+         <head>\
+           <meta charset=\"utf-8\">\
+           <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+           <title>Direct MP4 Playback Test</title>\
+           <style>\
+             :root{{color-scheme:light;background:#f5f7fb;color:#101828}}\
+             *{{box-sizing:border-box}}\
+             body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;color:#0f172a}}\
+             main{{max-width:1000px;margin:0 auto;padding:32px 20px 48px}}\
+             .hero,.panel{{background:#fff;border:1px solid #dbe5f0;border-radius:20px;padding:22px;box-shadow:0 10px 30px rgba(15,23,42,.05)}}\
+             .hero{{border-radius:24px;padding:28px;margin-bottom:20px}}\
+             h1{{margin:0;font-size:32px}}h2{{margin:0 0 12px;font-size:20px}}\
+             p{{margin:8px 0;color:#475467}}\
+             code{{font-family:'SFMono-Regular',Consolas,monospace;background:#f2f4f7;padding:2px 6px;border-radius:6px;word-break:break-all}}\
+             label{{display:block;font-weight:600;margin-bottom:8px}}\
+             input[type='text']{{width:100%;padding:12px 14px;border:1px solid #cbd5e1;border-radius:12px;font:inherit;background:#fff}}\
+             button{{appearance:none;border:none;border-radius:12px;background:#2563eb;color:#fff;padding:12px 16px;font:inherit;font-weight:700;cursor:pointer}}\
+             button:hover{{background:#1d4ed8}}\
+             .button-secondary{{background:#e2e8f0;color:#0f172a}}\
+             .button-secondary:hover{{background:#cbd5e1}}\
+             a{{color:#2563eb;font-weight:600;text-decoration:none}}\
+             video{{width:100%;border-radius:18px;background:#020617;aspect-ratio:16/9}}\
+             .actions{{display:flex;gap:12px;flex-wrap:wrap;margin-top:14px}}\
+             .field{{display:grid;gap:8px;margin-bottom:16px}}\
+             .form-actions{{display:flex;gap:12px;flex-wrap:wrap}}\
+             .pick-status{{min-height:22px;font-size:14px;color:#475467}}\
+           </style>\
+         </head>\
+         <body>\
+           <main>\
+             <section class=\"hero\">\
+               <h1>Direct MP4 Playback Test</h1>\
+               <p>把本机 MP4 文件通过这个测试服务器端口暴露成 HTTP 地址，不上传、不转码。</p>\
+               <p>MP4 地址：<code>{}</code></p>\
+               <p>服务根目录：<code>{}</code></p>\
+               {}\
+               <p><a href=\"/\">返回 HLS 测试页面</a></p>\
+             </section>\
+             <form class=\"panel\" action=\"/mp4\" method=\"post\">\
+               <h2>选择本机 MP4</h2>\
+               <div class=\"field\">\
+                 <label for=\"mp4_path\">本机 MP4 绝对路径</label>\
+                 <input id=\"mp4_path\" type=\"text\" name=\"path\" value=\"{}\" placeholder=\"例如 D:\\Videos\\sample.mp4\" required>\
+               </div>\
+               <div class=\"form-actions\">\
+                 <button type=\"button\" id=\"mp4_pick\" class=\"button-secondary\">浏览选择</button>\
+                 <button type=\"submit\">使用这个 MP4</button>\
+               </div>\
+               <p id=\"mp4_pick_status\" class=\"pick-status\"></p>\
+             </form>\
+             <section class=\"panel\">\
+               <h2>本地 MP4 播放</h2>\
+               <video src=\"{}\" controls autoplay muted playsinline preload=\"auto\"></video>\
+               <div class=\"actions\">\
+                 <a href=\"{}\" target=\"_blank\" rel=\"noreferrer\">打开 MP4 地址</a>\
+                 <a href=\"{}\" download>下载 MP4</a>\
+               </div>\
+             </section>\
+             <script>\
+               (() => {{\
+                 const pickButton = document.getElementById('mp4_pick');\
+                 const pathInput = document.getElementById('mp4_path');\
+                 const statusText = document.getElementById('mp4_pick_status');\
+                 pickButton.addEventListener('click', async () => {{\
+                   pickButton.disabled = true;\
+                   statusText.textContent = '正在打开文件选择框...';\
+                   try {{\
+                     const response = await fetch('/mp4/pick', {{ method: 'POST' }});\
+                     const data = await response.json();\
+                     if (!response.ok) {{\
+                       throw new Error(data.message || '选择失败');\
+                     }}\
+                     if (data.selected && data.path) {{\
+                       pathInput.value = data.path;\
+                       statusText.textContent = '已选择 MP4，正在刷新播放。';\
+                       window.location.reload();\
+                     }} else {{\
+                       statusText.textContent = data.message || '已取消选择。';\
+                     }}\
+                   }} catch (error) {{\
+                     statusText.textContent = '选择失败：' + (error.message || String(error));\
+                   }} finally {{\
+                     pickButton.disabled = false;\
+                   }}\
+                 }});\
+               }})();\
+             </script>\
+           </main>\
+         </body>\
+         </html>",
+        escape_html(mp4_url),
+        escape_html(&root_dir.to_string_lossy()),
+        current_path_html,
+        escape_html(&current_path_value),
+        escape_html(mp4_url),
+        escape_html(mp4_url),
+        escape_html(mp4_url),
+    )
+}
+
 fn collect_playlist_variants(job: &JobSummary) -> Vec<PlaylistVariant> {
     let mut variants = vec![PlaylistVariant {
         label: HlsEncryptionMode::None.display_name(),
@@ -1732,6 +2046,37 @@ fn collect_playlist_variants(job: &JobSummary) -> Vec<PlaylistVariant> {
     }
 
     variants
+}
+
+fn parse_single_byte_range(value: &str, total_len: u64) -> Option<(StatusCode, u64, u64)> {
+    let raw_range = value.trim().strip_prefix("bytes=")?;
+    let (start, end) = raw_range.split_once('-')?;
+    if start.contains(',') || end.contains(',') {
+        return None;
+    }
+
+    if start.is_empty() {
+        let suffix_len = end.parse::<u64>().ok()?.min(total_len);
+        if suffix_len == 0 {
+            return None;
+        }
+        return Some((StatusCode::PARTIAL_CONTENT, total_len - suffix_len, total_len - 1));
+    }
+
+    let start = start.parse::<u64>().ok()?;
+    if start >= total_len {
+        return None;
+    }
+    let end = if end.is_empty() {
+        total_len - 1
+    } else {
+        end.parse::<u64>().ok()?.min(total_len - 1)
+    };
+    if end < start {
+        return None;
+    }
+
+    Some((StatusCode::PARTIAL_CONTENT, start, end))
 }
 
 fn request_base_url(headers: &HeaderMap) -> String {

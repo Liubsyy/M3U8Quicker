@@ -4724,14 +4724,45 @@ async fn send_mp4_download_request(
     url: &str,
     headers: &RequestHeaders,
     resume_from: Option<u64>,
+    request_timeout: Duration,
 ) -> Result<reqwest::Response, AppError> {
     let mut request =
-        build_request_with_headers(client, url, headers).timeout(MP4_DOWNLOAD_TIMEOUT);
+        build_request_with_headers(client, url, headers).timeout(request_timeout);
     if let Some(offset) = resume_from.filter(|offset| *offset > 0) {
         request = request.header(header::RANGE, format!("bytes={}-", offset));
     }
 
     Ok(request.send().await?)
+}
+
+async fn send_mp4_download_request_before_deadline(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &RequestHeaders,
+    resume_from: Option<u64>,
+    deadline: Instant,
+) -> Result<reqwest::Response, AppError> {
+    send_mp4_download_request(
+        client,
+        url,
+        headers,
+        resume_from,
+        remaining_mp4_download_time(deadline)?,
+    )
+    .await
+}
+
+fn remaining_mp4_download_time(deadline: Instant) -> Result<Duration, AppError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|duration| !duration.is_zero())
+        .ok_or_else(|| AppError::Network("Direct 下载超过 1 小时仍未成功".to_string()))
+}
+
+fn direct_download_retry_delay(attempt: u32, remaining: Duration) -> Duration {
+    let capped_attempt = attempt.min(5);
+    let delay = Duration::from_secs(1 << capped_attempt);
+    delay.min(Duration::from_secs(30)).min(remaining)
 }
 
 pub async fn check_mp4_resume(
@@ -4747,7 +4778,9 @@ pub async fn check_mp4_resume(
         return Ok(Mp4ResumeCheck::Ready { downloaded_bytes });
     }
 
-    let response = send_mp4_download_request(client, url, headers, Some(downloaded_bytes)).await?;
+    let response =
+        send_mp4_download_request(client, url, headers, Some(downloaded_bytes), MP4_DOWNLOAD_TIMEOUT)
+            .await?;
     match mp4_resume_response_mode(response.status()) {
         Mp4ResumeResponseMode::Append => Ok(Mp4ResumeCheck::Ready { downloaded_bytes }),
         Mp4ResumeResponseMode::RestartRequired => {
@@ -4774,6 +4807,72 @@ pub async fn run_mp4_download(
     restart_confirmed: bool,
     cancel_token: CancellationToken,
 ) -> Result<DownloadRunOutcome, AppError> {
+    let deadline = Instant::now() + MP4_DOWNLOAD_TIMEOUT;
+    let (_, partial_path) =
+        resolve_mp4_output_paths(&output_dir, &filename, resume_existing_partial);
+    let mut attempt = 0u32;
+
+    loop {
+        let result = run_mp4_download_attempt(
+            app_handle.clone(),
+            downloads.clone(),
+            client.clone(),
+            rate_limiter.clone(),
+            task_id.clone(),
+            url.clone(),
+            headers.clone(),
+            output_dir.clone(),
+            filename.clone(),
+            resume_existing_partial,
+            restart_confirmed,
+            cancel_token.clone(),
+            deadline,
+        )
+        .await;
+
+        match result {
+            Ok(outcome) => return Ok(outcome),
+            Err(AppError::Cancelled) => return Err(AppError::Cancelled),
+            Err(error) => {
+                let downloaded = file_len_if_exists(&partial_path).await.unwrap_or(0);
+                emit_mp4_retry_wait_progress(&app_handle, &downloads, &task_id, downloaded).await;
+
+                let remaining = match remaining_mp4_download_time(deadline) {
+                    Ok(remaining) => remaining,
+                    Err(_) => {
+                        return Err(AppError::Network(format!(
+                            "Direct 下载超过 1 小时仍未成功，最后错误：{}",
+                            error
+                        )));
+                    }
+                };
+
+                attempt = attempt.saturating_add(1);
+                let retry_delay = direct_download_retry_delay(attempt, remaining);
+                tokio::select! {
+                    _ = tokio::time::sleep(retry_delay) => {}
+                    _ = cancel_token.cancelled() => return Err(AppError::Cancelled),
+                }
+            }
+        }
+    }
+}
+
+async fn run_mp4_download_attempt(
+    app_handle: AppHandle,
+    downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
+    client: Arc<RwLock<reqwest::Client>>,
+    rate_limiter: Arc<DownloadRateLimiter>,
+    task_id: DownloadId,
+    url: String,
+    headers: Arc<RequestHeaders>,
+    output_dir: PathBuf,
+    filename: String,
+    resume_existing_partial: bool,
+    restart_confirmed: bool,
+    cancel_token: CancellationToken,
+    deadline: Instant,
+) -> Result<DownloadRunOutcome, AppError> {
     let (mp4_path, partial_path) =
         resolve_mp4_output_paths(&output_dir, &filename, resume_existing_partial);
     let client = client.read().await.clone();
@@ -4781,8 +4880,14 @@ pub async fn run_mp4_download(
     let mut downloaded = 0u64;
     let mut append = false;
     let response = if existing_bytes > 0 {
-        let response =
-            send_mp4_download_request(&client, &url, &headers, Some(existing_bytes)).await?;
+        let response = send_mp4_download_request_before_deadline(
+            &client,
+            &url,
+            &headers,
+            Some(existing_bytes),
+            deadline,
+        )
+        .await?;
 
         match mp4_resume_response_mode(response.status()) {
             Mp4ResumeResponseMode::Append => {
@@ -4801,7 +4906,13 @@ pub async fn run_mp4_download(
                 if response.status() == StatusCode::OK {
                     response.error_for_status()?
                 } else {
-                    send_mp4_download_request(&client, &url, &headers, None)
+                    send_mp4_download_request_before_deadline(
+                        &client,
+                        &url,
+                        &headers,
+                        None,
+                        deadline,
+                    )
                         .await?
                         .error_for_status()?
                 }
@@ -4809,7 +4920,7 @@ pub async fn run_mp4_download(
             Mp4ResumeResponseMode::Unexpected => response.error_for_status()?,
         }
     } else {
-        send_mp4_download_request(&client, &url, &headers, None)
+        send_mp4_download_request_before_deadline(&client, &url, &headers, None, deadline)
             .await?
             .error_for_status()?
     };
@@ -4916,6 +5027,36 @@ async fn emit_mp4_progress(
         },
     )
     .await;
+}
+
+async fn emit_mp4_retry_wait_progress(
+    app_handle: &AppHandle,
+    downloads: &Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
+    task_id: &str,
+    downloaded: u64,
+) {
+    let snapshot = {
+        let mut tasks = downloads.lock().await;
+        let Some(task) = tasks.get_mut(task_id) else {
+            return;
+        };
+        task.speed_bytes_per_sec = 0;
+        task.total_bytes = task.total_bytes.max(downloaded);
+        let updated_at = task.touch().to_rfc3339();
+        RuntimeProgressSnapshot {
+            id: task.id.clone(),
+            status: task.status.clone(),
+            completed_segments: task.completed_segments,
+            total_segments: task.total_segments,
+            completed_segment_indices: task.completed_segment_indices.clone(),
+            failed_segment_indices: task.failed_segment_indices.clone(),
+            total_bytes: task.total_bytes,
+            speed_bytes_per_sec: 0,
+            updated_at,
+        }
+    };
+
+    let _ = app_handle.emit("download-progress", snapshot_to_event(&snapshot));
 }
 
 pub async fn convert_ts_to_mp4_file(
