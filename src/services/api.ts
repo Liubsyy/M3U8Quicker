@@ -254,6 +254,22 @@ export async function analyzeMediaFile(
   return invoke<MediaAnalysisResult>("analyze_media_file", { inputPath });
 }
 
+export async function clipVideoFile(
+  inputPath: string,
+  outputPath: string,
+  startSeconds: number,
+  endSeconds: number,
+  clipMode: "fast" | "precise"
+): Promise<string> {
+  return invoke<string>("clip_video_file", {
+    inputPath,
+    outputPath,
+    startSeconds,
+    endSeconds,
+    clipMode,
+  });
+}
+
 export async function transcodeMediaFile(
   inputPath: string,
   outputPath: string,

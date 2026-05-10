@@ -1769,6 +1769,70 @@ pub async fn convert_media_file(
 }
 
 #[tauri::command]
+pub async fn clip_video_file(
+    app_handle: AppHandle,
+    input_path: String,
+    output_path: String,
+    start_seconds: f64,
+    end_seconds: f64,
+    clip_mode: String,
+) -> Result<String, AppError> {
+    let input_path = PathBuf::from(input_path.trim());
+    let output_path = PathBuf::from(output_path.trim());
+    let clip_mode = clip_mode.trim().to_lowercase();
+
+    if input_path.as_os_str().is_empty() || !input_path.is_file() {
+        return Err(AppError::InvalidInput("请选择有效的媒体文件".to_string()));
+    }
+    if output_path.as_os_str().is_empty() {
+        return Err(AppError::InvalidInput("输出文件不能为空".to_string()));
+    }
+    if !start_seconds.is_finite()
+        || !end_seconds.is_finite()
+        || start_seconds < 0.0
+        || end_seconds <= start_seconds
+    {
+        return Err(AppError::InvalidInput("剪辑起止时间无效".to_string()));
+    }
+    if clip_mode != "fast" && clip_mode != "precise" {
+        return Err(AppError::InvalidInput("请选择剪辑模式".to_string()));
+    }
+
+    let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
+    if !ffmpeg_enabled {
+        return Err(AppError::InvalidInput(
+            "FFmpeg 开关未开启，请先在设置 -> FFmpeg 中开启".to_string(),
+        ));
+    }
+    let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle)
+        .await
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "未检测到可用的 FFmpeg，请先在设置 -> FFmpeg 中配置或下载 FFmpeg".to_string(),
+            )
+        })?;
+
+    if let Some(parent) = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    let resolved_output_path = downloader::resolve_available_file_path(&output_path);
+    crate::ffmpeg::clip_video_file(
+        &ffmpeg_path,
+        &input_path,
+        &resolved_output_path,
+        start_seconds,
+        end_seconds,
+        &clip_mode,
+    )
+    .await?;
+    Ok(resolved_output_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 pub async fn analyze_media_file(
     app_handle: AppHandle,
     input_path: String,

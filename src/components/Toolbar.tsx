@@ -12,6 +12,7 @@ import {
   DownOutlined,
   PictureOutlined,
   PlusOutlined,
+  ScissorOutlined,
   SettingOutlined,
   SwapOutlined,
   ToolOutlined,
@@ -90,6 +91,11 @@ export function Toolbar({
           key: "merge-video",
           label: "合并视频",
           icon: <MergeCellsOutlined />,
+        },
+        {
+          key: "clip-video",
+          label: "剪辑视频",
+          icon: <ScissorOutlined />,
         },
         {
           key: "multi-track-hls-to-mp4",

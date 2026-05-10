@@ -1118,6 +1118,24 @@ pub async fn transcode_media_file(
     run_ffmpeg_command(ffmpeg_path, &args).await
 }
 
+pub async fn clip_video_file(
+    ffmpeg_path: &Path,
+    input_path: &Path,
+    output_path: &Path,
+    start_seconds: f64,
+    end_seconds: f64,
+    clip_mode: &str,
+) -> Result<(), AppError> {
+    let args = build_clip_video_args(
+        input_path,
+        output_path,
+        start_seconds,
+        end_seconds,
+        &clip_mode.trim().to_lowercase(),
+    )?;
+    run_ffmpeg_command(ffmpeg_path, &args).await
+}
+
 pub async fn merge_video_files(
     ffmpeg_path: &Path,
     input_paths: &[PathBuf],
@@ -1278,6 +1296,74 @@ fn build_media_convert_args(
     }
 
     args.push(output_path.to_string_lossy().into_owned());
+    Ok(args)
+}
+
+fn build_clip_video_args(
+    input_path: &Path,
+    output_path: &Path,
+    start_seconds: f64,
+    end_seconds: f64,
+    clip_mode: &str,
+) -> Result<Vec<String>, AppError> {
+    if !start_seconds.is_finite() || !end_seconds.is_finite() {
+        return Err(AppError::InvalidInput("剪辑起止时间无效".to_string()));
+    }
+    if start_seconds < 0.0 || end_seconds <= start_seconds {
+        return Err(AppError::InvalidInput("剪辑起止时间无效".to_string()));
+    }
+
+    let start = format!("{:.3}", start_seconds);
+    let end = format!("{:.3}", end_seconds);
+    let input = input_path.to_string_lossy().into_owned();
+    let output = output_path.to_string_lossy().into_owned();
+
+    let mut args = vec!["-y".to_string(), "-hide_banner".to_string()];
+
+    match clip_mode {
+        "fast" => {
+            args.extend([
+                "-ss".to_string(),
+                start,
+                "-to".to_string(),
+                end,
+                "-i".to_string(),
+                input,
+                "-c".to_string(),
+                "copy".to_string(),
+                "-avoid_negative_ts".to_string(),
+                "make_zero".to_string(),
+                "-movflags".to_string(),
+                "+faststart".to_string(),
+            ]);
+        }
+        "precise" => {
+            args.extend([
+                "-i".to_string(),
+                input,
+                "-ss".to_string(),
+                start,
+                "-to".to_string(),
+                end,
+                "-c:v".to_string(),
+                "libx264".to_string(),
+                "-c:a".to_string(),
+                "aac".to_string(),
+                "-b:a".to_string(),
+                "192k".to_string(),
+                "-movflags".to_string(),
+                "+faststart".to_string(),
+            ]);
+        }
+        _ => {
+            return Err(AppError::InvalidInput(format!(
+                "暂不支持 {} 剪辑模式",
+                clip_mode
+            )))
+        }
+    }
+
+    args.push(output);
     Ok(args)
 }
 

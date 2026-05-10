@@ -23,11 +23,13 @@ import {
   FolderOpenOutlined,
   RetweetOutlined,
   MergeCellsOutlined,
+  ScissorOutlined,
   SwapOutlined,
 } from "@ant-design/icons";
 import { open as pickDialogPath, save } from "@tauri-apps/plugin-dialog";
 import {
   analyzeMediaFile,
+  clipVideoFile,
   convertLocalM3u8ToMp4File,
   convertMultiTrackHlsToMp4Dir,
   convertMediaFile,
@@ -37,12 +39,14 @@ import {
   transcodeMediaFile,
 } from "../services/api";
 import type { MediaAnalysisResult } from "../types";
+import { VideoClipPicker, type ClipRange } from "./VideoClipPicker";
 
 export type ToolAction =
   | "merge-ts"
   | "ts-to-mp4"
   | "local-m3u8-to-mp4"
   | "merge-video"
+  | "clip-video"
   | "format-convert"
   | "codec-convert"
   | "analyze-media"
@@ -50,6 +54,13 @@ export type ToolAction =
   | "install-chrome-extension"
   | "install-edge-extension"
   | "install-firefox-extension";
+
+type ClipMode = "fast" | "precise";
+
+const CLIP_MODE_OPTIONS: Array<{ value: ClipMode; label: string }> = [
+  { value: "fast", label: "快速（不重编码）" },
+  { value: "precise", label: "精确（重新编码）" },
+];
 
 type ConvertFormat = "mp4" | "mkv" | "mov" | "mp3" | "m4a" | "wav";
 type ConvertMode = "quick" | "compatible";
@@ -136,10 +147,14 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<MediaAnalysisResult | null>(null);
+  const [clipStatus, setClipStatus] = useState<{ duration: number; loadFailed: boolean }>(
+    { duration: 0, loadFailed: false }
+  );
   const codecOutputFormat = Form.useWatch("output_format", form) as
     | CodecOutputFormat
     | undefined;
   const mergeVideoInputPaths = Form.useWatch("input_paths", form) as string[] | undefined;
+  const clipInputPath = Form.useWatch("input_path", form) as string | undefined;
 
   const title = useMemo(() => {
     if (tool === "merge-ts") {
@@ -174,6 +189,15 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
         <Space size={8}>
           <MergeCellsOutlined />
           <span>合并视频</span>
+        </Space>
+      );
+    }
+
+    if (tool === "clip-video") {
+      return (
+        <Space size={8}>
+          <ScissorOutlined />
+          <span>剪辑视频</span>
         </Space>
       );
     }
@@ -221,6 +245,7 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
     if (!open) return;
     form.resetFields();
     setAnalysisResult(null);
+    setClipStatus({ duration: 0, loadFailed: false });
     if (tool === "format-convert") {
       form.setFieldValue("target_format", "mp4");
       form.setFieldValue("convert_mode", "quick");
@@ -232,6 +257,9 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
     }
     if (tool === "merge-video") {
       form.setFieldValue("merge_mode", "fast");
+    }
+    if (tool === "clip-video") {
+      form.setFieldValue("clip_mode", "fast");
     }
   }, [form, open, tool]);
 
@@ -281,7 +309,8 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
       tool === "ts-to-mp4" ||
       tool === "local-m3u8-to-mp4" ||
       tool === "analyze-media" ||
-      tool === "codec-convert"
+      tool === "codec-convert" ||
+      tool === "clip-video"
     ) {
       const selected = await pickDialogPath({
         multiple: false,
@@ -291,6 +320,8 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
             ? [{ name: "TS 文件", extensions: ["ts"] }]
             : tool === "local-m3u8-to-mp4"
               ? [{ name: "M3U8 文件", extensions: ["m3u8"] }]
+            : tool === "clip-video"
+              ? [{ name: "可预览视频", extensions: ["mp4", "m4v", "mov", "webm"] }]
               : undefined,
       });
 
@@ -311,6 +342,12 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
         if (!form.getFieldValue("output_path")) {
           form.setFieldValue("output_path", buildLocalM3u8Mp4OutputPath(inputPath));
         }
+        return;
+      }
+      if (tool === "clip-video") {
+        form.setFieldValue("clip_range", undefined);
+        setClipStatus({ duration: 0, loadFailed: false });
+        form.setFieldValue("output_path", buildClipVideoOutputPath(inputPath));
         return;
       }
       if (!form.getFieldValue("output_path")) {
@@ -349,6 +386,8 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
             ? [{ name: `${outputFormat.toUpperCase()} 文件`, extensions: [outputFormat] }]
           : tool === "format-convert"
             ? [{ name: `${targetFormat.toUpperCase()} 文件`, extensions: [targetFormat] }]
+          : tool === "clip-video"
+            ? [{ name: "MP4 文件", extensions: ["mp4"] }]
             : [{ name: "MP4 文件", extensions: ["mp4"] }],
     });
 
@@ -405,6 +444,29 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
           savedPath === requestedOutput
             ? "视频已合并完成，原文件已保留"
             : `视频已合并完成，原文件已保留，已另存为 ${getPathName(savedPath)}`
+        );
+      } else if (tool === "clip-video") {
+        if (clipStatus.loadFailed) {
+          message.error("当前文件无法在预览中播放，请先转为 mp4 再剪辑");
+          return;
+        }
+        const range = values.clip_range as ClipRange | undefined;
+        if (!range || !(range.end - range.start >= 0.05)) {
+          message.error("请选择有效的剪辑区间");
+          return;
+        }
+        const requestedOutput = values.output_path.trim();
+        const savedPath = await clipVideoFile(
+          values.input_path.trim(),
+          requestedOutput,
+          range.start,
+          range.end,
+          (values.clip_mode as ClipMode | undefined) ?? "fast"
+        );
+        message.success(
+          savedPath === requestedOutput
+            ? "视频剪辑完成，原文件已保留"
+            : `视频剪辑完成，原文件已保留，已另存为 ${getPathName(savedPath)}`
         );
       } else if (tool === "format-convert") {
         const requestedOutput = values.output_path.trim();
@@ -473,7 +535,19 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
       cancelText="取消"
       confirmLoading={submitting}
       destroyOnClose
-      width={tool === "analyze-media" ? 760 : tool === "merge-video" ? 720 : 520}
+      okButtonProps={{
+        disabled:
+          tool === "clip-video" && (clipStatus.loadFailed || clipStatus.duration <= 0),
+      }}
+      width={
+        tool === "analyze-media"
+          ? 760
+          : tool === "merge-video"
+            ? 720
+          : tool === "clip-video"
+            ? 760
+            : 520
+      }
     >
       <Form form={form} layout="vertical">
         {tool === "merge-video" ? (
@@ -539,6 +613,8 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
                     ? "媒体文件"
                     : tool === "codec-convert"
                       ? "媒体文件"
+                    : tool === "clip-video"
+                      ? "视频文件"
                     : tool === "analyze-media"
                       ? "视频文件"
                       : "多轨 HLS 目录"
@@ -563,6 +639,8 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
                             ? "请选择媒体文件"
                             : tool === "codec-convert"
                               ? "请选择媒体文件"
+                            : tool === "clip-video"
+                              ? "请选择待剪辑的视频文件"
                             : tool === "analyze-media"
                               ? "请选择视频文件"
                               : "请选择多轨 HLS 目录",
@@ -582,6 +660,8 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
                           ? "请选择待转换的媒体文件"
                           : tool === "codec-convert"
                             ? "请选择待进行编码转换的媒体文件"
+                          : tool === "clip-video"
+                            ? "请选择待剪辑的 mp4 / m4v / mov / webm 文件"
                           : tool === "analyze-media"
                             ? "请选择待分析的视频文件"
                             : "请选择本应用生成的多轨 HLS 目录"
@@ -594,6 +674,7 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
                   tool === "local-m3u8-to-mp4" ||
                   tool === "format-convert" ||
                   tool === "codec-convert" ||
+                  tool === "clip-video" ||
                   tool === "analyze-media" ? (
                     <FileOutlined />
                   ) : (
@@ -622,6 +703,46 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
               ))}
             </Radio.Group>
           </Form.Item>
+        )}
+
+        {tool === "clip-video" && (
+          <>
+            <Form.Item
+              label="预览与选段"
+              required
+              name="clip_range"
+              rules={[
+                {
+                  validator: async (_rule, value: ClipRange | undefined) => {
+                    if (!value) {
+                      throw new Error("请先在播放器中选择剪辑区间");
+                    }
+                    if (!(value.end - value.start >= 0.05)) {
+                      throw new Error("剪辑区间至少 0.05 秒");
+                    }
+                  },
+                },
+              ]}
+            >
+              <VideoClipPicker
+                inputPath={clipInputPath}
+                onLoadStateChange={setClipStatus}
+              />
+            </Form.Item>
+            <Form.Item
+              label="剪辑模式"
+              name="clip_mode"
+              rules={[{ required: true, message: "请选择剪辑模式" }]}
+            >
+              <Radio.Group optionType="button" buttonStyle="solid">
+                {CLIP_MODE_OPTIONS.map((option) => (
+                  <Radio.Button key={option.value} value={option.value}>
+                    {option.label}
+                  </Radio.Button>
+                ))}
+              </Radio.Group>
+            </Form.Item>
+          </>
         )}
 
         {tool === "format-convert" && (
@@ -749,6 +870,11 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
         {tool === "merge-video" && (
           <Typography.Text type="secondary">
             极速合并会尽量直接拼接，速度更快，但要求分辨率、编码和音频轨规格一致；兼容合并会统一规格后再拼接，适合不同分辨率的视频。
+          </Typography.Text>
+        )}
+        {tool === "clip-video" && (
+          <Typography.Text type="secondary">
+            快速模式直接复制流，不重编码，仅在关键帧附近切割；精确模式重新编码以达到帧级准确，耗时更长。
           </Typography.Text>
         )}
         {tool === "format-convert" && (
@@ -982,6 +1108,13 @@ function buildConvertedOutputPath(inputPath: string, targetFormat: ConvertFormat
   const dotIndex = name.lastIndexOf(".");
   const baseName = dotIndex > 0 ? name.slice(0, dotIndex) : name;
   return joinPath(dir, `${baseName || "output"}.${targetFormat}`);
+}
+
+function buildClipVideoOutputPath(inputPath: string) {
+  const { dir, name } = splitPath(inputPath);
+  const dotIndex = name.lastIndexOf(".");
+  const baseName = dotIndex > 0 ? name.slice(0, dotIndex) : name;
+  return joinPath(dir, `${baseName || "output"}_clip.mp4`);
 }
 
 function buildMultiTrackMp4OutputPath(inputDir: string) {

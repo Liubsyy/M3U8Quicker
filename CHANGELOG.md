@@ -3,10 +3,11 @@
 ## 1.1.0
 
 **功能**
-- 增加dash格式的支持（mpd和通用json）
+- 增加dash格式的下载（mpd和通用json）
 - 浏览器扩展：
     - dash格式自动扫描下载
     - 非标准dash网站下载：bilibili
+- FFmpeg 工具新增「剪辑视频」
 
 **优化**
 - 下载FFmpeg默认使用系统代理
