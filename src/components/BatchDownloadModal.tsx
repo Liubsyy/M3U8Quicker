@@ -18,7 +18,11 @@ import {
   deriveFilenameFromUrl,
   inferDirectFileTypeFromUrl,
   type CreateDownloadParams,
+  type DownloadSourceKind,
 } from "../types";
+
+const INLINE_DASH_JSON_PLACEHOLDER_URL = "inline-dash-json";
+const INLINE_DASH_JSON_DISPLAY = "B 站 DASH JSON";
 
 const { TextArea } = Input;
 
@@ -40,10 +44,12 @@ interface ParsedBatchItem {
   url: string;
   filename?: string;
   filenameEdited?: boolean;
-  mode: "hls" | "direct";
+  mode: "hls" | "direct" | "dash";
   fileType: CreateDownloadParams["file_type"];
   valid: boolean;
   error?: string;
+  sourceKind?: DownloadSourceKind;
+  sourceText?: string;
 }
 
 export function BatchDownloadModal({
@@ -128,12 +134,17 @@ export function BatchDownloadModal({
     try {
       const submitResults = await onSubmit(
         validItems.map((item) => ({
-          url: item.url,
+          url:
+            item.sourceKind === "inline_dash_json"
+              ? INLINE_DASH_JSON_PLACEHOLDER_URL
+              : item.url,
           filename: item.filename || undefined,
           output_dir: outputDir || undefined,
           extra_headers: extraHeaders.trim() || undefined,
           download_mode: item.mode,
           file_type: item.fileType,
+          source_kind: item.sourceKind,
+          source_text: item.sourceText,
         }))
       );
 
@@ -222,48 +233,70 @@ export function BatchDownloadModal({
                     title: "下载方式",
                     dataIndex: "mode",
                     width: 96,
-                    render: (_, record) => (
-                      <Select
-                        size="small"
-                        value={record.mode}
-                        options={[
-                          { value: "hls", label: "HLS" },
-                          { value: "direct", label: "Direct" },
-                        ]}
-                        style={{ width: "100%" }}
-                        onChange={(value) => {
-                          const nextMode = value as "hls" | "direct";
-                          updateParsedItem(record.key, {
-                            mode: nextMode,
-                          });
-                        }}
-                      />
-                    ),
+                    render: (_, record) => {
+                      if (record.sourceKind === "inline_dash_json") {
+                        return (
+                          <Select
+                            size="small"
+                            value="dash"
+                            disabled
+                            options={[{ value: "dash", label: "DASH" }]}
+                            style={{ width: "100%" }}
+                          />
+                        );
+                      }
+                      return (
+                        <Select
+                          size="small"
+                          value={record.mode}
+                          options={[
+                            { value: "hls", label: "HLS" },
+                            { value: "direct", label: "Direct" },
+                          ]}
+                          style={{ width: "100%" }}
+                          onChange={(value) => {
+                            const nextMode = value as "hls" | "direct";
+                            updateParsedItem(record.key, {
+                              mode: nextMode,
+                            });
+                          }}
+                        />
+                      );
+                    },
                   },
                   {
                     title: "地址",
                     dataIndex: "url",
                     ellipsis: true,
-                    render: (value: string, record) => (
-                      <Space direction="vertical" size={4} style={{ width: "100%" }}>
-                        <Input
-                          size="small"
-                          value={value}
-                          onChange={(event) => {
-                            const nextUrl = event.target.value;
-                            updateParsedItem(record.key, (current) => ({
-                              url: nextUrl,
-                              filename: current.filenameEdited
-                                ? current.filename
-                                : deriveFilenameFromUrl(nextUrl) || undefined,
-                            }));
-                          }}
-                        />
-                        {!record.valid ? (
-                          <Typography.Text type="danger">{record.error}</Typography.Text>
-                        ) : null}
-                      </Space>
-                    ),
+                    render: (value: string, record) => {
+                      if (record.sourceKind === "inline_dash_json") {
+                        return (
+                          <Typography.Text type="secondary">
+                            {INLINE_DASH_JSON_DISPLAY}
+                          </Typography.Text>
+                        );
+                      }
+                      return (
+                        <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                          <Input
+                            size="small"
+                            value={value}
+                            onChange={(event) => {
+                              const nextUrl = event.target.value;
+                              updateParsedItem(record.key, (current) => ({
+                                url: nextUrl,
+                                filename: current.filenameEdited
+                                  ? current.filename
+                                  : deriveFilenameFromUrl(nextUrl) || undefined,
+                              }));
+                            }}
+                          />
+                          {!record.valid ? (
+                            <Typography.Text type="danger">{record.error}</Typography.Text>
+                          ) : null}
+                        </Space>
+                      );
+                    },
                   },
                   {
                     title: "名字",
@@ -356,7 +389,24 @@ function parseBatchInput(rawInput: string): ParsedBatchItem[] {
 }
 
 function parseBatchLine(rawLine: string, lineNumber: number): ParsedBatchItem {
-  const url = rawLine.trim();
+  const trimmed = rawLine.trim();
+  if (trimmed.startsWith("{")) {
+    return normalizeParsedItem({
+      key: `batch-${lineNumber}`,
+      lineNumber,
+      rawLine,
+      url: trimmed,
+      filename: deriveFilenameFromInlineDashJson(trimmed),
+      filenameEdited: false,
+      mode: "dash",
+      fileType: "dash",
+      valid: true,
+      sourceKind: "inline_dash_json",
+      sourceText: trimmed,
+    });
+  }
+
+  const url = trimmed;
   const directFileType = inferDirectFileTypeFromUrl(url);
   const filename = deriveFilenameFromUrl(url) || undefined;
 
@@ -373,6 +423,24 @@ function parseBatchLine(rawLine: string, lineNumber: number): ParsedBatchItem {
   });
 }
 
+function deriveFilenameFromInlineDashJson(raw: string): string | undefined {
+  try {
+    const parsed = JSON.parse(raw) as { title?: unknown };
+    if (typeof parsed.title === "string") {
+      const sanitized = parsed.title
+        // eslint-disable-next-line no-control-regex
+        .replace(/[<>:"/\\|?* -]/g, "_")
+        .trim();
+      if (sanitized) {
+        return sanitized.endsWith(".mp4") ? sanitized : `${sanitized}.mp4`;
+      }
+    }
+  } catch {
+    // ignore, fall through
+  }
+  return undefined;
+}
+
 function normalizeParsedItem(item: ParsedBatchItem): ParsedBatchItem {
   const url = item.url.trim();
 
@@ -382,6 +450,17 @@ function normalizeParsedItem(item: ParsedBatchItem): ParsedBatchItem {
       url,
       valid: false,
       error: "未找到下载地址",
+    };
+  }
+
+  if (item.sourceKind === "inline_dash_json") {
+    return {
+      ...item,
+      url,
+      mode: "dash",
+      fileType: "dash",
+      valid: true,
+      error: undefined,
     };
   }
 

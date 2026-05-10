@@ -824,6 +824,123 @@ fn parse_dash_json_manifest(raw: &str) -> Result<DashManifest, AppError> {
     })
 }
 
+/// Build a self-contained HLS media playlist (as a string) from inline DASH JSON,
+/// using the default video track only. The playlist references absolute remote
+/// URLs, so it can be fed to ffmpeg/ffprobe (e.g. for preview/probe purposes)
+/// without needing any local segment files.
+pub fn build_dash_preview_playlist_from_json(raw_json: &str) -> Result<String, AppError> {
+    let manifest = parse_dash_json_manifest(raw_json)?;
+    build_dash_preview_playlist_content(&manifest)
+}
+
+/// If the inline DASH JSON's default video track is a single self-contained
+/// segment (no init, no byte range), return that URL so callers can hand it
+/// directly to ffmpeg without synthesizing a local HLS playlist. Returning
+/// the bare URL means ffmpeg sees an HTTPS input and `-headers` propagation
+/// works the same as with normal HLS/MP4 sources. Returns `Ok(None)` when
+/// the manifest is too complex (multiple segments, fMP4 init, byte ranges).
+pub fn inline_dash_preview_direct_url(raw_json: &str) -> Result<Option<String>, AppError> {
+    let manifest = parse_dash_json_manifest(raw_json)?;
+    let video_id = manifest
+        .default_selection
+        .video_id
+        .as_deref()
+        .or_else(|| {
+            manifest
+                .video_tracks
+                .first()
+                .map(|track| track.option.id.as_str())
+        });
+    let Some(video_id) = video_id else {
+        return Ok(None);
+    };
+    let Some(track) = manifest
+        .video_tracks
+        .iter()
+        .find(|track| track.option.id == video_id)
+    else {
+        return Ok(None);
+    };
+
+    if track.init.is_some() {
+        return Ok(None);
+    }
+    if track.segments.len() != 1 {
+        return Ok(None);
+    }
+    let segment = &track.segments[0];
+    if segment.byte_range.is_some() {
+        return Ok(None);
+    }
+    Ok(Some(segment.uri.clone()))
+}
+
+fn build_dash_preview_playlist_content(manifest: &DashManifest) -> Result<String, AppError> {
+    let video_id = manifest
+        .default_selection
+        .video_id
+        .as_deref()
+        .or_else(|| {
+            manifest
+                .video_tracks
+                .first()
+                .map(|track| track.option.id.as_str())
+        })
+        .ok_or_else(|| AppError::M3u8Parse("DASH manifest 缺少视频轨道".to_string()))?;
+    let track = manifest
+        .video_tracks
+        .iter()
+        .find(|track| track.option.id == video_id)
+        .ok_or_else(|| AppError::M3u8Parse("DASH manifest 缺少视频轨道".to_string()))?;
+
+    let map = track.init.as_ref().map(|init| m3u8_rs::Map {
+        uri: init.uri.clone(),
+        byte_range: init.byte_range.as_ref().map(byte_range_spec_to_m3u8),
+        ..Default::default()
+    });
+
+    let segments = track
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| m3u8_rs::MediaSegment {
+            uri: segment.uri.clone(),
+            duration: segment.duration,
+            title: None,
+            byte_range: segment.byte_range.as_ref().map(byte_range_spec_to_m3u8),
+            map: if index == 0 { map.clone() } else { None },
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+
+    let target_duration = segments.iter().fold(1u64, |max_duration, segment| {
+        max_duration.max(segment.duration.ceil().max(1.0) as u64)
+    });
+
+    let playlist = m3u8_rs::MediaPlaylist {
+        version: Some(7),
+        target_duration,
+        media_sequence: 0,
+        segments,
+        discontinuity_sequence: 0,
+        end_list: true,
+        playlist_type: Some(m3u8_rs::MediaPlaylistType::Vod),
+        i_frames_only: false,
+        start: None,
+        independent_segments: true,
+        unknown_tags: Vec::new(),
+    };
+
+    media_playlist_to_string(&playlist)
+}
+
+fn byte_range_spec_to_m3u8(spec: &ByteRangeSpec) -> m3u8_rs::ByteRange {
+    m3u8_rs::ByteRange {
+        length: spec.length,
+        offset: spec.offset,
+    }
+}
+
 fn dash_json_track_to_track(
     base_url: &Url,
     track: &DashJsonTrack,
@@ -5359,6 +5476,76 @@ seg.ts
             manifest.video_tracks[0].option.audio_group_id.as_deref(),
             Some("dash-audio")
         );
+    }
+
+    #[test]
+    fn build_dash_preview_playlist_from_json_emits_video_only_remote_playlist() {
+        let raw = r#"{
+          "format": "m3u8quicker-dash-v1",
+          "base_url": "https://example.com/dash/",
+          "tracks": {
+            "video": [
+              {
+                "id": "v1",
+                "label": "1080p",
+                "init": "video/init.mp4",
+                "segments": [
+                  { "uri": "video/seg-1.m4s", "duration": 6.0 },
+                  { "uri": "video/seg-2.m4s", "duration": 6.0 }
+                ]
+              }
+            ],
+            "audio": [
+              {
+                "id": "a1",
+                "init": "audio/init.mp4",
+                "segments": [
+                  { "uri": "audio/seg-1.m4s", "duration": 6.0 }
+                ]
+              }
+            ]
+          },
+          "default_selection": { "video_id": "v1", "audio_id": "a1" }
+        }"#;
+
+        let playlist = build_dash_preview_playlist_from_json(raw).expect("playlist");
+
+        assert!(playlist.starts_with("#EXTM3U"));
+        assert!(playlist.contains("https://example.com/dash/video/seg-1.m4s"));
+        assert!(playlist.contains("https://example.com/dash/video/seg-2.m4s"));
+        assert!(playlist.contains("EXT-X-MAP"));
+        assert!(playlist.contains("https://example.com/dash/video/init.mp4"));
+        assert!(playlist.contains("EXT-X-ENDLIST"));
+        // The audio track must not bleed into the preview playlist.
+        assert!(!playlist.contains("audio/seg-1.m4s"));
+        assert!(!playlist.contains("audio/init.mp4"));
+    }
+
+    #[test]
+    fn build_dash_preview_playlist_from_json_preserves_byte_ranges() {
+        let raw = r#"{
+          "format": "m3u8quicker-dash-v1",
+          "base_url": "https://example.com/dash/",
+          "tracks": {
+            "video": [
+              {
+                "id": "v1",
+                "init": "media.mp4",
+                "byte_range": "0-999",
+                "segments": [
+                  { "uri": "media.mp4", "duration": 4.0, "byte_range": "1000-4999" },
+                  { "uri": "media.mp4", "duration": 4.0, "byte_range": "5000-8999" }
+                ]
+              }
+            ],
+            "audio": []
+          }
+        }"#;
+
+        let playlist = build_dash_preview_playlist_from_json(raw).expect("playlist");
+
+        assert!(playlist.contains("EXT-X-BYTERANGE"));
+        assert!(playlist.contains("EXT-X-MAP"));
     }
 
     #[test]

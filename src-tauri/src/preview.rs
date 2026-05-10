@@ -9,8 +9,10 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::downloader;
 use crate::error::AppError;
 use crate::ffmpeg;
+use crate::models::DownloadSourceKind;
 use crate::state::AppState;
 
 const PREVIEW_WINDOW_LABEL_PREFIX: &str = "preview-";
@@ -23,13 +25,35 @@ pub const MAX_JPEG_QUALITY: u8 = 10;
 
 #[derive(Debug)]
 pub struct PreviewSession {
-    pub url: String,
     pub extra_headers: Option<String>,
     pub cache_dir: PathBuf,
+    /// What gets handed to ffmpeg/ffprobe as `-i`. For URL sources this is the
+    /// original URL; for inline DASH JSON it's a local HLS playlist file we
+    /// generated inside `cache_dir`.
+    pub resolved_input: String,
+    /// Whether `resolved_input` points to a local playlist that references
+    /// remote segments. ffmpeg's default protocol whitelist for files refuses
+    /// to follow `http(s)` URIs, so we have to widen it for these sessions.
+    pub uses_local_playlist: bool,
     pub duration_secs: Mutex<Option<f64>>,
     pub operation_lock: RwLock<()>,
     pub cancel_token: Mutex<CancellationToken>,
     pub cancelled_runs: Mutex<HashSet<String>>,
+}
+
+impl PreviewSession {
+    pub fn ffmpeg_input_args(&self) -> &'static [&'static str] {
+        if self.uses_local_playlist {
+            &[
+                "-protocol_whitelist",
+                "file,http,https,tcp,tls,crypto",
+                "-allowed_extensions",
+                "ALL",
+            ]
+        } else {
+            &[]
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,15 +78,42 @@ pub async fn create_session(
     state: &AppState,
     url: String,
     extra_headers: Option<String>,
+    source_kind: DownloadSourceKind,
+    source_text: Option<String>,
 ) -> Result<String, AppError> {
     let token = Uuid::new_v4().to_string();
     let cache_dir = preview_root_dir(app_handle)?.join(&token);
     tokio::fs::create_dir_all(&cache_dir).await?;
 
+    let (resolved_input, uses_local_playlist) = match source_kind {
+        DownloadSourceKind::Url => (url.clone(), false),
+        DownloadSourceKind::InlineDashJson => {
+            let raw = source_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| AppError::InvalidInput("DASH JSON 不能为空".to_string()))?;
+            // Prefer handing ffmpeg the bare segment URL when the manifest is
+            // a single self-contained segment (the bilibili case). That avoids
+            // the local-playlist `-headers` propagation issue: when input is
+            // file://, the http protocol child isn't part of the AVFormat
+            // context yet, so ffmpeg rejects `-headers` with "Option not found".
+            if let Some(direct_url) = downloader::inline_dash_preview_direct_url(raw)? {
+                (direct_url, false)
+            } else {
+                let playlist = downloader::build_dash_preview_playlist_from_json(raw)?;
+                let playlist_path = cache_dir.join("preview.m3u8");
+                tokio::fs::write(&playlist_path, playlist).await?;
+                (playlist_path.to_string_lossy().into_owned(), true)
+            }
+        }
+    };
+
     let session = Arc::new(PreviewSession {
-        url,
         extra_headers,
         cache_dir,
+        resolved_input,
+        uses_local_playlist,
         duration_secs: Mutex::new(None),
         operation_lock: RwLock::new(()),
         cancel_token: Mutex::new(CancellationToken::new()),
@@ -144,9 +195,10 @@ pub async fn extract_thumbnails(
         } else {
             let value = ffmpeg::probe_media_duration_secs_cancellable(
                 &ffmpeg_path,
-                &session.url,
+                &session.resolved_input,
                 session.extra_headers.as_deref(),
                 proxy_url.as_deref(),
+                session.ffmpeg_input_args(),
                 &cancel_token,
             )
             .await?;
@@ -198,13 +250,14 @@ pub async fn extract_thumbnails(
                 if !tokio::fs::try_exists(&output_path).await.unwrap_or(false) {
                     ffmpeg::extract_thumbnail_jpeg_cancellable(
                         &ffmpeg_path,
-                        &session.url,
+                        &session.resolved_input,
                         session.extra_headers.as_deref(),
                         proxy_url.as_deref(),
                         time,
                         &output_path,
                         target_width,
                         jpeg_quality,
+                        session.ffmpeg_input_args(),
                         &cancel_token,
                     )
                     .await?;

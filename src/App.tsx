@@ -1074,7 +1074,16 @@ async function openPreviewWindowFromDeepLink(
   }
   let token: string | null = null;
   try {
-    const session = await createPreviewSession(url, extraHeaders);
+    const isInlineDashJson = url.trim().startsWith("{");
+    const sessionUrl = isInlineDashJson ? "inline-dash-json" : url;
+    const sourceKind = isInlineDashJson ? "inline_dash_json" : undefined;
+    const sourceText = isInlineDashJson ? url : undefined;
+    const session = await createPreviewSession(
+      sessionUrl,
+      extraHeaders,
+      sourceKind,
+      sourceText
+    );
     token = session.token;
     const previewUrl = `/?${new URLSearchParams({
       view: "preview",

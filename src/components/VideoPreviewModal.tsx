@@ -64,12 +64,16 @@ export function VideoPreviewModal({
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
-      const url = (values.url as string | undefined)?.trim();
-      if (!url) {
+      const rawUrl = (values.url as string | undefined)?.trim();
+      if (!rawUrl) {
         return;
       }
       const extraHeaders =
         (values.extra_headers as string | undefined)?.trim() || undefined;
+      const isInlineDashJson = rawUrl.startsWith("{");
+      const url = isInlineDashJson ? "inline-dash-json" : rawUrl;
+      const sourceKind = isInlineDashJson ? "inline_dash_json" : undefined;
+      const sourceText = isInlineDashJson ? rawUrl : undefined;
 
       setPreviewing(true);
       if (!(await ensureFfmpegReady())) {
@@ -78,7 +82,9 @@ export function VideoPreviewModal({
 
       const { token, window_label: label } = await createPreviewSession(
         url,
-        extraHeaders
+        extraHeaders,
+        sourceKind,
+        sourceText
       );
       const previewUrl = `/?${new URLSearchParams({
         view: "preview",
@@ -145,8 +151,14 @@ export function VideoPreviewModal({
           label="视频地址"
           name="url"
           rules={[{ required: true, message: "请输入视频地址" }]}
+          extra="支持 m3u8、mpd 直链或 m3u8quicker-dash-v1 JSON"
         >
-          <Input placeholder="https://example.com/video/playlist.m3u8" allowClear />
+          <Input.TextArea
+            placeholder={
+              "https://example.com/video/playlist.m3u8\nhttps://example.com/video/manifest.mpd\n或粘贴 m3u8quicker-dash-v1 JSON"
+            }
+            autoSize={{ minRows: 3, maxRows: 6 }}
+          />
         </Form.Item>
         <Form.Item
           label="附加 Header"

@@ -316,13 +316,18 @@ export function NewDownloadModal({
   const handlePreview = async () => {
     try {
       const values = await form.validateFields(["url"]);
-      const url = (values.url as string | undefined)?.trim();
-      if (!url) {
+      const rawUrl = (values.url as string | undefined)?.trim();
+      if (!rawUrl) {
         return;
       }
       const extraHeaders =
         (form.getFieldValue("extra_headers") as string | undefined)?.trim() ||
         undefined;
+      const isInlineDashJson =
+        downloadMode === "dash" && rawUrl.startsWith("{");
+      const url = isInlineDashJson ? "inline-dash-json" : rawUrl;
+      const sourceKind = isInlineDashJson ? "inline_dash_json" : undefined;
+      const sourceText = isInlineDashJson ? rawUrl : undefined;
 
       setPreviewing(true);
       if (!(await ensurePreviewFfmpegReady())) {
@@ -331,7 +336,9 @@ export function NewDownloadModal({
 
       const { token, window_label: label } = await createPreviewSession(
         url,
-        extraHeaders
+        extraHeaders,
+        sourceKind,
+        sourceText
       );
       const previewUrl = `/?${new URLSearchParams({
         view: "preview",

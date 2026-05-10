@@ -6,6 +6,7 @@ import type {
   CreateDownloadParams,
   DownloadCounts,
   DownloadGroup,
+  DownloadSourceKind,
   DownloadTaskPage,
   DownloadTaskSegmentState,
   DownloadTaskSummary,
@@ -321,11 +322,15 @@ export interface PreviewThumbnail {
 
 export async function createPreviewSession(
   url: string,
-  extraHeaders?: string
+  extraHeaders?: string,
+  sourceKind?: DownloadSourceKind,
+  sourceText?: string
 ): Promise<{ token: string; window_label: string }> {
   return invoke<{ token: string; window_label: string }>("create_preview_session", {
     url,
     extraHeaders: extraHeaders ?? null,
+    sourceKind: sourceKind ?? null,
+    sourceText: sourceText ?? null,
   });
 }
 

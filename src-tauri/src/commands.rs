@@ -2033,7 +2033,10 @@ pub async fn create_preview_session(
     state: State<'_, AppState>,
     url: String,
     extra_headers: Option<String>,
+    source_kind: Option<DownloadSourceKind>,
+    source_text: Option<String>,
 ) -> Result<CreatePreviewSessionResponse, AppError> {
+    let source_kind = source_kind.unwrap_or(DownloadSourceKind::Url);
     let trimmed_url = url.trim();
     if trimmed_url.is_empty() {
         return Err(AppError::InvalidInput("请输入下载地址".to_string()));
@@ -2045,11 +2048,27 @@ pub async fn create_preview_session(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
 
+    let normalized_source_text = match source_kind {
+        DownloadSourceKind::Url => None,
+        DownloadSourceKind::InlineDashJson => {
+            let raw = source_text
+                .as_deref()
+                .unwrap_or(trimmed_url)
+                .trim();
+            if raw.is_empty() {
+                return Err(AppError::InvalidInput("DASH JSON 不能为空".to_string()));
+            }
+            Some(raw.to_string())
+        }
+    };
+
     let token = preview::create_session(
         &app_handle,
         &state,
         trimmed_url.to_string(),
         normalized_headers,
+        source_kind,
+        normalized_source_text,
     )
     .await?;
     Ok(CreatePreviewSessionResponse {

@@ -804,6 +804,7 @@ pub async fn probe_media_duration_secs_cancellable(
     input: &str,
     extra_headers: Option<&str>,
     proxy: Option<&str>,
+    extra_input_args: &[&str],
     cancel_token: &CancellationToken,
 ) -> Result<f64, AppError> {
     let formatted_headers = format_ffmpeg_headers(extra_headers);
@@ -815,6 +816,7 @@ pub async fn probe_media_duration_secs_cancellable(
         input,
         formatted_headers.as_deref(),
         sanitized_proxy.as_deref(),
+        extra_input_args,
         cancel_token,
     )
     .await
@@ -829,6 +831,7 @@ pub async fn probe_media_duration_secs_cancellable(
         input,
         formatted_headers.as_deref(),
         sanitized_proxy.as_deref(),
+        extra_input_args,
         cancel_token,
     )
     .await
@@ -843,6 +846,7 @@ pub async fn probe_media_duration_secs_cancellable(
         input,
         formatted_headers.as_deref(),
         sanitized_proxy.as_deref(),
+        extra_input_args,
         cancel_token,
     )
     .await
@@ -853,6 +857,7 @@ async fn run_ffprobe_duration_cancellable(
     input: &str,
     formatted_headers: Option<&str>,
     proxy: Option<&str>,
+    extra_input_args: &[&str],
     cancel_token: &CancellationToken,
 ) -> Result<f64, AppError> {
     let mut command = tokio::process::Command::new(ffprobe_command);
@@ -862,6 +867,9 @@ async fn run_ffprobe_duration_cancellable(
     }
     if let Some(url) = proxy {
         command.args(["-http_proxy", url]);
+    }
+    if !extra_input_args.is_empty() {
+        command.args(extra_input_args);
     }
     command
         .args([
@@ -902,6 +910,7 @@ async fn probe_duration_via_ffmpeg_cancellable(
     input: &str,
     formatted_headers: Option<&str>,
     proxy: Option<&str>,
+    extra_input_args: &[&str],
     cancel_token: &CancellationToken,
 ) -> Result<f64, AppError> {
     let mut command = tokio::process::Command::new(ffmpeg_path);
@@ -911,6 +920,9 @@ async fn probe_duration_via_ffmpeg_cancellable(
     }
     if let Some(url) = proxy {
         command.args(["-http_proxy", url]);
+    }
+    if !extra_input_args.is_empty() {
+        command.args(extra_input_args);
     }
     command
         .args(["-hide_banner", "-i", input, "-f", "null", "-"])
@@ -961,6 +973,7 @@ pub async fn extract_thumbnail_jpeg_cancellable(
     output_path: &Path,
     target_width: u32,
     jpeg_quality: u8,
+    extra_input_args: &[&str],
     cancel_token: &CancellationToken,
 ) -> Result<(), AppError> {
     let formatted_headers = format_ffmpeg_headers(extra_headers);
@@ -978,6 +991,9 @@ pub async fn extract_thumbnail_jpeg_cancellable(
     if let Some(url) = sanitized_proxy {
         args.push("-http_proxy".to_string());
         args.push(url);
+    }
+    for extra in extra_input_args {
+        args.push((*extra).to_string());
     }
     args.extend([
         "-i".to_string(),

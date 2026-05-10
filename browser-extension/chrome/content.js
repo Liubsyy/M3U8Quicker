@@ -598,12 +598,10 @@
 
     selectAllButton.addEventListener("click", () => {
       detectedTargets.forEach((item) => {
-        if (!isInlineDashJsonTarget(item)) {
-          selectedUrls.add(item.url);
-        }
+        selectedUrls.add(item.url);
       });
       selectionInputs.forEach((input) => {
-        input.checked = !input.disabled;
+        input.checked = true;
       });
       updateBatchButtonState();
     });
@@ -651,16 +649,8 @@
       checkbox.checked = false;
       checkbox.style.margin = "3px 0 0";
       checkbox.style.cursor = "pointer";
-      if (isInlineDashJsonTarget(item)) {
-        checkbox.disabled = true;
-        checkbox.title = "B 站 DASH JSON 暂不支持批量下载";
-        checkbox.style.cursor = "not-allowed";
-      }
       selectionInputs.push(checkbox);
       checkbox.addEventListener("change", () => {
-        if (checkbox.disabled) {
-          return;
-        }
         if (checkbox.checked) {
           selectedUrls.add(item.url);
         } else {
@@ -791,9 +781,7 @@
       actions.style.gap = "2px";
       actions.style.flex = "0 0 auto";
       actions.appendChild(copyButton);
-      if (!isInlineDashJsonTarget(item)) {
-        actions.appendChild(previewButton);
-      }
+      actions.appendChild(previewButton);
       actions.appendChild(downloadButton);
 
       entry.appendChild(checkbox);
