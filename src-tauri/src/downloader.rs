@@ -31,8 +31,8 @@ type Aes192CbcDec = cbc::Decryptor<Aes192>;
 type Aes256CbcDec = cbc::Decryptor<Aes256>;
 
 const M3U8_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
-const VIDEO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
-const MP4_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const VIDEO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(180);
+const MP4_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 pub enum DownloadRunOutcome {
     Completed(PathBuf),
