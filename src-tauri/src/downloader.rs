@@ -2898,6 +2898,7 @@ async fn download_missing_fmp4_init_segments(
             0,
             3,
             cancel,
+            None,
         )
         .await?;
 
@@ -3743,14 +3744,14 @@ async fn bundle_download_worker_loop(
             entry.sequence_number,
             3,
             &cancel,
+            Some(total_bytes.clone()),
         )
         .await;
 
         drop(permit);
 
         match outcome {
-            Ok(SegmentDownloadOutcome::Downloaded(file_size)) => {
-                total_bytes.fetch_add(file_size, Ordering::Relaxed);
+            Ok(SegmentDownloadOutcome::Downloaded(_file_size)) => {
                 completed_segment_indices
                     .lock()
                     .await
@@ -3915,15 +3916,15 @@ async fn download_worker_loop(
             segment.sequence_number,
             3,
             &cancel,
+            Some(total_bytes.clone()),
         )
         .await;
 
         drop(permit);
 
         match outcome {
-            Ok(SegmentDownloadOutcome::Downloaded(file_size)) => {
+            Ok(SegmentDownloadOutcome::Downloaded(_file_size)) => {
                 priority_state.mark_segment_completed(segment.index).await;
-                total_bytes.fetch_add(file_size, Ordering::Relaxed);
                 completed_segment_indices
                     .lock()
                     .await
@@ -4013,6 +4014,68 @@ async fn download_worker_loop(
 
 // --- Segment Download ---
 
+fn atomic_saturating_sub(atom: &AtomicU64, n: u64) {
+    if n == 0 {
+        return;
+    }
+    let mut current = atom.load(Ordering::Relaxed);
+    loop {
+        let new = current.saturating_sub(n);
+        match atom.compare_exchange_weak(current, new, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+struct SegmentByteCounter {
+    sink: Option<Arc<AtomicU64>>,
+    pending: u64,
+    committed: bool,
+}
+
+impl SegmentByteCounter {
+    fn new(sink: Option<Arc<AtomicU64>>) -> Self {
+        Self {
+            sink,
+            pending: 0,
+            committed: false,
+        }
+    }
+
+    fn add(&mut self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        if let Some(sink) = &self.sink {
+            sink.fetch_add(bytes, Ordering::Relaxed);
+        }
+        self.pending = self.pending.saturating_add(bytes);
+    }
+
+    fn commit(&mut self, final_size: u64) {
+        if let Some(sink) = &self.sink {
+            if final_size > self.pending {
+                sink.fetch_add(final_size - self.pending, Ordering::Relaxed);
+            } else if self.pending > final_size {
+                atomic_saturating_sub(sink, self.pending - final_size);
+            }
+        }
+        self.pending = final_size;
+        self.committed = true;
+    }
+}
+
+impl Drop for SegmentByteCounter {
+    fn drop(&mut self) {
+        if !self.committed {
+            if let Some(sink) = &self.sink {
+                atomic_saturating_sub(sink, self.pending);
+            }
+        }
+    }
+}
+
 async fn download_segment_with_retry(
     client: Arc<RwLock<reqwest::Client>>,
     rate_limiter: Arc<DownloadRateLimiter>,
@@ -4024,6 +4087,7 @@ async fn download_segment_with_retry(
     sequence_number: u64,
     max_retries: u32,
     cancel: &CancellationToken,
+    progress_sink: Option<Arc<AtomicU64>>,
 ) -> Result<SegmentDownloadOutcome, AppError> {
     let mut attempts = 0;
     loop {
@@ -4040,11 +4104,11 @@ async fn download_segment_with_retry(
             encryption,
             sequence_number,
             cancel,
+            progress_sink.clone(),
         )
         .await
         {
-            Ok(()) => {
-                let file_size = tokio::fs::metadata(path).await?.len();
+            Ok(file_size) => {
                 return Ok(SegmentDownloadOutcome::Downloaded(file_size));
             }
             Err(e) => {
@@ -4077,11 +4141,13 @@ async fn download_segment(
     encryption: Option<&EncryptionInfo>,
     sequence_number: u64,
     cancel: &CancellationToken,
-) -> Result<(), AppError> {
+    progress_sink: Option<Arc<AtomicU64>>,
+) -> Result<u64, AppError> {
     let part_path = part_path_for_downloaded_file(path);
     if part_path.exists() {
         let _ = tokio::fs::remove_file(&part_path).await;
     }
+    let mut byte_counter = SegmentByteCounter::new(progress_sink);
 
     let active_client = client.read().await.clone();
     let mut request = build_request_with_headers(&active_client, url, headers.as_ref());
@@ -4116,6 +4182,7 @@ async fn download_segment(
         let chunk = chunk?;
         rate_limiter.wait_for_bytes(chunk.len(), cancel).await?;
         output.write_all(&chunk).await?;
+        byte_counter.add(chunk.len() as u64);
     }
     output.flush().await?;
     drop(output);
@@ -4134,7 +4201,9 @@ async fn download_segment(
         tokio::fs::rename(&part_path, path).await?;
     }
 
-    Ok(())
+    let final_size = tokio::fs::metadata(path).await?.len();
+    byte_counter.commit(final_size);
+    Ok(final_size)
 }
 
 // --- Merge Segments ---
