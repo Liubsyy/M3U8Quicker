@@ -36,6 +36,7 @@
   ],
   "web_accessible_resources": [
     "injects/bilibili.js",
+    "injects/douyin.js",
     "icon.png"
   ]
 }

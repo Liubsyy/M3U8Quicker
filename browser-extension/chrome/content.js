@@ -1,6 +1,7 @@
 (() => {
   const DETECT_EVENT = "m3u8quicker:detected";
   const CUSTOM_MANIFEST_EVENT = "m3u8quicker:custom-manifest";
+  const CUSTOM_TARGET_EVENT = "m3u8quicker:custom-target";
   const BACKGROUND_DETECT_MESSAGE = "m3u8quicker:network-detected";
   const FRAME_DETECT_MESSAGE = "m3u8quicker:frame-detected";
   const SYNC_DETECTIONS_MESSAGE = "m3u8quicker:sync-detections";
@@ -71,6 +72,10 @@
         manifestJson: detail.manifest,
         title: detail.title,
       });
+    });
+    window.addEventListener(CUSTOM_TARGET_EVENT, (event) => {
+      const detail = event && event.detail ? event.detail : {};
+      registerCustomTarget(detail);
     });
   }
 
@@ -376,6 +381,32 @@
       }
     }
 
+    appendButton();
+    updateButtonVisibility(true);
+  }
+
+  function registerCustomTarget(detail) {
+    if (!isTopLevelContext) {
+      return;
+    }
+    const url = typeof detail.url === "string" ? detail.url.trim() : "";
+    if (!url) {
+      return;
+    }
+    const fileType = detail.fileType === "dash" || detail.fileType === "hls" ? detail.fileType : "mp4";
+    const ext = fileType === "hls" ? "m3u8" : fileType === "dash" ? "mpd" : "mp4";
+    const fallback = `${detail.source || "video"}-${detectedTargets.length + 1}.${ext}`;
+    const fileName = sanitizeFilename(detail.fileName || "", fallback);
+    if (detectedTargets.find((item) => item.url === url)) {
+      return;
+    }
+    checkedTargets.add(url);
+    detectedTargets.push({
+      url,
+      fileName: /\.[a-z0-9]{2,5}$/i.test(fileName) ? fileName : `${fileName}.${ext}`,
+      fileType,
+      thumbnail: detail.thumbnail || null,
+    });
     appendButton();
     updateButtonVisibility(true);
   }

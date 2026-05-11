@@ -156,22 +156,10 @@ export function NewDownloadModal({
       const values = await form.validateFields();
       const url = values.url.trim();
       const fileType =
-        downloadMode === "direct" ? inferDirectFileTypeFromUrl(url) : downloadMode;
+        downloadMode === "direct"
+          ? inferDirectFileTypeFromUrl(url) ?? "mp4"
+          : downloadMode;
       const isInlineDashJson = downloadMode === "dash" && url.startsWith("{");
-
-      if (!fileType) {
-        form.setFields([
-          {
-            name: "url",
-            errors: [
-              `无法从地址推断文件类型，请使用包含 ${DIRECT_FILE_TYPES.join(
-                "/"
-              )} 后缀的直链`,
-            ],
-          },
-        ]);
-        return;
-      }
 
       setSubmitting(true);
       const nextParams: CreateDownloadParams = {
@@ -392,7 +380,7 @@ export function NewDownloadModal({
     downloadMode === "direct"
       ? inferredDirectFileType
         ? `文件类型将按地址推断为 ${getFileTypeLabel(inferredDirectFileType)}`
-        : undefined
+        : "无法推断文件类型，默认mp4"
       : undefined;
 
   return (

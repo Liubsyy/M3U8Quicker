@@ -8,5 +8,11 @@
       script: "injects/bilibili.js",
       flag: "m3u8quickerBilibiliInjected",
     },
+    {
+      id: "douyin",
+      hostPattern: /(^|\.)douyin\.com$/i,
+      script: "injects/douyin.js",
+      flag: "m3u8quickerDouyinInjected",
+    },
   ];
 })();
