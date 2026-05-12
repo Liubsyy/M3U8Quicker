@@ -37,6 +37,7 @@ import {
   closePreviewSession,
   getAppSettings,
   getFfmpegStatus,
+  checkForUpdate,
 } from "./services/api";
 import type {
   ChromiumBrowser,
@@ -110,6 +111,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
   const [batchDownloadDraft, setBatchDownloadDraft] = useState<BatchDownloadDraft | null>(null);
   const [batchDownloadModalOpen, setBatchDownloadModalOpen] = useState(false);
   const [videoPreviewModalOpen, setVideoPreviewModalOpen] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   const [chromiumInstallGuide, setChromiumInstallGuide] =
     useState<ChromiumInstallGuideState | null>(null);
   const [firefoxInstallGuide, setFirefoxInstallGuide] =
@@ -139,6 +141,26 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     getSegmentState,
   } = useDownloads();
   const { token } = theme.useToken();
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void checkForUpdate()
+        .then((info) => {
+          if (!cancelled) {
+            setUpdateAvailable(info.has_update);
+          }
+        })
+        .catch(() => {
+          // 启动后的静默检查不影响主流程。
+        });
+    }, 1200);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
 
   useEffect(() => {
     const openDraftFromDeepLink = (deepLink: string) => {
@@ -432,6 +454,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
             setSettingsInitialTab("general");
             setSettingsOpen(true);
           }}
+          updateAvailable={updateAvailable}
         />
       </Header>
       <Content
@@ -462,11 +485,13 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         open={settingsOpen}
         initialTab={settingsInitialTab}
         themeMode={themeMode}
+        updateAvailable={updateAvailable}
         onClose={() => {
           setSettingsOpen(false);
           setSettingsInitialTab("general");
         }}
         onThemeModeChange={onThemeModeChange}
+        onUpdateAvailabilityChange={setUpdateAvailable}
       />
       <ToolsModal
         open={toolModalOpen}

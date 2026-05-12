@@ -34,9 +34,10 @@ type Phase =
 interface UpdateModalProps {
   open: boolean;
   onClose: () => void;
+  onChecked?: (info: UpdateInfo) => void;
 }
 
-export function UpdateModal({ open, onClose }: UpdateModalProps) {
+export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
   const [phase, setPhase] = useState<Phase>("checking");
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [errorText, setErrorText] = useState("");
@@ -70,6 +71,7 @@ export function UpdateModal({ open, onClose }: UpdateModalProps) {
     try {
       const result = await checkForUpdate();
       setInfo(result);
+      onChecked?.(result);
       if (!result.has_update) {
         setPhase("no-update");
       } else if (!result.asset) {

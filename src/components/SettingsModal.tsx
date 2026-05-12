@@ -75,16 +75,20 @@ interface SettingsModalProps {
   open: boolean;
   initialTab?: "general" | "download" | "ffmpeg";
   themeMode: ThemeMode;
+  updateAvailable?: boolean;
   onClose: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
+  onUpdateAvailabilityChange?: (available: boolean) => void;
 }
 
 export function SettingsModal({
   open,
   initialTab = "general",
   themeMode,
+  updateAvailable = false,
   onClose,
   onThemeModeChange,
+  onUpdateAvailabilityChange,
 }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<"general" | "download" | "ffmpeg">(
     initialTab
@@ -524,7 +528,11 @@ export function SettingsModal({
                 </Space>
                 <Button
                   size="small"
-                  icon={<ReloadOutlined />}
+                  icon={
+                    <Badge dot={updateAvailable} offset={[2, 0]}>
+                      <ReloadOutlined />
+                    </Badge>
+                  }
                   onClick={() => setUpdateModalOpen(true)}
                 >
                   检查更新
@@ -894,6 +902,7 @@ export function SettingsModal({
       <UpdateModal
         open={updateModalOpen}
         onClose={() => setUpdateModalOpen(false)}
+        onChecked={(info) => onUpdateAvailabilityChange?.(info.has_update)}
       />
     </>
   );

@@ -1,4 +1,4 @@
-import { Button, Dropdown, Space, Typography, theme } from "antd";
+import { Badge, Button, Dropdown, Space, Typography, theme } from "antd";
 import {
   ApartmentOutlined,
   ChromeOutlined,
@@ -29,6 +29,7 @@ interface ToolbarProps {
   onOpenVideoPreview: () => void;
   onOpenTool: (tool: ToolAction) => void;
   onOpenSettings: () => void;
+  updateAvailable?: boolean;
 }
 
 export function Toolbar({
@@ -37,6 +38,7 @@ export function Toolbar({
   onOpenVideoPreview,
   onOpenTool,
   onOpenSettings,
+  updateAvailable = false,
 }: ToolbarProps) {
   const { token } = theme.useToken();
   const newDownloadItems: MenuProps["items"] = [
@@ -191,7 +193,14 @@ export function Toolbar({
             <DownOutlined style={{ fontSize: 12 }} />
           </Button>
         </Dropdown>
-        <Button icon={<SettingOutlined />} onClick={onOpenSettings}>
+        <Button
+          icon={
+            <Badge dot={updateAvailable} offset={[2, 0]}>
+              <SettingOutlined />
+            </Badge>
+          }
+          onClick={onOpenSettings}
+        >
           设置
         </Button>
       </Space>
