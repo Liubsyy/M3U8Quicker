@@ -32,6 +32,7 @@
     {
       "resources": [
         "injects/bilibili.js",
+        "injects/cctv.js",
         "injects/douyin.js",
         "icon.png"
       ],

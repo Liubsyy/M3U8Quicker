@@ -14,5 +14,11 @@
       script: "injects/douyin.js",
       flag: "m3u8quickerDouyinInjected",
     },
+    {
+      id: "cctv",
+      hostPattern: /(^|\.)((cntv|cctv)\.(com|cn)|ncpa-classic\.com)$/i,
+      script: "injects/cctv.js",
+      flag: "m3u8quickerCctvInjected",
+    },
   ];
 })();
