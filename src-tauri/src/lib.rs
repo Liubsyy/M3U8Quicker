@@ -48,7 +48,24 @@ pub fn run() {
             let tauri::WindowEvent::CloseRequested { api, .. } = event else {
                 return;
             };
-            let Some(token) = preview::token_from_window_label(window.label()).map(str::to_owned)
+
+            if let Some(token) = preview::token_from_window_label(window.label()).map(str::to_owned)
+            {
+                api.prevent_close();
+                let window = window.clone();
+                let app_handle = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = window.hide();
+                    let _ = window.destroy();
+
+                    let state = app_handle.state::<AppState>();
+                    preview::close_session(&state, &token).await;
+                });
+                return;
+            }
+
+            let Some(task_id) =
+                playback::task_id_from_window_label(window.label()).map(str::to_owned)
             else {
                 return;
             };
@@ -61,7 +78,8 @@ pub fn run() {
                 let _ = window.destroy();
 
                 let state = app_handle.state::<AppState>();
-                preview::close_session(&state, &token).await;
+                playback::remove_playback_session(&state.playback_sessions, &task_id).await;
+                commands::maybe_cleanup_completed_temp_dir(&app_handle, &state, &task_id).await;
             });
         })
         .setup(|app| {

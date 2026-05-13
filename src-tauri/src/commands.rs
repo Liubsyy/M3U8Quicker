@@ -2282,7 +2282,7 @@ fn playback_target_for_task(task: &DownloadTask) -> Result<(PlaybackSourceKind, 
     }
 }
 
-async fn maybe_cleanup_completed_temp_dir(
+pub(crate) async fn maybe_cleanup_completed_temp_dir(
     app_handle: &AppHandle,
     state: &State<'_, AppState>,
     id: &str,

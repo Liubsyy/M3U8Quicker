@@ -4765,8 +4765,8 @@ fn remaining_mp4_download_time(deadline: Instant) -> Result<Duration, AppError> 
 
 fn direct_download_retry_delay(attempt: u32, remaining: Duration) -> Duration {
     let delay = match attempt {
-        0 | 1 => Duration::from_secs(5),
-        2 => Duration::from_secs(10),
+        0 | 1 | 2 => Duration::from_secs(5),
+        3 => Duration::from_secs(10),
         _ => Duration::from_secs(20),
     };
     delay.min(remaining)
@@ -5229,19 +5229,23 @@ mod tests {
 
         assert_eq!(
             direct_download_retry_delay(1, remaining),
-            Duration::from_secs(10)
+            Duration::from_secs(5)
         );
         assert_eq!(
             direct_download_retry_delay(2, remaining),
-            Duration::from_secs(20)
+            Duration::from_secs(5)
         );
         assert_eq!(
             direct_download_retry_delay(3, remaining),
-            Duration::from_secs(30)
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            direct_download_retry_delay(4, remaining),
+            Duration::from_secs(20)
         );
         assert_eq!(
             direct_download_retry_delay(10, remaining),
-            Duration::from_secs(30)
+            Duration::from_secs(20)
         );
         assert_eq!(
             direct_download_retry_delay(3, Duration::from_secs(5)),

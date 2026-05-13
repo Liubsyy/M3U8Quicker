@@ -366,6 +366,12 @@ pub fn playback_window_label(task_id: &str) -> String {
     format!("player-{}", task_id)
 }
 
+pub fn task_id_from_window_label(label: &str) -> Option<&str> {
+    label
+        .strip_prefix("player-")
+        .filter(|task_id| !task_id.is_empty())
+}
+
 pub fn playlist_path(task_id: &str) -> String {
     format!("/playback/{}/index.m3u8", task_id)
 }
@@ -1346,6 +1352,16 @@ mod tests {
         };
 
         let _router = build_playback_router(state);
+    }
+
+    #[test]
+    fn playback_window_label_round_trips_task_id() {
+        let task_id = "task-1";
+        let label = playback_window_label(task_id);
+
+        assert_eq!(task_id_from_window_label(&label), Some(task_id));
+        assert_eq!(task_id_from_window_label("main"), None);
+        assert_eq!(task_id_from_window_label("player-"), None);
     }
 
     #[test]
