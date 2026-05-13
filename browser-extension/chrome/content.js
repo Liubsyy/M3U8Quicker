@@ -17,6 +17,7 @@
   const DIRECT_VIDEO_PATTERN = /\.(mp4|mkv|avi|wmv|flv|webm|mov|rmvb)(?:$|[?#])/i;
   const BUTTON_LABEL = "M3U8 Quicker";
   const BUTTON_ICON_URL = chrome.runtime.getURL("icon.png");
+  const MAX_DETECTED_TARGETS = 100;
   const isTopLevelContext = checkIsTopLevelContext();
   const detectedTargets = [];
   const checkedTargets = new Set();
@@ -206,6 +207,7 @@
   }
 
   function backfillThumbnails() {
+    let changed = false;
     for (let i = 0; i < detectedTargets.length; i += 1) {
       const target = detectedTargets[i];
       if (target.thumbnail) {
@@ -214,7 +216,11 @@
       const resolved = resolveThumbnailFor(target.url) || resolveThumbnailFor(stripTitleParam(target.url));
       if (resolved) {
         target.thumbnail = resolved;
+        changed = true;
       }
+    }
+    if (changed) {
+      refreshOpenPanel();
     }
   }
 
@@ -360,6 +366,7 @@
   }
 
   function registerTarget(rawUrl, normalizedUrl) {
+    let changed = false;
     if (!detectedTargets.find((item) => item.url === normalizedUrl)) {
       var type = detectFileType(rawUrl);
       var ext = detectFileExt(rawUrl);
@@ -368,21 +375,26 @@
         : type === "dash"
           ? `dash-${detectedTargets.length + 1}.mpd`
         : `m3u8-${detectedTargets.length + 1}.m3u8`;
-      detectedTargets.push({
+      addDetectedTarget({
         url: normalizedUrl,
         fileName: getFileName(rawUrl, fallback),
         fileType: type,
         thumbnail: resolveThumbnailFor(rawUrl) || null
       });
+      changed = true;
     } else {
       const existing = detectedTargets.find((item) => item.url === normalizedUrl);
       if (existing && !existing.thumbnail) {
         existing.thumbnail = resolveThumbnailFor(rawUrl) || null;
+        changed = Boolean(existing.thumbnail);
       }
     }
 
     appendButton();
     updateButtonVisibility(true);
+    if (changed) {
+      refreshOpenPanel();
+    }
   }
 
   function registerCustomTarget(detail) {
@@ -401,7 +413,7 @@
       return;
     }
     checkedTargets.add(url);
-    detectedTargets.push({
+    addDetectedTarget({
       url,
       fileName: /\.[a-z0-9]{2,5}$/i.test(fileName) ? fileName : `${fileName}.${ext}`,
       fileType,
@@ -409,6 +421,7 @@
     });
     appendButton();
     updateButtonVisibility(true);
+    refreshOpenPanel();
   }
 
   function registerCustomManifest({ source, manifestJson, title }) {
@@ -423,7 +436,7 @@
     }
     const fallback = source ? `${source}-dash` : "custom-dash";
     const name = sanitizeFilename(title || getPageTitle(), fallback);
-    detectedTargets.push({
+    addDetectedTarget({
       url: manifestJson,
       fileName: `${name}.json`,
       fileType: "dash",
@@ -432,6 +445,14 @@
     checkedTargets.add(manifestJson);
     appendButton();
     updateButtonVisibility(true);
+    refreshOpenPanel();
+  }
+
+  function addDetectedTarget(target) {
+    detectedTargets.push(target);
+    if (detectedTargets.length > MAX_DETECTED_TARGETS) {
+      detectedTargets.splice(0, detectedTargets.length - MAX_DETECTED_TARGETS);
+    }
   }
 
   function appendTitle(url) {
@@ -527,11 +548,24 @@
     button.style.display = visible ? "inline-flex" : "none";
   }
 
-  function onButtonClick() {
-    if (detectedTargets.length === 0) {
+  function clearDetectedTargets() {
+    detectedTargets.splice(0, detectedTargets.length);
+    const panel = getUiElement(PANEL_ID);
+    if (panel) {
+      panel.remove();
+    }
+  }
+
+  function refreshOpenPanel() {
+    const panel = getUiElement(PANEL_ID);
+    if (!panel) {
       return;
     }
+    panel.remove();
+    onButtonClick();
+  }
 
+  function onButtonClick() {
     let panel = getUiElement(PANEL_ID);
     if (panel) {
       panel.remove();
@@ -593,6 +627,7 @@
 
     const selectAllButton = createTextActionButton("全选");
     const clearSelectionButton = createTextActionButton("不选");
+    const clearListButton = createTextActionButton("清空");
 
     const batchButton = document.createElement("button");
     batchButton.type = "button";
@@ -645,6 +680,10 @@
       updateBatchButtonState();
     });
 
+    clearListButton.addEventListener("click", () => {
+      clearDetectedTargets();
+    });
+
     batchButton.addEventListener("click", () => {
       if (selectedUrls.size === 0) {
         return;
@@ -659,10 +698,25 @@
     header.appendChild(title);
     headerActions.appendChild(selectAllButton);
     headerActions.appendChild(clearSelectionButton);
+    headerActions.appendChild(clearListButton);
     headerActions.appendChild(batchButton);
     headerActions.appendChild(closeButton);
     header.appendChild(headerActions);
     panel.appendChild(header);
+
+    if (panelItems.length === 0) {
+      const empty = document.createElement("div");
+      empty.textContent = "暂无可下载视频";
+      empty.style.marginTop = "6px";
+      empty.style.padding = "18px 12px";
+      empty.style.border = "1px dashed #d8e2f1";
+      empty.style.borderRadius = "10px";
+      empty.style.background = "#f7fbff";
+      empty.style.color = "#5b718b";
+      empty.style.fontSize = "13px";
+      empty.style.textAlign = "center";
+      panel.appendChild(empty);
+    }
 
     panelItems.forEach((item) => {
       const entry = document.createElement("div");

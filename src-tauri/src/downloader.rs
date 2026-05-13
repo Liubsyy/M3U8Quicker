@@ -3504,6 +3504,7 @@ pub async fn run_hls_bundle_download(
     playlist_files: Vec<BundlePlaylistFile>,
     entries: Vec<BundleDownloadEntry>,
     headers: Arc<RequestHeaders>,
+    delete_ts_temp_dir_after_download: bool,
     convert_to_mp4: bool,
     ffmpeg_path: Option<PathBuf>,
     cancel_token: CancellationToken,
@@ -3790,6 +3791,9 @@ pub async fn run_hls_bundle_download(
                 .await
                 .is_ok()
                 {
+                    if delete_ts_temp_dir_after_download {
+                        let _ = tokio::fs::remove_dir_all(&bundle_dir).await;
+                    }
                     return Ok(DownloadRunOutcome::Completed(mp4_path));
                 }
             }
@@ -4760,9 +4764,12 @@ fn remaining_mp4_download_time(deadline: Instant) -> Result<Duration, AppError> 
 }
 
 fn direct_download_retry_delay(attempt: u32, remaining: Duration) -> Duration {
-    let capped_attempt = attempt.min(5);
-    let delay = Duration::from_secs(1 << capped_attempt);
-    delay.min(Duration::from_secs(30)).min(remaining)
+    let delay = match attempt {
+        0 | 1 => Duration::from_secs(5),
+        2 => Duration::from_secs(10),
+        _ => Duration::from_secs(20),
+    };
+    delay.min(remaining)
 }
 
 pub async fn check_mp4_resume(
@@ -5214,6 +5221,32 @@ mod tests {
 
         assert!(first_delay > Duration::ZERO);
         assert!(second_delay > first_delay);
+    }
+
+    #[test]
+    fn direct_download_retry_delay_uses_fixed_retry_steps() {
+        let remaining = Duration::from_secs(60);
+
+        assert_eq!(
+            direct_download_retry_delay(1, remaining),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            direct_download_retry_delay(2, remaining),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            direct_download_retry_delay(3, remaining),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            direct_download_retry_delay(10, remaining),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            direct_download_retry_delay(3, Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
     }
 
     #[test]

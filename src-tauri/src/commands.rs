@@ -2880,6 +2880,11 @@ async fn start_hls_bundle_download_worker(
     let rate_limiter = app_handle.state::<AppState>().download_rate_limiter.clone();
     let output_dir_path = PathBuf::from(&task.output_dir);
     let filename = task.filename.clone();
+    let delete_ts_temp_dir_after_download = *app_handle
+        .state::<AppState>()
+        .delete_ts_temp_dir_after_download
+        .lock()
+        .await;
     let convert_to_mp4 = *app_handle.state::<AppState>().convert_to_mp4.lock().await;
     let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
     let ffmpeg_path = if ffmpeg_enabled {
@@ -2906,6 +2911,7 @@ async fn start_hls_bundle_download_worker(
             prepared.playlist_files,
             prepared.entries,
             Arc::new(request_headers),
+            delete_ts_temp_dir_after_download,
             convert_to_mp4,
             ffmpeg_path,
             cancel_token,

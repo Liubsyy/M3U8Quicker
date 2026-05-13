@@ -689,7 +689,7 @@ export function SettingsModal({
             <Typography.Text strong>下载完成后</Typography.Text>
             <Space size={24}>
               <Space size={12}>
-                <Typography.Text>删除 ts</Typography.Text>
+                <Typography.Text>删除临时文件夹</Typography.Text>
                 <Switch
                   checked={deleteTsTempDirAfterDownload}
                   loading={loading || savingDownloadOutput}

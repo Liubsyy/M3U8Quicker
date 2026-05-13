@@ -3,6 +3,7 @@ const FRAME_DETECT_MESSAGE = "m3u8quicker:frame-detected";
 const SYNC_DETECTIONS_MESSAGE = "m3u8quicker:sync-detections";
 const STREAM_MANIFEST_PATTERN = /\.(m3u8|mpd)(?:$|[?#])/i;
 const STREAM_MANIFEST_REQUEST_FILTERS = ["*://*/*.m3u8*", "*://*/*.mpd*"];
+const MAX_PENDING_DETECTIONS = 100;
 const pendingDetectionsByTab = new Map();
 
 browser.webRequest.onBeforeRequest.addListener(
@@ -53,6 +54,9 @@ function queueDetection(tabId, url) {
   const queued = pendingDetectionsByTab.get(tabId) ?? [];
   if (!queued.includes(url)) {
     queued.push(url);
+    if (queued.length > MAX_PENDING_DETECTIONS) {
+      queued.splice(0, queued.length - MAX_PENDING_DETECTIONS);
+    }
     pendingDetectionsByTab.set(tabId, queued);
   }
 }
