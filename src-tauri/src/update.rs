@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,7 @@ const GITHUB_LATEST_RELEASE_API: &str =
     "https://api.github.com/repos/Liubsyy/M3U8Quicker/releases/latest";
 const GITHUB_RELEASES_PAGE: &str = "https://github.com/Liubsyy/M3U8Quicker/releases";
 const UPDATE_DOWNLOAD_PROGRESS_EVENT: &str = "update-download-progress";
+const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateAsset {
@@ -79,12 +80,12 @@ struct GithubAsset {
 #[tauri::command]
 pub async fn check_for_update(
     app_handle: AppHandle,
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<UpdateInfo, AppError> {
     let current_version = app_handle.package_info().version.to_string();
     let user_agent = format!("m3u8quicker/{}", current_version);
 
-    let client = state.http_client.read().await.clone();
+    let client = build_update_http_client()?;
     let response = client
         .get(GITHUB_LATEST_RELEASE_API)
         .header("User-Agent", user_agent)
@@ -194,7 +195,7 @@ pub async fn download_update_installer(
     tokio::fs::create_dir_all(&target_dir).await?;
     let target_path = target_dir.join(sanitize_asset_filename(&asset.name));
 
-    let client = state.http_client.read().await.clone();
+    let client = build_update_http_client()?;
 
     if let Err(error) = perform_download(&app_handle, client, &asset, &target_path).await {
         let _ = app_handle.emit(
@@ -219,6 +220,12 @@ pub async fn download_update_installer(
     );
 
     Ok(target_path.to_string_lossy().to_string())
+}
+
+fn build_update_http_client() -> Result<reqwest::Client, AppError> {
+    Ok(reqwest::Client::builder()
+        .timeout(UPDATE_HTTP_TIMEOUT)
+        .build()?)
 }
 
 async fn perform_download(
