@@ -529,6 +529,145 @@ pub struct FirefoxExtensionInstallResult {
     pub manual_url: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveProtocol {
+    Flv,
+}
+
+impl Default for LiveProtocol {
+    fn default() -> Self {
+        LiveProtocol::Flv
+    }
+}
+
+impl LiveProtocol {
+    pub fn default_extension(self) -> &'static str {
+        match self {
+            LiveProtocol::Flv => "flv",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum LiveRecordStatus {
+    Recording,
+    Paused,
+    Recorded,
+    Failed(String),
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveGroup {
+    Active,
+    History,
+}
+
+pub fn live_group_for_status(status: &LiveRecordStatus) -> LiveGroup {
+    match status {
+        LiveRecordStatus::Recording | LiveRecordStatus::Paused => LiveGroup::Active,
+        LiveRecordStatus::Recorded
+        | LiveRecordStatus::Failed(_)
+        | LiveRecordStatus::Cancelled => LiveGroup::History,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveRecordTask {
+    pub id: DownloadId,
+    pub url: String,
+    pub filename: String,
+    pub output_dir: String,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub extra_headers: Option<String>,
+    #[serde(default)]
+    pub protocol: LiveProtocol,
+    pub status: LiveRecordStatus,
+    #[serde(default)]
+    pub total_bytes: u64,
+    #[serde(default)]
+    pub speed_bytes_per_sec: u64,
+    #[serde(default)]
+    pub duration_ms: u64,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub completed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+impl LiveRecordTask {
+    pub fn touch(&mut self) -> DateTime<Utc> {
+        let now = Utc::now();
+        self.updated_at = Some(now);
+        now
+    }
+
+    pub fn last_updated_at(&self) -> DateTime<Utc> {
+        self.updated_at
+            .clone()
+            .or_else(|| self.completed_at.clone())
+            .unwrap_or(self.created_at)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateLiveRecordParams {
+    pub url: String,
+    pub filename: Option<String>,
+    pub output_dir: Option<String>,
+    pub extra_headers: Option<String>,
+    #[serde(default)]
+    pub protocol: Option<LiveProtocol>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveRecordSummary {
+    pub id: DownloadId,
+    pub filename: String,
+    #[serde(default)]
+    pub protocol: LiveProtocol,
+    pub url: String,
+    pub output_dir: String,
+    pub status: LiveRecordStatus,
+    pub total_bytes: u64,
+    pub speed_bytes_per_sec: u64,
+    pub duration_ms: u64,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+    pub updated_at: String,
+    pub file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveProgressEvent {
+    pub id: DownloadId,
+    pub status: LiveRecordStatus,
+    pub group: LiveGroup,
+    pub total_bytes: u64,
+    pub speed_bytes_per_sec: u64,
+    pub duration_ms: u64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveRecordCounts {
+    pub active_count: usize,
+    pub history_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveRecordPage {
+    pub items: Vec<LiveRecordSummary>,
+    pub total: usize,
+    pub page: usize,
+    pub page_size: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

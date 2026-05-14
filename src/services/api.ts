@@ -4,6 +4,7 @@ import type {
   ChromiumExtensionInstallResult,
   FirefoxExtensionInstallResult,
   CreateDownloadParams,
+  CreateLiveRecordParams,
   DownloadCounts,
   DownloadGroup,
   DownloadSourceKind,
@@ -13,6 +14,10 @@ import type {
   InspectHlsTracksParams,
   InspectDashTracksParams,
   InspectHlsTracksResult,
+  LiveGroup,
+  LiveRecordCounts,
+  LiveRecordPage,
+  LiveRecordSummary,
   OpenPlaybackSessionResponse,
   ResumeDownloadCheckResult,
   MediaAnalysisResult,
@@ -377,6 +382,57 @@ export async function cancelPreviewThumbnails(
 
 export async function closePreviewSession(token: string): Promise<void> {
   return invoke("close_preview_session", { token });
+}
+
+// ===================== Live recording =====================
+
+export async function createLiveRecord(
+  params: CreateLiveRecordParams
+): Promise<LiveRecordSummary> {
+  return invoke<LiveRecordSummary>("create_live_record", { params });
+}
+
+export async function pauseLiveRecord(id: string): Promise<void> {
+  return invoke("pause_live_record", { id });
+}
+
+export async function resumeLiveRecord(id: string): Promise<LiveRecordSummary> {
+  return invoke<LiveRecordSummary>("resume_live_record", { id });
+}
+
+export async function stopLiveRecord(id: string): Promise<void> {
+  return invoke("stop_live_record", { id });
+}
+
+export async function cancelLiveRecord(id: string): Promise<void> {
+  return invoke("cancel_live_record", { id });
+}
+
+export async function removeLiveRecord(
+  id: string,
+  deleteFile: boolean
+): Promise<void> {
+  return invoke("remove_live_record", { id, deleteFile });
+}
+
+export async function clearLiveHistory(): Promise<void> {
+  return invoke("clear_live_history");
+}
+
+export async function getLiveRecordCounts(): Promise<LiveRecordCounts> {
+  return invoke<LiveRecordCounts>("get_live_record_counts");
+}
+
+export async function getLiveRecordsPage(
+  group: LiveGroup,
+  page: number,
+  pageSize: number
+): Promise<LiveRecordPage> {
+  return invoke<LiveRecordPage>("get_live_records_page", {
+    group,
+    page,
+    pageSize,
+  });
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo> {

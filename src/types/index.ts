@@ -317,6 +317,105 @@ export function canOpenInProgressPlayback(
   return task.file_type === "hls" || supportsProgressivePlayback(task.file_type);
 }
 
+// ===================== Live recording =====================
+
+export type LiveProtocol = "flv";
+
+export type LiveRecordStatus =
+  | "Recording"
+  | "Paused"
+  | "Recorded"
+  | { Failed: string }
+  | "Cancelled";
+
+export type LiveGroup = "active" | "history";
+
+export interface LiveRecordSummary {
+  id: string;
+  filename: string;
+  protocol: LiveProtocol;
+  url: string;
+  output_dir: string;
+  status: LiveRecordStatus;
+  total_bytes: number;
+  speed_bytes_per_sec: number;
+  duration_ms: number;
+  created_at: string;
+  completed_at: string | null;
+  updated_at: string;
+  file_path: string | null;
+}
+
+export interface LiveRecordCounts {
+  active_count: number;
+  history_count: number;
+}
+
+export interface LiveRecordPage {
+  items: LiveRecordSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface LiveProgressEvent {
+  id: string;
+  status: LiveRecordStatus;
+  group: LiveGroup;
+  total_bytes: number;
+  speed_bytes_per_sec: number;
+  duration_ms: number;
+  updated_at: string;
+}
+
+export interface CreateLiveRecordParams {
+  url: string;
+  filename?: string;
+  output_dir?: string;
+  extra_headers?: string;
+  protocol?: LiveProtocol;
+}
+
+export function isLiveRecordActive(status: LiveRecordStatus): boolean {
+  return status === "Recording" || status === "Paused";
+}
+
+export function liveRecordStatusToDownloadStatus(
+  status: LiveRecordStatus
+): DownloadStatus {
+  if (status === "Recording") return "Downloading";
+  if (status === "Paused") return "Paused";
+  if (status === "Recorded") return "Completed";
+  if (status === "Cancelled") return "Cancelled";
+  return { Failed: status.Failed };
+}
+
+export function liveRecordToDownloadSummary(
+  live: LiveRecordSummary
+): DownloadTaskSummary {
+  return {
+    id: live.id,
+    filename: live.filename,
+    file_type: "flv",
+    hls_output_mode: "single_stream",
+    hls_media_kind: "mpeg_ts",
+    hls_selection: null,
+    encryption_method: null,
+    output_dir: live.output_dir,
+    status: liveRecordStatusToDownloadStatus(live.status),
+    total_segments: 0,
+    completed_segments: 0,
+    failed_segment_count: 0,
+    total_bytes: live.total_bytes,
+    speed_bytes_per_sec: live.speed_bytes_per_sec,
+    created_at: live.created_at,
+    completed_at: live.completed_at,
+    updated_at: live.updated_at,
+    playback_available: live.status === "Recorded" && Boolean(live.file_path),
+    file_path: live.file_path,
+  };
+}
+
 export function deriveFilenameFromUrl(url: string): string {
   const trimmed = url.trim();
   if (trimmed.startsWith("{")) {

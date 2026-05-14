@@ -15,6 +15,7 @@ import { useState } from "react";
 import type { ColumnsType } from "antd/es/table";
 import {
   CaretRightOutlined,
+  CheckCircleOutlined,
   CloseCircleOutlined,
   DeleteOutlined,
   FolderOpenOutlined,
@@ -35,6 +36,13 @@ import {
 } from "../types";
 import { openFileLocation } from "../services/api";
 
+interface CancelLabels {
+  title?: string;
+  description?: string;
+  okText?: string;
+  cancelText?: string;
+}
+
 interface DownloadListProps {
   downloads: DownloadTaskSummary[];
   total: number;
@@ -47,11 +55,16 @@ interface DownloadListProps {
   onRetryFailed: (id: string) => void;
   onCancel: (id: string) => void;
   onRemove: (id: string, deleteFile: boolean) => void;
+  onStop?: (id: string) => void;
   onPlay?: (task: DownloadTaskSummary) => void;
   loading: boolean;
-  showActions: ("pause" | "resume" | "cancel" | "remove" | "open" | "play")[];
+  showActions: ("pause" | "resume" | "cancel" | "stop" | "remove" | "open" | "play")[];
   showSpeed?: boolean;
   actionsHeaderExtra?: ReactNode;
+  cancelLabels?: CancelLabels;
+  statusTagOverride?: (status: DownloadStatus) => ReactNode | undefined;
+  /** Override the "in progress" set when deciding which timestamp to show. */
+  progressStatuses?: DownloadStatus[];
 }
 
 function formatBytes(bytes: number): string {
@@ -167,11 +180,14 @@ export function DownloadList({
   onRetryFailed,
   onCancel,
   onRemove,
+  onStop,
   onPlay,
   loading,
   showActions,
   showSpeed = true,
   actionsHeaderExtra,
+  cancelLabels,
+  statusTagOverride,
 }: DownloadListProps) {
   const [segmentStates, setSegmentStates] = useState<
     Record<string, DownloadTaskSegmentState>
@@ -403,9 +419,11 @@ export function DownloadList({
           isOngoingStatus ? record.created_at : record.updated_at
         );
 
+        const overridden = statusTagOverride?.(record.status);
+
         return (
           <div>
-            {getStatusTag(record.status)}
+            {overridden ?? getStatusTag(record.status)}
             <Typography.Text
               type="secondary"
               style={{
@@ -491,16 +509,28 @@ export function DownloadList({
                 />
               </Tooltip>
             )}
+          {showActions.includes("stop") &&
+            onStop &&
+            (record.status === "Downloading" || record.status === "Paused") && (
+              <Tooltip title="停止录制">
+                <Button
+                  type="text"
+                  icon={<CheckCircleOutlined />}
+                  size="small"
+                  onClick={() => onStop(record.id)}
+                />
+              </Tooltip>
+            )}
           {showActions.includes("cancel") &&
             (record.status === "Downloading" || record.status === "Paused") && (
               <Popconfirm
-                title="确认取消下载?"
-                description="已下载的临时切片会被清理。"
+                title={cancelLabels?.title ?? "确认取消下载?"}
+                description={cancelLabels?.description ?? "已下载的临时切片会被清理。"}
                 onConfirm={() => onCancel(record.id)}
-                okText="确认取消"
-                cancelText="继续下载"
+                okText={cancelLabels?.okText ?? "确认取消"}
+                cancelText={cancelLabels?.cancelText ?? "继续下载"}
               >
-                <Tooltip title="取消下载">
+                <Tooltip title={cancelLabels?.title ?? "取消下载"}>
                   <Button
                     type="text"
                     icon={<CloseCircleOutlined />}

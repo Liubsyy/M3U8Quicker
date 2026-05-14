@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::downloader;
 use crate::error::AppError;
+use crate::live_recorder::{self, LiveStopReason, LiveStopSignal};
 use crate::models::*;
 use crate::persistence;
 use crate::playback;
@@ -3658,6 +3659,296 @@ fn build_macos_firefox_command_candidates() -> Vec<OsString> {
 #[cfg(target_os = "linux")]
 fn build_linux_firefox_command_candidates() -> Vec<OsString> {
     vec![OsString::from("firefox")]
+}
+
+// ===================== Live record commands =====================
+
+fn normalize_live_filename(name: String) -> String {
+    let normalized = normalize_download_filename(name);
+    if normalized.is_empty() {
+        "live".to_string()
+    } else {
+        normalized
+    }
+}
+
+async fn spawn_live_worker(
+    app_handle: &AppHandle,
+    state: &AppState,
+    task_id: &str,
+    request_headers: RequestHeaders,
+    append: bool,
+) {
+    let signal = Arc::new(LiveStopSignal::new());
+    {
+        let mut signals = state.live_stop_signals.lock().await;
+        signals.insert(task_id.to_string(), signal.clone());
+    }
+
+    let app_handle = app_handle.clone();
+    let live_records = state.live_records.clone();
+    let client = state.http_client.clone();
+    let signals = state.live_stop_signals.clone();
+    let task_id_owned = task_id.to_string();
+    let headers = Arc::new(request_headers);
+
+    tokio::spawn(async move {
+        live_recorder::run_live_record(
+            app_handle.clone(),
+            live_records.clone(),
+            client,
+            task_id_owned.clone(),
+            headers,
+            signal,
+            append,
+        )
+        .await;
+
+        let mut signals = signals.lock().await;
+        signals.remove(&task_id_owned);
+    });
+}
+
+#[tauri::command]
+pub async fn create_live_record(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    params: CreateLiveRecordParams,
+) -> Result<LiveRecordSummary, AppError> {
+    let url = params.url.trim().to_string();
+    if url.is_empty() {
+        return Err(AppError::InvalidInput("直播地址不能为空".into()));
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let request_headers = parse_request_headers(params.extra_headers.as_deref())?;
+    let protocol = params.protocol.unwrap_or_default();
+
+    let output_dir =
+        if let Some(output_dir) = params.output_dir.clone().filter(|dir| !dir.trim().is_empty()) {
+            let output_dir = output_dir.trim().to_string();
+            let mut default_download_dir = state.default_download_dir.lock().await;
+            if *default_download_dir != output_dir {
+                *default_download_dir = output_dir.clone();
+                persistence::update_settings(&app_handle, |settings| {
+                    settings.default_download_dir = Some(output_dir.clone());
+                })
+                .await;
+            }
+            output_dir
+        } else {
+            state.default_download_dir.lock().await.clone()
+        };
+
+    let filename = normalize_live_filename(
+        params
+            .filename
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| derive_filename_from_url(&url)),
+    );
+
+    tokio::fs::create_dir_all(&output_dir).await?;
+
+    let created_at = Utc::now();
+    let task = LiveRecordTask {
+        id: id.clone(),
+        url: url.clone(),
+        filename: filename.clone(),
+        output_dir: output_dir.clone(),
+        file_path: None,
+        extra_headers: params.extra_headers.clone(),
+        protocol,
+        status: LiveRecordStatus::Recording,
+        total_bytes: 0,
+        speed_bytes_per_sec: 0,
+        duration_ms: 0,
+        created_at,
+        completed_at: None,
+        updated_at: Some(created_at),
+    };
+
+    let output_path = live_recorder::live_output_file_path(&task);
+    let task = LiveRecordTask {
+        file_path: Some(output_path.to_string_lossy().to_string()),
+        ..task
+    };
+
+    {
+        let mut map = state.live_records.lock().await;
+        map.insert(id.clone(), task.clone());
+    }
+    persistence::save_live_task(&app_handle, &task).await?;
+
+    spawn_live_worker(&app_handle, &state, &id, request_headers, false).await;
+
+    Ok(persistence::live_task_to_summary(&task))
+}
+
+#[tauri::command]
+pub async fn pause_live_record(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), AppError> {
+    let signal = {
+        let signals = state.live_stop_signals.lock().await;
+        signals.get(&id).cloned()
+    };
+    if let Some(signal) = signal {
+        signal.trigger(LiveStopReason::Pause).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn resume_live_record(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<LiveRecordSummary, AppError> {
+    let task_snapshot = {
+        let map = state.live_records.lock().await;
+        map.get(&id).cloned()
+    };
+    let Some(mut task) = task_snapshot else {
+        return Err(AppError::InvalidInput("直播任务不存在".into()));
+    };
+
+    if !matches!(task.status, LiveRecordStatus::Paused) {
+        return Err(AppError::InvalidInput("只有暂停状态可以恢复录制".into()));
+    }
+
+    let request_headers = parse_request_headers(task.extra_headers.as_deref())?;
+
+    task.status = LiveRecordStatus::Recording;
+    task.speed_bytes_per_sec = 0;
+    task.touch();
+
+    {
+        let mut map = state.live_records.lock().await;
+        map.insert(id.clone(), task.clone());
+    }
+    let summary = persistence::save_live_task(&app_handle, &task).await?;
+
+    spawn_live_worker(&app_handle, &state, &id, request_headers, true).await;
+
+    Ok(summary)
+}
+
+#[tauri::command]
+pub async fn stop_live_record(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), AppError> {
+    let signal = {
+        let signals = state.live_stop_signals.lock().await;
+        signals.get(&id).cloned()
+    };
+    if let Some(signal) = signal {
+        signal.trigger(LiveStopReason::Stop).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cancel_live_record(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), AppError> {
+    let signal = {
+        let signals = state.live_stop_signals.lock().await;
+        signals.get(&id).cloned()
+    };
+    if let Some(signal) = signal {
+        signal.trigger(LiveStopReason::Cancel).await;
+        return Ok(());
+    }
+
+    // No worker running (e.g. Paused) — flip state directly.
+    let mut snapshot = None;
+    let file_to_delete = {
+        let mut map = state.live_records.lock().await;
+        if let Some(task) = map.get_mut(&id) {
+            task.status = LiveRecordStatus::Cancelled;
+            task.speed_bytes_per_sec = 0;
+            let now = task.touch();
+            task.completed_at = Some(now);
+            let path = task.file_path.clone();
+            task.file_path = None;
+            snapshot = Some(task.clone());
+            path
+        } else {
+            None
+        }
+    };
+
+    if let Some(path) = file_to_delete {
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    if let Some(task) = snapshot {
+        let _ = persistence::save_live_task(&app_handle, &task).await;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_live_record(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    delete_file: bool,
+) -> Result<(), AppError> {
+    let signal = {
+        let signals = state.live_stop_signals.lock().await;
+        signals.get(&id).cloned()
+    };
+    if let Some(signal) = signal {
+        signal.trigger(LiveStopReason::Cancel).await;
+    }
+
+    let file_path = {
+        let mut map = state.live_records.lock().await;
+        let task = map.remove(&id);
+        task.and_then(|task| task.file_path)
+    };
+
+    if delete_file {
+        if let Some(path) = file_path {
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+    }
+
+    persistence::delete_live_task(&app_handle, &id).await?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clear_live_history(
+    app_handle: AppHandle,
+) -> Result<(), AppError> {
+    persistence::clear_live_history(&app_handle).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_live_record_counts(
+    app_handle: AppHandle,
+) -> Result<LiveRecordCounts, AppError> {
+    persistence::get_live_record_counts(&app_handle).await
+}
+
+#[tauri::command]
+pub async fn get_live_records_page(
+    app_handle: AppHandle,
+    group: LiveGroup,
+    page: usize,
+    page_size: usize,
+) -> Result<LiveRecordPage, AppError> {
+    persistence::get_live_records_page(&app_handle, group, page, page_size).await
 }
 
 #[cfg(test)]

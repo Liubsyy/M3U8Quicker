@@ -3,6 +3,7 @@ mod downloader;
 mod error;
 mod ffmpeg;
 mod fix_path;
+mod live_recorder;
 mod models;
 mod persistence;
 mod playback;
@@ -173,6 +174,21 @@ pub fn run() {
                     }
                     downloads.insert(task.id.clone(), task);
                 }
+                drop(downloads);
+
+                let saved_lives = persistence::load_live_active_tasks(&handle)
+                    .await
+                    .unwrap_or_default();
+                let mut live_records = state.live_records.lock().await;
+                for mut task in saved_lives {
+                    if matches!(task.status, crate::models::LiveRecordStatus::Recording) {
+                        task.status = crate::models::LiveRecordStatus::Paused;
+                        task.speed_bytes_per_sec = 0;
+                        task.touch();
+                        let _ = persistence::save_live_task(&handle, &task).await;
+                    }
+                    live_records.insert(task.id.clone(), task);
+                }
             });
 
             if let Some(window) = app.get_webview_window("main") {
@@ -232,6 +248,15 @@ pub fn run() {
             commands::open_download_playback_session,
             commands::prioritize_download_playback_position,
             commands::close_download_playback_session,
+            commands::create_live_record,
+            commands::pause_live_record,
+            commands::resume_live_record,
+            commands::stop_live_record,
+            commands::cancel_live_record,
+            commands::remove_live_record,
+            commands::clear_live_history,
+            commands::get_live_record_counts,
+            commands::get_live_records_page,
             update::check_for_update,
             update::download_update_installer,
             update::open_update_installer,

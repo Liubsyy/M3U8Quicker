@@ -6,6 +6,7 @@ import {
   Popconfirm,
   Space,
   Tabs,
+  Tag,
   Typography,
   message,
   theme,
@@ -18,14 +19,17 @@ import {
 import { EdgeIcon } from "./components/EdgeIcon";
 import { FirefoxIcon } from "./components/FirefoxIcon";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Toolbar } from "./components/Toolbar";
 import { DownloadList } from "./components/DownloadList";
 import { NewDownloadModal } from "./components/NewDownloadModal";
+import { NewLiveRecordModal } from "./components/NewLiveRecordModal";
 import { BatchDownloadModal } from "./components/BatchDownloadModal";
 import { VideoPreviewModal } from "./components/VideoPreviewModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { ToolsModal, type ToolAction } from "./components/ToolsModal";
 import { useDownloads } from "./hooks/useDownloads";
+import { useLiveRecords } from "./hooks/useLiveRecords";
 import {
   installChromiumExtension,
   openChromiumExtensionsPage,
@@ -38,14 +42,22 @@ import {
   getAppSettings,
   getFfmpegStatus,
   checkForUpdate,
+  convertMediaFile,
 } from "./services/api";
 import type {
   ChromiumBrowser,
   ChromiumExtensionInstallResult,
+  DownloadStatus,
   FirefoxExtensionInstallResult,
   DownloadTaskSummary,
+  LiveProgressEvent,
 } from "./types";
-import { canOpenInProgressPlayback, isDirectFileType, parseFileType } from "./types";
+import {
+  canOpenInProgressPlayback,
+  isDirectFileType,
+  liveRecordToDownloadSummary,
+  parseFileType,
+} from "./types";
 import type { ThemeMode } from "./types/settings";
 
 const { Header, Content } = Layout;
@@ -101,6 +113,7 @@ const CHROMIUM_BROWSER_META: Record<
 
 function App({ themeMode, onThemeModeChange }: AppProps) {
   const [modalOpen, setModalOpen] = useState(false);
+  const [liveRecordModalOpen, setLiveRecordModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<
     "general" | "download" | "ffmpeg"
@@ -116,6 +129,11 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     useState<ChromiumInstallGuideState | null>(null);
   const [firefoxInstallGuide, setFirefoxInstallGuide] =
     useState<FirefoxExtensionInstallResult | null>(null);
+  const [liveStopTarget, setLiveStopTarget] = useState<{
+    id: string;
+    filename: string;
+    filePath: string | null;
+  } | null>(null);
   const {
     counts,
     downloading,
@@ -140,6 +158,28 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     refreshHistory,
     getSegmentState,
   } = useDownloads();
+  const {
+    counts: liveCounts,
+    recording: liveRecording,
+    recordingPage: liveRecordingPage,
+    recordingPageSize: liveRecordingPageSize,
+    recordingTotal: liveRecordingTotal,
+    recorded: liveRecorded,
+    recordedPage: liveRecordedPage,
+    recordedPageSize: liveRecordedPageSize,
+    recordedTotal: liveRecordedTotal,
+    addLiveRecord,
+    pause: pauseLive,
+    resume: resumeLive,
+    stop: stopLive,
+    cancel: cancelLive,
+    remove: removeLive,
+    clearCompleted: clearLiveCompleted,
+    refreshActive: refreshLiveActive,
+    refreshHistory: refreshLiveHistory,
+    loadingActive: loadingLiveActive,
+    loadingHistory: loadingLiveHistory,
+  } = useLiveRecords();
   const { token } = theme.useToken();
 
   useEffect(() => {
@@ -266,6 +306,62 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     }
   };
 
+  const requestStopLive = (id: string) => {
+    const record = liveRecording.find((item) => item.id === id);
+    if (!record) {
+      void stopLive(id);
+      return;
+    }
+    setLiveStopTarget({
+      id,
+      filename: record.filename,
+      filePath: record.file_path,
+    });
+  };
+
+  const performStopLive = async (convertToMp4Flag: boolean) => {
+    if (!liveStopTarget) return;
+    const { id, filename, filePath } = liveStopTarget;
+    setLiveStopTarget(null);
+
+    const recordedPromise =
+      convertToMp4Flag && filePath ? waitForLiveRecorded(id) : null;
+
+    try {
+      await stopLive(id);
+    } catch {
+      // stopLive already surfaces an error message
+      return;
+    }
+
+    if (!convertToMp4Flag) return;
+    if (!filePath) {
+      message.warning("未找到已录制文件，无法转换为 MP4");
+      return;
+    }
+
+    const messageKey = `live-convert-${id}`;
+    try {
+      message.loading({
+        key: messageKey,
+        content: `录制完成后将转换 ${filename} 为 MP4...`,
+        duration: 0,
+      });
+      await recordedPromise;
+      const outputPath = deriveMp4PathFromFlv(filePath);
+      const finalPath = await convertMediaFile(filePath, outputPath, "mp4", "quick");
+      message.success({
+        key: messageKey,
+        content: `已转换为 MP4：${finalPath}`,
+      });
+    } catch (err) {
+      message.error({
+        key: messageKey,
+        content: `转换为 MP4 失败: ${formatLiveStopError(err)}`,
+      });
+    }
+  };
+
   const handleInstallChromiumExtension = async (browser: ChromiumBrowser) => {
     try {
       const guide = await installChromiumExtension(browser);
@@ -337,6 +433,27 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
   };
 
   const chromiumBrowserMeta = CHROMIUM_BROWSER_META[chromiumInstallGuide?.browser ?? "chrome"];
+
+  const liveRecordingItems = liveRecording.map(liveRecordToDownloadSummary);
+  const liveRecordedItems = liveRecorded.map(liveRecordToDownloadSummary);
+
+  const liveStatusTagOverride = (status: DownloadStatus) => {
+    if (status === "Downloading") return <Tag color="processing">录制中</Tag>;
+    if (status === "Paused") return <Tag color="warning">已暂停</Tag>;
+    if (status === "Completed") return <Tag color="success">已录制</Tag>;
+    if (status === "Cancelled") return <Tag color="default">已取消</Tag>;
+    if (typeof status === "object" && "Failed" in status)
+      return <Tag color="error">失败</Tag>;
+    return undefined;
+  };
+
+  const noopGetSegmentState = async () => ({
+    id: "",
+    total_segments: 0,
+    completed_segment_indices: [],
+    failed_segment_indices: [],
+    updated_at: new Date().toISOString(),
+  });
 
   const tabItems = [
     {
@@ -411,6 +528,81 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         />
       ),
     },
+    {
+      key: "live-recording",
+      label: `直播录制中 (${liveCounts.active_count})`,
+      children: (
+        <DownloadList
+          downloads={liveRecordingItems}
+          total={liveRecordingTotal}
+          currentPage={liveRecordingPage}
+          pageSize={liveRecordingPageSize}
+          onPageChange={(page) => {
+            void refreshLiveActive(page);
+          }}
+          getSegmentState={noopGetSegmentState}
+          onPause={pauseLive}
+          onResume={resumeLive}
+          onRetryFailed={() => undefined}
+          onCancel={cancelLive}
+          onRemove={removeLive}
+          onStop={requestStopLive}
+          loading={loadingLiveActive}
+          showActions={["pause", "resume", "stop", "cancel", "open"]}
+          statusTagOverride={liveStatusTagOverride}
+          cancelLabels={{
+            title: "确认取消录制?",
+            description: "取消后会删除已录制的文件，无法恢复。",
+            okText: "取消并删除",
+            cancelText: "继续录制",
+          }}
+        />
+      ),
+    },
+    {
+      key: "live-recorded",
+      label: `录制完成 (${liveCounts.history_count})`,
+      children: (
+        <DownloadList
+          downloads={liveRecordedItems}
+          total={liveRecordedTotal}
+          currentPage={liveRecordedPage}
+          pageSize={liveRecordedPageSize}
+          onPageChange={(page) => {
+            void refreshLiveHistory(page);
+          }}
+          getSegmentState={noopGetSegmentState}
+          onPause={() => undefined}
+          onResume={() => undefined}
+          onRetryFailed={() => undefined}
+          onCancel={() => undefined}
+          onRemove={removeLive}
+          loading={loadingLiveHistory}
+          showActions={["remove", "open"]}
+          showSpeed={false}
+          statusTagOverride={liveStatusTagOverride}
+          actionsHeaderExtra={
+            <Popconfirm
+              title="确认清空列表?"
+              description="只删除录制完成列表记录，不删除本地文件。"
+              onConfirm={() => void clearLiveCompleted()}
+              okText="清空列表"
+              cancelText="取消"
+              disabled={liveCounts.history_count === 0}
+            >
+              <Button
+                type="text"
+                size="small"
+                danger
+                icon={<ClearOutlined />}
+                aria-label="清空列表"
+                disabled={liveCounts.history_count === 0}
+              />
+            </Popconfirm>
+          }
+        />
+      ),
+    },
   ];
 
   return (
@@ -434,6 +626,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
             setBatchDownloadModalOpen(true);
           }}
           onOpenVideoPreview={() => setVideoPreviewModalOpen(true)}
+          onOpenLiveRecord={() => setLiveRecordModalOpen(true)}
           onOpenTool={(tool) => {
             if (tool === "install-chrome-extension") {
               void handleInstallChromiumExtension("chrome");
@@ -523,6 +716,39 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
           setSettingsOpen(true);
         }}
       />
+      <NewLiveRecordModal
+        open={liveRecordModalOpen}
+        onClose={() => setLiveRecordModalOpen(false)}
+        onSubmit={async (params) => {
+          await addLiveRecord(params);
+        }}
+      />
+      <Modal
+        title="停止录制"
+        open={Boolean(liveStopTarget)}
+        onCancel={() => setLiveStopTarget(null)}
+        footer={
+          <Space>
+            <Button onClick={() => setLiveStopTarget(null)}>取消</Button>
+            <Button onClick={() => void performStopLive(false)}>仅停止</Button>
+            <Button type="primary" onClick={() => void performStopLive(true)}>
+              是，转成 MP4
+            </Button>
+          </Space>
+        }
+      >
+        <Typography.Paragraph style={{ marginBottom: 0 }}>
+          是否将录制好的 FLV 转成 MP4？转换后浏览器、微信等场景都能直接播放，原 FLV 文件保留。
+        </Typography.Paragraph>
+        {liveStopTarget?.filename ? (
+          <Typography.Paragraph
+            type="secondary"
+            style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}
+          >
+            文件：{liveStopTarget.filename}.flv
+          </Typography.Paragraph>
+        ) : null}
+      </Modal>
       <Modal
         title={chromiumBrowserMeta.title}
         open={Boolean(chromiumInstallGuide)}
@@ -1159,6 +1385,64 @@ async function openPreviewWindowFromDeepLink(
     console.error("[m3u8quicker] failed to open preview window", error);
     message.error(`生成预览失败: ${formatPreviewError(error)}`);
   }
+}
+
+function waitForLiveRecorded(id: string, timeoutMs = 60000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let unlisten: UnlistenFn | undefined;
+    let settled = false;
+
+    const finish = (cb: () => void) => {
+      if (settled) return;
+      settled = true;
+      unlisten?.();
+      clearTimeout(timer);
+      cb();
+    };
+
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error("等待录制完成超时")));
+    }, timeoutMs);
+
+    listen<LiveProgressEvent>("live-progress", (event) => {
+      const payload = event.payload;
+      if (payload.id !== id) return;
+      if (payload.status === "Recorded") {
+        finish(resolve);
+        return;
+      }
+      if (
+        payload.status === "Cancelled" ||
+        (typeof payload.status === "object" && "Failed" in payload.status)
+      ) {
+        finish(() => reject(new Error("录制未正常结束，无法转换")));
+      }
+    })
+      .then((fn) => {
+        if (settled) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch((error) => {
+        finish(() => reject(error));
+      });
+  });
+}
+
+function deriveMp4PathFromFlv(flvPath: string): string {
+  if (/\.flv$/i.test(flvPath)) {
+    return flvPath.replace(/\.flv$/i, ".mp4");
+  }
+  return `${flvPath}.mp4`;
+}
+
+function formatLiveStopError(error: unknown): string {
+  if (!error) return "未知错误";
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  return String(error);
 }
 
 function formatPreviewError(error: unknown): string {

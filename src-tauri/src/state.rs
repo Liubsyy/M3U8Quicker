@@ -4,8 +4,9 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::downloader;
+use crate::live_recorder::LiveStopSignal;
 use crate::models::{
-    DownloadId, DownloadTask, ProxySettings, DEFAULT_DOWNLOAD_CONCURRENCY,
+    DownloadId, DownloadTask, LiveRecordTask, ProxySettings, DEFAULT_DOWNLOAD_CONCURRENCY,
     DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS, DEFAULT_PREVIEW_COLUMNS, DEFAULT_PREVIEW_COUNT,
     DEFAULT_PREVIEW_JPEG_QUALITY, DEFAULT_PREVIEW_THUMBNAIL_WIDTH,
 };
@@ -16,6 +17,9 @@ pub struct AppState {
     pub downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
     pub download_store_lock: Arc<Mutex<()>>,
     pub cancel_tokens: Arc<Mutex<HashMap<DownloadId, CancellationToken>>>,
+    pub live_records: Arc<Mutex<HashMap<DownloadId, LiveRecordTask>>>,
+    pub live_store_lock: Arc<Mutex<()>>,
+    pub live_stop_signals: Arc<Mutex<HashMap<DownloadId, Arc<LiveStopSignal>>>>,
     pub http_client: Arc<RwLock<reqwest::Client>>,
     pub default_download_dir: Arc<Mutex<String>>,
     pub proxy_settings: Arc<Mutex<ProxySettings>>,
@@ -43,6 +47,9 @@ impl AppState {
             downloads: Arc::new(Mutex::new(HashMap::new())),
             download_store_lock: Arc::new(Mutex::new(())),
             cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
+            live_records: Arc::new(Mutex::new(HashMap::new())),
+            live_store_lock: Arc::new(Mutex::new(())),
+            live_stop_signals: Arc::new(Mutex::new(HashMap::new())),
             http_client: Arc::new(RwLock::new(client)),
             default_download_dir: Arc::new(Mutex::new(download_dir)),
             proxy_settings: Arc::new(Mutex::new(ProxySettings::default())),

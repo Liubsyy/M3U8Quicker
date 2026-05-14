@@ -17,6 +17,7 @@ import {
   SwapOutlined,
   ToolOutlined,
   ThunderboltOutlined,
+  VideoCameraOutlined,
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
 import type { ToolAction } from "./ToolsModal";
@@ -27,6 +28,7 @@ interface ToolbarProps {
   onNewDownload: () => void;
   onOpenBatchDownload: () => void;
   onOpenVideoPreview: () => void;
+  onOpenLiveRecord: () => void;
   onOpenTool: (tool: ToolAction) => void;
   onOpenSettings: () => void;
   updateAvailable?: boolean;
@@ -36,6 +38,7 @@ export function Toolbar({
   onNewDownload,
   onOpenBatchDownload,
   onOpenVideoPreview,
+  onOpenLiveRecord,
   onOpenTool,
   onOpenSettings,
   updateAvailable = false,
@@ -46,6 +49,11 @@ export function Toolbar({
       key: "batch-download",
       label: "批量下载",
       icon: <PlusSquareOutlined />,
+    },
+    {
+      key: "live-record",
+      label: "直播录制",
+      icon: <VideoCameraOutlined />,
     },
     {
       key: "video-preview",
@@ -154,6 +162,8 @@ export function Toolbar({
                 onOpenBatchDownload();
               } else if (key === "video-preview") {
                 onOpenVideoPreview();
+              } else if (key === "live-record") {
+                onOpenLiveRecord();
               }
             },
           }}

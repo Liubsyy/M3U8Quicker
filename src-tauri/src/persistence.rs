@@ -7,12 +7,14 @@ use tauri::Manager;
 
 use crate::error::AppError;
 use crate::models::{
-    download_group_for_status, AppSettings, DownloadCounts, DownloadGroup, DownloadTask,
-    DownloadTaskPage, DownloadTaskSegmentState, DownloadTaskSummary,
+    download_group_for_status, live_group_for_status, AppSettings, DownloadCounts, DownloadGroup,
+    DownloadTask, DownloadTaskPage, DownloadTaskSegmentState, DownloadTaskSummary, LiveGroup,
+    LiveRecordCounts, LiveRecordPage, LiveRecordStatus, LiveRecordSummary, LiveRecordTask,
 };
 use crate::state::AppState;
 
 const DOWNLOAD_STORE_VERSION: u32 = 2;
+const LIVE_STORE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DownloadStoreMeta {
@@ -107,6 +109,16 @@ where
         return Ok(T::default());
     }
 
+    serde_json::from_str(&data).map_err(|error| AppError::Internal(error.to_string()))
+}
+
+async fn read_json_required<T>(path: &Path) -> Result<T, AppError>
+where
+    T: DeserializeOwned,
+{
+    let data = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))?;
     serde_json::from_str(&data).map_err(|error| AppError::Internal(error.to_string()))
 }
 
@@ -586,4 +598,297 @@ where
     let mut settings = load_settings(app_handle).await;
     update(&mut settings);
     save_settings(app_handle, &settings).await;
+}
+
+// ===================== Live record persistence =====================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LiveStoreMeta {
+    version: u32,
+}
+
+impl Default for LiveStoreMeta {
+    fn default() -> Self {
+        Self {
+            version: LIVE_STORE_VERSION,
+        }
+    }
+}
+
+fn live_store_root_dir(app_handle: &tauri::AppHandle) -> PathBuf {
+    app_data_dir(app_handle).join("lives")
+}
+
+fn live_meta_file(app_handle: &tauri::AppHandle) -> PathBuf {
+    live_store_root_dir(app_handle).join("meta.json")
+}
+
+fn live_index_dir(app_handle: &tauri::AppHandle) -> PathBuf {
+    live_store_root_dir(app_handle).join("index")
+}
+
+fn live_tasks_dir(app_handle: &tauri::AppHandle) -> PathBuf {
+    live_store_root_dir(app_handle).join("tasks")
+}
+
+fn live_index_file(app_handle: &tauri::AppHandle, group: LiveGroup) -> PathBuf {
+    let name = match group {
+        LiveGroup::Active => "active.json",
+        LiveGroup::History => "history.json",
+    };
+    live_index_dir(app_handle).join(name)
+}
+
+fn live_task_file(app_handle: &tauri::AppHandle, id: &str) -> PathBuf {
+    live_tasks_dir(app_handle).join(format!("{}.json", id))
+}
+
+pub fn live_task_to_summary(task: &LiveRecordTask) -> LiveRecordSummary {
+    LiveRecordSummary {
+        id: task.id.clone(),
+        filename: task.filename.clone(),
+        protocol: task.protocol,
+        url: task.url.clone(),
+        output_dir: task.output_dir.clone(),
+        status: task.status.clone(),
+        total_bytes: task.total_bytes,
+        speed_bytes_per_sec: task.speed_bytes_per_sec,
+        duration_ms: task.duration_ms,
+        created_at: task.created_at.to_rfc3339(),
+        completed_at: task.completed_at.map(|value| value.to_rfc3339()),
+        updated_at: task.last_updated_at().to_rfc3339(),
+        file_path: task.file_path.clone(),
+    }
+}
+
+fn sort_live_summaries_desc(items: &mut [LiveRecordSummary]) {
+    items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+}
+
+async fn ensure_live_store_ready_locked(app_handle: &tauri::AppHandle) -> Result<(), AppError> {
+    tokio::fs::create_dir_all(live_index_dir(app_handle))
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    tokio::fs::create_dir_all(live_tasks_dir(app_handle))
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+
+    let meta_path = live_meta_file(app_handle);
+    let meta = read_json_or_default::<LiveStoreMeta>(&meta_path).await?;
+    if meta.version != LIVE_STORE_VERSION || !meta_path.exists() {
+        write_json_atomic(&meta_path, &LiveStoreMeta::default()).await?;
+    }
+
+    for group in [LiveGroup::Active, LiveGroup::History] {
+        let path = live_index_file(app_handle, group);
+        if !path.exists() {
+            write_json_atomic(&path, &Vec::<LiveRecordSummary>::new()).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn read_live_index_locked(
+    app_handle: &tauri::AppHandle,
+    group: LiveGroup,
+) -> Result<Vec<LiveRecordSummary>, AppError> {
+    read_json_or_default(&live_index_file(app_handle, group)).await
+}
+
+async fn write_live_index_locked(
+    app_handle: &tauri::AppHandle,
+    group: LiveGroup,
+    items: &[LiveRecordSummary],
+) -> Result<(), AppError> {
+    write_json_atomic(&live_index_file(app_handle, group), &items).await
+}
+
+pub async fn save_live_task(
+    app_handle: &tauri::AppHandle,
+    task: &LiveRecordTask,
+) -> Result<LiveRecordSummary, AppError> {
+    let store_lock = app_handle.state::<AppState>().live_store_lock.clone();
+    let _guard = store_lock.lock().await;
+
+    ensure_live_store_ready_locked(app_handle).await?;
+
+    let summary = live_task_to_summary(task);
+    let target_group = live_group_for_status(&summary.status);
+    let mut active = read_live_index_locked(app_handle, LiveGroup::Active).await?;
+    let mut history = read_live_index_locked(app_handle, LiveGroup::History).await?;
+
+    active.retain(|item| item.id != summary.id);
+    history.retain(|item| item.id != summary.id);
+    match target_group {
+        LiveGroup::Active => active.push(summary.clone()),
+        LiveGroup::History => history.push(summary.clone()),
+    }
+
+    sort_live_summaries_desc(&mut active);
+    sort_live_summaries_desc(&mut history);
+    write_json_atomic(&live_task_file(app_handle, &summary.id), task).await?;
+    write_live_index_locked(app_handle, LiveGroup::Active, &active).await?;
+    write_live_index_locked(app_handle, LiveGroup::History, &history).await?;
+
+    Ok(summary)
+}
+
+pub async fn load_live_active_tasks(
+    app_handle: &tauri::AppHandle,
+) -> Result<Vec<LiveRecordTask>, AppError> {
+    let store_lock = app_handle.state::<AppState>().live_store_lock.clone();
+    let _guard = store_lock.lock().await;
+
+    ensure_live_store_ready_locked(app_handle).await?;
+
+    let active = read_live_index_locked(app_handle, LiveGroup::Active).await?;
+    let mut tasks = Vec::with_capacity(active.len());
+    for summary in active {
+        let detail_path = live_task_file(app_handle, &summary.id);
+        if !detail_path.exists() {
+            continue;
+        }
+        let task: LiveRecordTask = read_json_required(&detail_path).await?;
+        tasks.push(task);
+    }
+
+    Ok(tasks)
+}
+
+#[allow(dead_code)]
+pub async fn load_live_task(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+) -> Result<Option<LiveRecordTask>, AppError> {
+    let store_lock = app_handle.state::<AppState>().live_store_lock.clone();
+    let _guard = store_lock.lock().await;
+
+    ensure_live_store_ready_locked(app_handle).await?;
+    let detail_path = live_task_file(app_handle, id);
+    if !detail_path.exists() {
+        return Ok(None);
+    }
+    let task: LiveRecordTask = read_json_required(&detail_path).await?;
+    Ok(Some(task))
+}
+
+async fn load_live_summaries(
+    app_handle: &tauri::AppHandle,
+    group: LiveGroup,
+) -> Result<Vec<LiveRecordSummary>, AppError> {
+    let store_lock = app_handle.state::<AppState>().live_store_lock.clone();
+    let _guard = store_lock.lock().await;
+
+    ensure_live_store_ready_locked(app_handle).await?;
+    read_live_index_locked(app_handle, group).await
+}
+
+async fn refresh_live_file_size(summary: &mut LiveRecordSummary) {
+    let Some(file_path) = summary.file_path.as_deref() else {
+        return;
+    };
+
+    if let Ok(metadata) = tokio::fs::metadata(file_path).await {
+        if metadata.is_file() {
+            summary.total_bytes = metadata.len();
+        }
+    }
+}
+
+pub async fn get_live_record_counts(
+    app_handle: &tauri::AppHandle,
+) -> Result<LiveRecordCounts, AppError> {
+    let active = load_live_summaries(app_handle, LiveGroup::Active).await?;
+    let history = load_live_summaries(app_handle, LiveGroup::History).await?;
+    Ok(LiveRecordCounts {
+        active_count: active.len(),
+        history_count: history.len(),
+    })
+}
+
+pub async fn get_live_records_page(
+    app_handle: &tauri::AppHandle,
+    group: LiveGroup,
+    page: usize,
+    page_size: usize,
+) -> Result<LiveRecordPage, AppError> {
+    let items = load_live_summaries(app_handle, group).await?;
+    let safe_page = page.max(1);
+    let safe_page_size = page_size.max(1);
+    let total = items.len();
+    let start = safe_page.saturating_sub(1) * safe_page_size;
+    let paged_items = if start >= total {
+        Vec::new()
+    } else {
+        let mut paged_items = items
+            .into_iter()
+            .skip(start)
+            .take(safe_page_size)
+            .collect::<Vec<_>>();
+        for item in &mut paged_items {
+            // For Recording tasks the in-memory state holds the latest bytes;
+            // for finished tasks the file size on disk is the ground truth.
+            if matches!(
+                item.status,
+                LiveRecordStatus::Recorded
+                    | LiveRecordStatus::Failed(_)
+                    | LiveRecordStatus::Cancelled
+                    | LiveRecordStatus::Paused
+            ) {
+                refresh_live_file_size(item).await;
+            }
+        }
+        paged_items
+    };
+
+    Ok(LiveRecordPage {
+        items: paged_items,
+        total,
+        page: safe_page,
+        page_size: safe_page_size,
+    })
+}
+
+pub async fn delete_live_task(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+) -> Result<Option<LiveRecordSummary>, AppError> {
+    let store_lock = app_handle.state::<AppState>().live_store_lock.clone();
+    let _guard = store_lock.lock().await;
+
+    ensure_live_store_ready_locked(app_handle).await?;
+
+    let mut removed = None;
+    let mut active = read_live_index_locked(app_handle, LiveGroup::Active).await?;
+    let mut history = read_live_index_locked(app_handle, LiveGroup::History).await?;
+    if let Some(index) = active.iter().position(|item| item.id == id) {
+        removed = Some(active.remove(index));
+    }
+    if let Some(index) = history.iter().position(|item| item.id == id) {
+        removed = Some(history.remove(index));
+    }
+
+    write_live_index_locked(app_handle, LiveGroup::Active, &active).await?;
+    write_live_index_locked(app_handle, LiveGroup::History, &history).await?;
+    remove_file_if_exists(&live_task_file(app_handle, id)).await?;
+
+    Ok(removed)
+}
+
+pub async fn clear_live_history(
+    app_handle: &tauri::AppHandle,
+) -> Result<Vec<LiveRecordSummary>, AppError> {
+    let store_lock = app_handle.state::<AppState>().live_store_lock.clone();
+    let _guard = store_lock.lock().await;
+
+    ensure_live_store_ready_locked(app_handle).await?;
+
+    let history = read_live_index_locked(app_handle, LiveGroup::History).await?;
+    for item in &history {
+        remove_file_if_exists(&live_task_file(app_handle, &item.id)).await?;
+    }
+    write_live_index_locked(app_handle, LiveGroup::History, &[]).await?;
+
+    Ok(history)
 }
