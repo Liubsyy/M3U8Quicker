@@ -122,6 +122,11 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
   const [activeTool, setActiveTool] = useState<ToolAction | null>(null);
   const [downloadDraft, setDownloadDraft] = useState<DownloadDraft | null>(null);
   const [batchDownloadDraft, setBatchDownloadDraft] = useState<BatchDownloadDraft | null>(null);
+  const [liveRecordDraft, setLiveRecordDraft] = useState<{
+    url: string;
+    extraHeaders?: string;
+    nonce: number;
+  } | null>(null);
   const [batchDownloadModalOpen, setBatchDownloadModalOpen] = useState(false);
   const [videoPreviewModalOpen, setVideoPreviewModalOpen] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -216,6 +221,17 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
           nonce: Date.now(),
         });
         setModalOpen(true);
+        return;
+      }
+
+      const liveDraft = parseNewLiveRecordDraft(deepLink);
+      if (liveDraft) {
+        void bringMainWindowToFront();
+        setLiveRecordDraft({
+          ...liveDraft,
+          nonce: Date.now(),
+        });
+        setLiveRecordModalOpen(true);
         return;
       }
 
@@ -718,10 +734,16 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
       />
       <NewLiveRecordModal
         open={liveRecordModalOpen}
-        onClose={() => setLiveRecordModalOpen(false)}
+        onClose={() => {
+          setLiveRecordModalOpen(false);
+          setLiveRecordDraft(null);
+        }}
         onSubmit={async (params) => {
           await addLiveRecord(params);
         }}
+        initialUrl={liveRecordDraft?.url}
+        initialExtraHeaders={liveRecordDraft?.extraHeaders}
+        resetKey={liveRecordDraft?.nonce ?? 0}
       />
       <Modal
         title="停止录制"
@@ -1270,6 +1292,29 @@ function parseDownloadDraft(deepLink: string): Omit<DownloadDraft, "nonce"> | nu
     return { url, extraHeaders, fileType };
   } catch (error) {
     console.debug("[m3u8quicker] failed to parse deep link", deepLink, error);
+    return null;
+  }
+}
+
+function parseNewLiveRecordDraft(
+  deepLink: string
+): { url: string; extraHeaders?: string } | null {
+  try {
+    const parsed = new URL(deepLink);
+    const action = (parsed.hostname || parsed.pathname.replace(/^\/+/, "")).toLowerCase();
+    if (action !== "new-live-record") {
+      return null;
+    }
+
+    const url = (parsed.searchParams.get("url") || "").trim();
+    if (!url) {
+      return null;
+    }
+
+    const extraHeaders = parsed.searchParams.get("extra_headers")?.trim() || undefined;
+    return { url, extraHeaders };
+  } catch (error) {
+    console.debug("[m3u8quicker] failed to parse live record deep link", deepLink, error);
     return null;
   }
 }

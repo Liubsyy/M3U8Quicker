@@ -16,6 +16,9 @@ interface NewLiveRecordModalProps {
   open: boolean;
   onClose: () => void;
   onSubmit: (params: CreateLiveRecordParams) => Promise<void>;
+  initialUrl?: string;
+  initialExtraHeaders?: string;
+  resetKey?: number;
 }
 
 interface FormValues {
@@ -29,6 +32,9 @@ export function NewLiveRecordModal({
   open: isOpen,
   onClose,
   onSubmit,
+  initialUrl,
+  initialExtraHeaders,
+  resetKey,
 }: NewLiveRecordModalProps) {
   const [form] = Form.useForm<FormValues>();
   const [submitting, setSubmitting] = useState(false);
@@ -40,9 +46,17 @@ export function NewLiveRecordModal({
       getDefaultDownloadDir().then(setOutputDir);
       setFilenameTouched(false);
       form.resetFields();
-      form.setFieldsValue({ protocol: "flv" });
+      form.setFieldsValue({
+        protocol: "flv",
+        url: initialUrl ?? "",
+        extra_headers: initialExtraHeaders ?? "",
+      });
+      if (initialUrl) {
+        const derived = deriveFilenameFromUrl(initialUrl);
+        form.setFieldValue("filename", derived || undefined);
+      }
     }
-  }, [form, isOpen]);
+  }, [form, isOpen, initialUrl, initialExtraHeaders, resetKey]);
 
   const handleSelectDir = async () => {
     const selected = await open({ multiple: false, directory: true });

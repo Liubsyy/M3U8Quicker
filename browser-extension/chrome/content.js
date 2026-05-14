@@ -11,10 +11,12 @@
   const APP_DEEP_LINK_BASE_URL = "m3u8quicker://new-task";
   const APP_BATCH_DEEP_LINK_BASE_URL = "m3u8quicker://batch-download";
   const APP_PREVIEW_DEEP_LINK_BASE_URL = "m3u8quicker://preview";
+  const APP_LIVE_DEEP_LINK_BASE_URL = "m3u8quicker://new-live-record";
   const CHECK_PATTERN = /(png|image|ts|jpg|mp4|jpeg|EXTINF|MPD|SegmentTemplate|Representation)/i;
   const M3U8_PATTERN = /\.m3u8(?:$|[?#])/i;
   const DASH_PATTERN = /\.mpd(?:$|[?#])/i;
   const DIRECT_VIDEO_PATTERN = /\.(mp4|mkv|avi|wmv|flv|webm|mov|rmvb)(?:$|[?#])/i;
+  const FLV_LIVE_PATTERN = /\.flv(?:$|[?#])/i;
   const BUTTON_LABEL = "M3U8 Quicker";
   const BUTTON_ICON_URL = chrome.runtime.getURL("icon.png");
   const MAX_DETECTED_TARGETS = 100;
@@ -289,6 +291,12 @@
       return;
     }
 
+    if (isFlvLiveUrl(url)) {
+      checkedTargets.add(url);
+      registerTarget(url, appendTitle(url));
+      return;
+    }
+
     if (isDirectVideoUrl(url)) {
       checkedTargets.add(url);
       registerTarget(url, appendTitle(url));
@@ -346,6 +354,10 @@
     return typeof url === "string" && DIRECT_VIDEO_PATTERN.test(url);
   }
 
+  function isFlvLiveUrl(url) {
+    return typeof url === "string" && FLV_LIVE_PATTERN.test(url);
+  }
+
 
   function detectFileType(url) {
     var directPattern = /\.(mp4|mkv|avi|wmv|flv|webm|mov|rmvb)$/i;
@@ -379,7 +391,8 @@
         url: normalizedUrl,
         fileName: getFileName(rawUrl, fallback),
         fileType: type,
-        thumbnail: resolveThumbnailFor(rawUrl) || null
+        thumbnail: resolveThumbnailFor(rawUrl) || null,
+        isLive: isFlvLiveUrl(rawUrl)
       });
       changed = true;
     } else {
@@ -869,6 +882,26 @@
       actions.appendChild(previewButton);
       actions.appendChild(downloadButton);
 
+      if (item.isLive) {
+        const recordButton = document.createElement("button");
+        recordButton.type = "button";
+        recordButton.textContent = "录制";
+        recordButton.style.border = "none";
+        recordButton.style.background = "transparent";
+        recordButton.style.color = "#cc1f3a";
+        recordButton.style.fontSize = "12px";
+        recordButton.style.fontWeight = "600";
+        recordButton.style.cursor = "pointer";
+        recordButton.style.padding = "2px 4px";
+        recordButton.style.flex = "0 0 auto";
+        recordButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          openLiveRecorder(item.url);
+          panel.remove();
+        });
+        actions.appendChild(recordButton);
+      }
+
       entry.appendChild(checkbox);
       entry.appendChild(thumb);
       entry.appendChild(content);
@@ -915,6 +948,20 @@
       params.set("extra_headers", extraHeaders);
     }
     window.location.href = `${APP_PREVIEW_DEEP_LINK_BASE_URL}?${params.toString()}`;
+  }
+
+  function openLiveRecorder(target) {
+    if (!target) {
+      return;
+    }
+    const params = new URLSearchParams({
+      url: target,
+    });
+    const extraHeaders = buildExtraHeaders();
+    if (extraHeaders) {
+      params.set("extra_headers", extraHeaders);
+    }
+    window.location.href = `${APP_LIVE_DEEP_LINK_BASE_URL}?${params.toString()}`;
   }
 
   function openBatchDownloader(items) {
