@@ -222,6 +222,14 @@ pub async fn run_live_record(
                     LiveRecordStatus::Recorded => {
                         // Move temp dir to a stable named directory next to output_dir.
                         if temp_dir.exists() {
+                            let playlist = temp_dir.join("index.m3u8");
+                            if let Err(err) = finalize_local_hls_playlist(&playlist).await {
+                                eprintln!(
+                                    "[live_recorder] finalize playlist {} failed: {}",
+                                    playlist.display(),
+                                    err
+                                );
+                            }
                             let final_dir = pick_available_dir(&PathBuf::from(&task.output_dir), &task.filename);
                             match tokio::fs::rename(&temp_dir, &final_dir).await {
                                 Ok(()) => {
@@ -816,6 +824,28 @@ async fn append_local_playlist_entry(
     Ok(())
 }
 
+async fn finalize_local_hls_playlist(playlist_path: &Path) -> Result<(), AppError> {
+    let mut text = match tokio::fs::read_to_string(playlist_path).await {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+
+    if text
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("#EXT-X-ENDLIST"))
+    {
+        return Ok(());
+    }
+
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str("#EXT-X-ENDLIST\n");
+    tokio::fs::write(playlist_path, text).await?;
+    Ok(())
+}
+
 /// Ensure `<filename>` is not already taken under `output_dir`; otherwise append `_N`.
 pub fn pick_available_dir(output_dir: &Path, filename: &str) -> PathBuf {
     let candidate = output_dir.join(filename);
@@ -897,4 +927,38 @@ pub(crate) fn emit_live_progress_from_task(app_handle: &AppHandle, task: &LiveRe
         updated_at,
     };
     let _ = app_handle.emit("live-progress", event);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("m3u8quicker_{}_{}", name, uuid::Uuid::new_v4()))
+    }
+
+    #[tokio::test]
+    async fn finalize_local_hls_playlist_appends_endlist_once() {
+        let temp_root = unique_temp_path("live-endlist");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        let playlist_path = temp_root.join("index.m3u8");
+        fs::write(
+            &playlist_path,
+            "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:4.000,\nseg_00000001.m4s\n",
+        )
+        .expect("write playlist");
+
+        finalize_local_hls_playlist(&playlist_path)
+            .await
+            .expect("first finalize");
+        finalize_local_hls_playlist(&playlist_path)
+            .await
+            .expect("second finalize");
+
+        let text = fs::read_to_string(&playlist_path).expect("read playlist");
+        assert_eq!(text.matches("#EXT-X-ENDLIST").count(), 1);
+        assert!(text.ends_with("#EXT-X-ENDLIST\n"));
+        let _ = fs::remove_dir_all(&temp_root);
+    }
 }
