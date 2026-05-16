@@ -1082,6 +1082,15 @@ pub async fn convert_ts_to_mp4(
     Ok(())
 }
 
+pub async fn convert_local_hls_to_mp4(
+    ffmpeg_path: &Path,
+    playlist_path: &Path,
+    mp4_path: &Path,
+) -> Result<(), AppError> {
+    let args = build_local_hls_to_mp4_args(playlist_path, mp4_path);
+    run_ffmpeg_command(ffmpeg_path, &args).await
+}
+
 pub async fn convert_media_file(
     ffmpeg_path: &Path,
     input_path: &Path,
@@ -1365,6 +1374,22 @@ fn build_clip_video_args(
 
     args.push(output);
     Ok(args)
+}
+
+fn build_local_hls_to_mp4_args(playlist_path: &Path, mp4_path: &Path) -> Vec<String> {
+    vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-allowed_extensions".to_string(),
+        "ALL".to_string(),
+        "-i".to_string(),
+        playlist_path.to_string_lossy().into_owned(),
+        "-c".to_string(),
+        "copy".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+        mp4_path.to_string_lossy().into_owned(),
+    ]
 }
 
 fn build_media_transcode_args(
@@ -2308,6 +2333,25 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|window| window == ["-s:s:0", "1280x128"]));
+    }
+
+    #[test]
+    fn build_local_hls_to_mp4_args_allows_fmp4_fragments_and_stream_copies() {
+        let args = build_local_hls_to_mp4_args(
+            Path::new("record/index.m3u8"),
+            Path::new("record/output.mp4"),
+        );
+
+        assert!(args
+            .windows(2)
+            .any(|window| window == ["-allowed_extensions", "ALL"]));
+        assert!(args
+            .windows(2)
+            .any(|window| window == ["-i", "record/index.m3u8"]));
+        assert!(args.windows(2).any(|window| window == ["-c", "copy"]));
+        assert!(args
+            .windows(2)
+            .any(|window| window == ["-movflags", "+faststart"]));
     }
 
     #[test]

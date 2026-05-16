@@ -3389,7 +3389,14 @@ pub async fn run_download(
                 .iter()
                 .map(|init| init.info.clone())
                 .collect::<Vec<_>>();
-            merge_fmp4_segments(&temp_dir, &init_infos, segments.as_ref(), &mp4_path).await?;
+            convert_fmp4_segments_to_mp4(
+                &temp_dir,
+                &init_infos,
+                segments.as_ref(),
+                &mp4_path,
+                ffmpeg_path.as_deref(),
+            )
+            .await?;
             mp4_path
         } else {
             temp_dir.clone()
@@ -4353,6 +4360,34 @@ async fn merge_segments(temp_dir: &Path, total: usize, output_path: &Path) -> Re
     merge_files(&segment_paths, output_path).await
 }
 
+async fn convert_fmp4_segments_to_mp4(
+    temp_dir: &Path,
+    init_segments: &[HlsInitSegmentInfo],
+    segments: &[SegmentInfo],
+    output_path: &Path,
+    ffmpeg_path: Option<&Path>,
+) -> Result<(), AppError> {
+    if let Some(ffmpeg) = ffmpeg_path {
+        let playlist_path = temp_dir.join("index.m3u8");
+        if playlist_path.is_file() {
+            match crate::ffmpeg::convert_local_hls_to_mp4(ffmpeg, &playlist_path, output_path)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(output_path).await;
+                    eprintln!(
+                        "[downloader] ffmpeg fMP4 conversion failed, falling back to concat: {}",
+                        error
+                    );
+                }
+            }
+        }
+    }
+
+    merge_fmp4_segments(temp_dir, init_segments, segments, output_path).await
+}
+
 async fn merge_fmp4_segments(
     temp_dir: &Path,
     init_segments: &[HlsInitSegmentInfo],
@@ -4580,6 +4615,20 @@ pub async fn convert_local_m3u8_to_mp4_file(
     let mut current_enc: Option<EncryptionInfo> = None;
     let mut key_cache: HashMap<PathBuf, Vec<u8>> = HashMap::new();
     let is_fmp4 = media.segments.iter().any(|segment| segment.map.is_some());
+    if is_fmp4 && ffmpeg_enabled {
+        if let Some(ffmpeg) = ffmpeg_path {
+            match crate::ffmpeg::convert_local_hls_to_mp4(ffmpeg, m3u8_path, mp4_path).await {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(mp4_path).await;
+                    eprintln!(
+                        "[downloader] ffmpeg fMP4 local m3u8 conversion failed, falling back to concat: {}",
+                        error
+                    );
+                }
+            }
+        }
+    }
 
     let tmp_media_path = {
         let stem = mp4_path
