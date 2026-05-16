@@ -18,6 +18,8 @@ interface NewLiveRecordModalProps {
   onSubmit: (params: CreateLiveRecordParams) => Promise<void>;
   initialUrl?: string;
   initialExtraHeaders?: string;
+  initialFilename?: string;
+  initialOutputDir?: string;
   resetKey?: number;
 }
 
@@ -34,6 +36,8 @@ export function NewLiveRecordModal({
   onSubmit,
   initialUrl,
   initialExtraHeaders,
+  initialFilename,
+  initialOutputDir,
   resetKey,
 }: NewLiveRecordModalProps) {
   const [form] = Form.useForm<FormValues>();
@@ -43,21 +47,32 @@ export function NewLiveRecordModal({
 
   useEffect(() => {
     if (isOpen) {
-      getDefaultDownloadDir().then(setOutputDir);
+      if (initialOutputDir) {
+        setOutputDir(initialOutputDir);
+      } else {
+        getDefaultDownloadDir().then(setOutputDir);
+      }
       setFilenameTouched(false);
       form.resetFields();
       const initialProtocol: LiveProtocol = inferProtocolFromUrl(initialUrl ?? "");
+      const filename =
+        initialFilename || (initialUrl ? deriveFilenameFromUrl(initialUrl) : undefined);
       form.setFieldsValue({
         protocol: initialProtocol,
         url: initialUrl ?? "",
         extra_headers: initialExtraHeaders ?? "",
+        filename: filename || undefined,
       });
-      if (initialUrl) {
-        const derived = deriveFilenameFromUrl(initialUrl);
-        form.setFieldValue("filename", derived || undefined);
-      }
     }
-  }, [form, isOpen, initialUrl, initialExtraHeaders, resetKey]);
+  }, [
+    form,
+    initialExtraHeaders,
+    initialFilename,
+    initialOutputDir,
+    initialUrl,
+    isOpen,
+    resetKey,
+  ]);
 
   const handleSelectDir = async () => {
     const selected = await open({ multiple: false, directory: true });

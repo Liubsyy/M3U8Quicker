@@ -23,6 +23,7 @@ const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(500);
 const HLS_MIN_REFRESH_INTERVAL: Duration = Duration::from_millis(800);
 const HLS_MAX_REFRESH_INTERVAL: Duration = Duration::from_secs(6);
 const HLS_PLAYLIST_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+const LIVE_RECORD_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Outcome of one recording session when it ended cleanly without cancel.
 /// Cancellation paths surface as `AppError::Cancelled` and are interpreted via
@@ -98,57 +99,102 @@ pub async fn run_live_record(
     let initial_duration_ms = task.duration_ms;
     let client = client.read().await.clone();
 
-    let result = match protocol {
-        LiveProtocol::Flv => {
-            let output_path = live_output_file_path(&task);
-            run_flv_record(
-                app_handle.clone(),
-                live_records.clone(),
-                client,
-                task_id.clone(),
-                url,
-                headers,
-                output_path,
-                signal.clone(),
-                initial_bytes,
-                initial_duration_ms,
-                append,
-            )
-            .await
-        }
-        LiveProtocol::Hls => {
-            let temp_dir = task
-                .temp_dir
-                .clone()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| live_hls_temp_dir(&task));
-            run_hls_record(
-                app_handle.clone(),
-                live_records.clone(),
-                client,
-                task_id.clone(),
-                url,
-                headers,
-                temp_dir,
-                signal.clone(),
-                initial_bytes,
-                initial_duration_ms,
-                append,
-            )
-            .await
-        }
-    };
+    let mut append_next = append;
+    let final_status = loop {
+        let (current_bytes, current_duration_ms) = current_live_record_counters(
+            &live_records,
+            &task_id,
+            initial_bytes,
+            initial_duration_ms,
+        )
+        .await;
 
-    let stop_reason = signal.reason.lock().await.clone();
-    let final_status = match result {
-        Ok(LiveRecordOutcome::Finished) => Some(LiveRecordStatus::Recorded),
-        Err(AppError::Cancelled) => match stop_reason {
-            Some(LiveStopReason::Pause) => Some(LiveRecordStatus::Paused),
-            Some(LiveStopReason::Stop) => Some(LiveRecordStatus::Recorded),
-            Some(LiveStopReason::Cancel) => Some(LiveRecordStatus::Cancelled),
-            None => Some(LiveRecordStatus::Paused),
-        },
-        Err(err) => Some(LiveRecordStatus::Failed(err.to_string())),
+        let result = match protocol {
+            LiveProtocol::Flv => {
+                let output_path = live_output_file_path(&task);
+                run_flv_record(
+                    app_handle.clone(),
+                    live_records.clone(),
+                    client.clone(),
+                    task_id.clone(),
+                    url.clone(),
+                    headers.clone(),
+                    output_path,
+                    signal.clone(),
+                    current_bytes,
+                    current_duration_ms,
+                    append_next,
+                )
+                .await
+            }
+            LiveProtocol::Hls => {
+                let temp_dir = task
+                    .temp_dir
+                    .clone()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| live_hls_temp_dir(&task));
+                run_hls_record(
+                    app_handle.clone(),
+                    live_records.clone(),
+                    client.clone(),
+                    task_id.clone(),
+                    url.clone(),
+                    headers.clone(),
+                    temp_dir,
+                    signal.clone(),
+                    current_bytes,
+                    current_duration_ms,
+                    append_next,
+                )
+                .await
+            }
+        };
+
+        match result {
+            Ok(LiveRecordOutcome::Finished) => break Some(LiveRecordStatus::Recorded),
+            Err(AppError::Cancelled) => {
+                let stop_reason = signal.reason.lock().await.clone();
+                break match stop_reason {
+                    Some(LiveStopReason::Pause) => Some(LiveRecordStatus::Paused),
+                    Some(LiveStopReason::Stop) => Some(LiveRecordStatus::Recorded),
+                    Some(LiveStopReason::Cancel) => Some(LiveRecordStatus::Cancelled),
+                    None => Some(LiveRecordStatus::Paused),
+                };
+            }
+            Err(err) => {
+                eprintln!(
+                    "[live_recorder] recording attempt failed, keep recording: {}",
+                    err
+                );
+                let (total_bytes, duration_ms) = current_live_record_counters(
+                    &live_records,
+                    &task_id,
+                    current_bytes,
+                    current_duration_ms,
+                )
+                .await;
+                emit_live_progress(
+                    &app_handle,
+                    &live_records,
+                    &task_id,
+                    LiveRecordStatus::Recording,
+                    total_bytes,
+                    0,
+                    duration_ms,
+                )
+                .await;
+                append_next = true;
+                if wait_or_cancel(&signal, LIVE_RECORD_RETRY_INTERVAL).await {
+                    let stop_reason = signal.reason.lock().await.clone();
+                    break match stop_reason {
+                        Some(LiveStopReason::Pause) => Some(LiveRecordStatus::Paused),
+                        Some(LiveStopReason::Stop) => Some(LiveRecordStatus::Recorded),
+                        Some(LiveStopReason::Cancel) => Some(LiveRecordStatus::Cancelled),
+                        None => Some(LiveRecordStatus::Paused),
+                    };
+                }
+            }
+        }
     };
 
     let task_snapshot_for_finalize = {
@@ -795,6 +841,18 @@ async fn wait_or_cancel(signal: &LiveStopSignal, duration: Duration) -> bool {
         _ = tokio::time::sleep(duration) => false,
         _ = signal.token.cancelled() => true,
     }
+}
+
+async fn current_live_record_counters(
+    live_records: &Arc<Mutex<HashMap<DownloadId, LiveRecordTask>>>,
+    task_id: &str,
+    fallback_total_bytes: u64,
+    fallback_duration_ms: u64,
+) -> (u64, u64) {
+    let map = live_records.lock().await;
+    map.get(task_id)
+        .map(|task| (task.total_bytes, task.duration_ms))
+        .unwrap_or((fallback_total_bytes, fallback_duration_ms))
 }
 
 async fn emit_live_progress(

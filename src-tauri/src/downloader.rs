@@ -329,8 +329,9 @@ pub async fn inspect_hls_tracks(
     let fetched = fetch_hls_playlist(client, m3u8_url, headers).await?;
 
     match fetched.playlist {
-        m3u8_rs::Playlist::MediaPlaylist(_) => Ok(InspectHlsTracksResult {
+        m3u8_rs::Playlist::MediaPlaylist(media) => Ok(InspectHlsTracksResult {
             kind: HlsPlaylistKind::Media,
+            is_live: !media.end_list,
             requires_selection: false,
             video_tracks: Vec::new(),
             audio_tracks: Vec::new(),
@@ -338,7 +339,21 @@ pub async fn inspect_hls_tracks(
             default_selection: HlsTrackSelection::default(),
         }),
         m3u8_rs::Playlist::MasterPlaylist(master) => {
-            Ok(build_master_track_catalog(&fetched.base_url, &master)?.inspection)
+            let mut catalog = build_master_track_catalog(&fetched.base_url, &master)?;
+            if let Some(default_video_id) = catalog.inspection.default_selection.video_id.as_deref()
+            {
+                if let Some(default_video) = catalog
+                    .videos
+                    .iter()
+                    .find(|track| track.option.id == default_video_id)
+                {
+                    let media =
+                        fetch_media_playlist_following_variants(client, &default_video.uri, headers)
+                            .await?;
+                    catalog.inspection.is_live = !media.playlist.end_list;
+                }
+            }
+            Ok(catalog.inspection)
         }
     }
 }
@@ -627,6 +642,7 @@ struct DashJsonSegment {
 fn build_dash_inspection(manifest: &DashManifest) -> InspectHlsTracksResult {
     InspectHlsTracksResult {
         kind: HlsPlaylistKind::Master,
+        is_live: false,
         requires_selection: manifest.video_tracks.len() > 1 || manifest.audio_tracks.len() > 1,
         video_tracks: manifest
             .video_tracks
@@ -1729,6 +1745,7 @@ fn build_master_track_catalog(
     ));
     let inspection = InspectHlsTracksResult {
         kind: HlsPlaylistKind::Master,
+        is_live: false,
         requires_selection: videos.len() > 1 || audios.len() > 1 || !subtitles.is_empty(),
         video_tracks: videos.iter().map(|track| track.option.clone()).collect(),
         audio_tracks: audios.iter().map(|track| track.option.clone()).collect(),

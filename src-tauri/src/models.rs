@@ -112,6 +112,8 @@ pub struct InspectDashTracksParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InspectHlsTracksResult {
     pub kind: HlsPlaylistKind,
+    #[serde(default)]
+    pub is_live: bool,
     pub requires_selection: bool,
     pub video_tracks: Vec<HlsTrackOption>,
     pub audio_tracks: Vec<HlsTrackOption>,

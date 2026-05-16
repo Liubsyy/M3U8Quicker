@@ -166,6 +166,7 @@ export interface InspectDashTracksParams {
 
 export interface InspectHlsTracksResult {
   kind: HlsPlaylistKind;
+  is_live: boolean;
   requires_selection: boolean;
   video_tracks: HlsTrackOption[];
   audio_tracks: HlsTrackOption[];

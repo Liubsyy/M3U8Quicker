@@ -35,6 +35,12 @@ interface NewDownloadModalProps {
   resetKey?: number;
   onClose: () => void;
   onOpenFfmpegSettings: () => void;
+  onSwitchToLiveRecord: (draft: {
+    url: string;
+    extraHeaders?: string;
+    filename?: string;
+    outputDir?: string;
+  }) => void;
   onSubmit: (params: CreateDownloadParams) => Promise<void>;
 }
 
@@ -46,6 +52,7 @@ export function NewDownloadModal({
   resetKey,
   onClose,
   onOpenFfmpegSettings,
+  onSwitchToLiveRecord,
   onSubmit,
 }: NewDownloadModalProps) {
   const [form] = Form.useForm();
@@ -109,6 +116,31 @@ export function NewDownloadModal({
   const submitDownload = async (params: CreateDownloadParams) => {
     await onSubmit(params);
     message.success("下载已开始");
+  };
+
+  const confirmSwitchToLiveRecord = async (params: CreateDownloadParams) => {
+    return await new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title: "检测到 HLS 直播",
+        content: (
+          <Typography.Paragraph style={{ marginBottom: 0 }}>
+            当前地址看起来是直播流，普通下载可能会持续等待。是否转到直播录制窗口？
+          </Typography.Paragraph>
+        ),
+        okText: "转到直播录制",
+        cancelText: "继续下载",
+        onOk: () => {
+          onSwitchToLiveRecord({
+            url: params.url,
+            extraHeaders: params.extra_headers,
+            filename: params.filename,
+            outputDir: params.output_dir,
+          });
+          resolve(true);
+        },
+        onCancel: () => resolve(false),
+      });
+    });
   };
 
   const ensureMultiTrackFfmpegReady = async (
@@ -178,6 +210,10 @@ export function NewDownloadModal({
           url,
           extra_headers: nextParams.extra_headers,
         });
+        if (inspection.is_live && (await confirmSwitchToLiveRecord(nextParams))) {
+          return;
+        }
+
         if (inspection.kind === "master" && inspection.requires_selection) {
           setPendingHlsParams(nextParams);
           setHlsInspection(inspection);

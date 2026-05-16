@@ -127,6 +127,8 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
   const [liveRecordDraft, setLiveRecordDraft] = useState<{
     url: string;
     extraHeaders?: string;
+    filename?: string;
+    outputDir?: string;
     nonce: number;
   } | null>(null);
   const [batchDownloadModalOpen, setBatchDownloadModalOpen] = useState(false);
@@ -511,7 +513,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     },
     {
       key: "completed",
-      label: `已完成 (${counts.history_count})`,
+      label: `下载完成 (${counts.history_count})`,
       children: (
         <DownloadList
           downloads={completed}
@@ -696,6 +698,12 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
           setSettingsInitialTab("ffmpeg");
           setSettingsOpen(true);
         }}
+        onSwitchToLiveRecord={(draft) => {
+          setModalOpen(false);
+          setDownloadDraft(null);
+          setLiveRecordDraft({ ...draft, nonce: Date.now() });
+          setLiveRecordModalOpen(true);
+        }}
         onSubmit={async (params) => {
           await addDownload(params);
           setModalOpen(false);
@@ -754,6 +762,8 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         }}
         initialUrl={liveRecordDraft?.url}
         initialExtraHeaders={liveRecordDraft?.extraHeaders}
+        initialFilename={liveRecordDraft?.filename}
+        initialOutputDir={liveRecordDraft?.outputDir}
         resetKey={liveRecordDraft?.nonce ?? 0}
       />
       <Modal
