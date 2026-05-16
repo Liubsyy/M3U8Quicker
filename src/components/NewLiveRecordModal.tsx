@@ -46,8 +46,9 @@ export function NewLiveRecordModal({
       getDefaultDownloadDir().then(setOutputDir);
       setFilenameTouched(false);
       form.resetFields();
+      const initialProtocol: LiveProtocol = inferProtocolFromUrl(initialUrl ?? "");
       form.setFieldsValue({
-        protocol: "flv",
+        protocol: initialProtocol,
         url: initialUrl ?? "",
         extra_headers: initialExtraHeaders ?? "",
       });
@@ -68,9 +69,15 @@ export function NewLiveRecordModal({
   };
 
   const handleUrlChange = (value: string) => {
-    if (filenameTouched) return;
-    const derived = deriveFilenameFromUrl(value);
-    form.setFieldValue("filename", derived || undefined);
+    if (!filenameTouched) {
+      const derived = deriveFilenameFromUrl(value);
+      form.setFieldValue("filename", derived || undefined);
+    }
+    const currentProtocol = form.getFieldValue("protocol") as LiveProtocol | undefined;
+    const inferred = inferProtocolFromUrl(value);
+    if (inferred !== currentProtocol) {
+      form.setFieldValue("protocol", inferred);
+    }
   };
 
   const handleSubmit = async () => {
@@ -120,15 +127,17 @@ export function NewLiveRecordModal({
           rules={[{ required: true, message: "请输入直播地址" }]}
         >
           <Input
-            placeholder="例如 https://example.com/live/stream.flv"
+            placeholder="HTTP-FLV: https://example.com/live/stream.flv，HLS: https://example.com/live/index.m3u8"
             onChange={(e) => handleUrlChange(e.target.value)}
             allowClear
           />
         </Form.Item>
         <Form.Item label="协议" name="protocol">
           <Select
-            options={[{ value: "flv", label: "HTTP-FLV" }]}
-            disabled
+            options={[
+              { value: "flv", label: "HTTP-FLV" },
+              { value: "hls", label: "HLS (m3u8)" },
+            ]}
           />
         </Form.Item>
         <Form.Item label="文件名（不含扩展名）" name="filename">
@@ -153,7 +162,8 @@ export function NewLiveRecordModal({
           />
         </Form.Item>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
-          直播录制会持续到主动停止；可以暂停后继续录制（同一个文件追加）。
+          直播录制会持续到主动停止；可以暂停后继续录制。
+          HLS 直播会把 ts / fMP4 分片先写入临时目录，停止时再确认是否合并为 MP4。
         </Typography.Paragraph>
       </Form>
     </Modal>
@@ -165,4 +175,13 @@ function formatError(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
   return String(e);
+}
+
+function inferProtocolFromUrl(url: string): LiveProtocol {
+  const trimmed = url.trim().toLowerCase();
+  if (!trimmed) return "flv";
+  const withoutQuery = trimmed.split(/[?#]/)[0] ?? trimmed;
+  if (withoutQuery.endsWith(".m3u8") || withoutQuery.includes("/m3u8")) return "hls";
+  if (withoutQuery.endsWith(".flv") || withoutQuery.includes("/flv")) return "flv";
+  return "flv";
 }

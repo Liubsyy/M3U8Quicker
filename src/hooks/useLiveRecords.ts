@@ -214,12 +214,14 @@ export function useLiveRecords() {
     async (id: string) => {
       try {
         await api.cancelLiveRecord(id);
+        await refreshCounts();
+        await Promise.all([refreshGroup("active"), refreshGroup("history")]);
       } catch (error) {
         console.error("Failed to cancel live record", error);
         message.error(`取消失败: ${error}`);
       }
     },
-    []
+    [refreshCounts, refreshGroup]
   );
 
   const remove = useCallback(

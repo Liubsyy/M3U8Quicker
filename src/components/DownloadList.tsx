@@ -99,6 +99,9 @@ function calculatePercentage(record: DownloadTaskSummary): number {
   if (record.status === "Completed") {
     return 100;
   }
+  if (record.is_live) {
+    return 0;
+  }
   if (record.total_segments <= 0) {
     return 0;
   }
@@ -368,7 +371,7 @@ export function DownloadList({
             }
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {isDirectFileType(record.file_type) ? (
+            {isDirectFileType(record.file_type) || record.is_live ? (
               <span>{formatBytes(record.total_bytes)}</span>
             ) : (
               <>

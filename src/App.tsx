@@ -43,6 +43,7 @@ import {
   getFfmpegStatus,
   checkForUpdate,
   convertMediaFile,
+  convertLiveHlsToMp4,
 } from "./services/api";
 import type {
   ChromiumBrowser,
@@ -51,6 +52,7 @@ import type {
   FirefoxExtensionInstallResult,
   DownloadTaskSummary,
   LiveProgressEvent,
+  LiveProtocol,
 } from "./types";
 import {
   canOpenInProgressPlayback,
@@ -138,6 +140,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     id: string;
     filename: string;
     filePath: string | null;
+    protocol: LiveProtocol;
   } | null>(null);
   const {
     counts,
@@ -332,16 +335,16 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
       id,
       filename: record.filename,
       filePath: record.file_path,
+      protocol: record.protocol,
     });
   };
 
   const performStopLive = async (convertToMp4Flag: boolean) => {
     if (!liveStopTarget) return;
-    const { id, filename, filePath } = liveStopTarget;
+    const { id, filename, filePath, protocol } = liveStopTarget;
     setLiveStopTarget(null);
 
-    const recordedPromise =
-      convertToMp4Flag && filePath ? waitForLiveRecorded(id) : null;
+    const recordedPromise = convertToMp4Flag ? waitForLiveRecorded(id) : null;
 
     try {
       await stopLive(id);
@@ -351,10 +354,6 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     }
 
     if (!convertToMp4Flag) return;
-    if (!filePath) {
-      message.warning("未找到已录制文件，无法转换为 MP4");
-      return;
-    }
 
     const messageKey = `live-convert-${id}`;
     try {
@@ -364,8 +363,20 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         duration: 0,
       });
       await recordedPromise;
-      const outputPath = deriveMp4PathFromFlv(filePath);
-      const finalPath = await convertMediaFile(filePath, outputPath, "mp4", "quick");
+      let finalPath: string;
+      if (protocol === "hls") {
+        finalPath = await convertLiveHlsToMp4(id);
+      } else {
+        if (!filePath) {
+          message.warning({
+            key: messageKey,
+            content: "未找到已录制文件，无法转换为 MP4",
+          });
+          return;
+        }
+        const outputPath = deriveMp4PathFromFlv(filePath);
+        finalPath = await convertMediaFile(filePath, outputPath, "mp4", "quick");
+      }
       message.success({
         key: messageKey,
         content: `已转换为 MP4：${finalPath}`,
@@ -760,14 +771,18 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         }
       >
         <Typography.Paragraph style={{ marginBottom: 0 }}>
-          是否将录制好的 FLV 转成 MP4？转换后浏览器、微信等场景都能直接播放，原 FLV 文件保留。
+          {liveStopTarget?.protocol === "hls"
+            ? "是否将录制好的 HLS 分片合并为 MP4？保留的分片 + 本地 m3u8 会留在录制目录里，可以直接重新合并。"
+            : "是否将录制好的 FLV 转成 MP4？转换后浏览器、微信等场景都能直接播放，原 FLV 文件保留。"}
         </Typography.Paragraph>
         {liveStopTarget?.filename ? (
           <Typography.Paragraph
             type="secondary"
             style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}
           >
-            文件：{liveStopTarget.filename}.flv
+            {liveStopTarget.protocol === "hls"
+              ? `录制目录：${liveStopTarget.filename}/`
+              : `文件：${liveStopTarget.filename}.flv`}
           </Typography.Paragraph>
         ) : null}
       </Modal>

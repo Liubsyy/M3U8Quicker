@@ -3766,12 +3766,29 @@ pub async fn create_live_record(
         created_at,
         completed_at: None,
         updated_at: Some(created_at),
+        temp_dir: None,
+        hls_media_kind: None,
+        segment_count: 0,
     };
 
-    let output_path = live_recorder::live_output_file_path(&task);
-    let task = LiveRecordTask {
-        file_path: Some(output_path.to_string_lossy().to_string()),
-        ..task
+    let task = match protocol {
+        LiveProtocol::Flv => {
+            let output_path = live_recorder::live_output_file_path(&task);
+            LiveRecordTask {
+                file_path: Some(output_path.to_string_lossy().to_string()),
+                ..task
+            }
+        }
+        LiveProtocol::Hls => {
+            let temp_dir = live_recorder::live_hls_temp_dir(&task);
+            // Pre-create the working directory so listing UIs can find it immediately.
+            tokio::fs::create_dir_all(&temp_dir).await?;
+            LiveRecordTask {
+                file_path: None,
+                temp_dir: Some(temp_dir.to_string_lossy().to_string()),
+                ..task
+            }
+        }
     };
 
     {
@@ -3867,7 +3884,7 @@ pub async fn cancel_live_record(
 
     // No worker running (e.g. Paused) — flip state directly.
     let mut snapshot = None;
-    let file_to_delete = {
+    let (file_to_delete, dir_to_delete) = {
         let mut map = state.live_records.lock().await;
         if let Some(task) = map.get_mut(&id) {
             task.status = LiveRecordStatus::Cancelled;
@@ -3875,20 +3892,26 @@ pub async fn cancel_live_record(
             let now = task.touch();
             task.completed_at = Some(now);
             let path = task.file_path.clone();
+            let dir = task.temp_dir.clone();
             task.file_path = None;
+            task.temp_dir = None;
             snapshot = Some(task.clone());
-            path
+            (path, dir)
         } else {
-            None
+            (None, None)
         }
     };
 
     if let Some(path) = file_to_delete {
         let _ = tokio::fs::remove_file(&path).await;
     }
+    if let Some(dir) = dir_to_delete {
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
 
     if let Some(task) = snapshot {
         let _ = persistence::save_live_task(&app_handle, &task).await;
+        live_recorder::emit_live_progress_from_task(&app_handle, &task);
     }
 
     Ok(())
@@ -3909,15 +3932,33 @@ pub async fn remove_live_record(
         signal.trigger(LiveStopReason::Cancel).await;
     }
 
-    let file_path = {
+    let (file_path, temp_dir, protocol) = {
         let mut map = state.live_records.lock().await;
-        let task = map.remove(&id);
-        task.and_then(|task| task.file_path)
+        match map.remove(&id) {
+            Some(task) => (task.file_path.clone(), task.temp_dir.clone(), Some(task.protocol)),
+            None => (None, None, None),
+        }
     };
 
     if delete_file {
-        if let Some(path) = file_path {
-            let _ = tokio::fs::remove_file(&path).await;
+        if let Some(path) = file_path.as_ref() {
+            match protocol {
+                Some(LiveProtocol::Hls) => {
+                    // file_path for HLS is index.m3u8 inside the recorded directory.
+                    let pb = PathBuf::from(path);
+                    if let Some(parent) = pb.parent() {
+                        let _ = tokio::fs::remove_dir_all(parent).await;
+                    } else {
+                        let _ = tokio::fs::remove_file(&pb).await;
+                    }
+                }
+                _ => {
+                    let _ = tokio::fs::remove_file(path).await;
+                }
+            }
+        }
+        if let Some(dir) = temp_dir {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
         }
     }
 
@@ -3949,6 +3990,58 @@ pub async fn get_live_records_page(
     page_size: usize,
 ) -> Result<LiveRecordPage, AppError> {
     persistence::get_live_records_page(&app_handle, group, page, page_size).await
+}
+
+/// Convert a finished HLS live recording's local m3u8 (with TS or fMP4 segments)
+/// into a single MP4 file in the task's output directory. This is independent of
+/// the global "ts -> mp4" toggle (the user explicitly confirms after stop).
+#[tauri::command]
+pub async fn convert_live_hls_to_mp4(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<String, AppError> {
+    let task = {
+        let map = state.live_records.lock().await;
+        map.get(&id).cloned()
+    };
+    let Some(task) = task else {
+        return Err(AppError::InvalidInput("直播任务不存在".into()));
+    };
+    if !matches!(task.protocol, LiveProtocol::Hls) {
+        return Err(AppError::InvalidInput("仅 HLS 录制支持此转换".into()));
+    }
+    if !matches!(task.status, LiveRecordStatus::Recorded) {
+        return Err(AppError::InvalidInput("录制尚未完成，无法转换".into()));
+    }
+    let playlist_path = task
+        .file_path
+        .clone()
+        .map(PathBuf::from)
+        .ok_or_else(|| AppError::InvalidInput("缺少本地 m3u8 路径".into()))?;
+    if !playlist_path.is_file() {
+        return Err(AppError::InvalidInput(format!(
+            "找不到本地 m3u8 文件：{}",
+            playlist_path.display()
+        )));
+    }
+
+    let output_dir = PathBuf::from(&task.output_dir);
+    tokio::fs::create_dir_all(&output_dir).await?;
+    let preferred_output = output_dir.join(format!("{}.mp4", task.filename));
+    let final_output = downloader::resolve_available_file_path(&preferred_output);
+
+    let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle).await;
+    let ffmpeg_enabled = *state.ffmpeg_enabled.lock().await;
+    downloader::convert_local_m3u8_to_mp4_file(
+        &playlist_path,
+        &final_output,
+        ffmpeg_enabled,
+        ffmpeg_path.as_deref(),
+    )
+    .await?;
+
+    Ok(final_output.to_string_lossy().to_string())
 }
 
 #[cfg(test)]

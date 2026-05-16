@@ -658,6 +658,9 @@ pub fn live_task_to_summary(task: &LiveRecordTask) -> LiveRecordSummary {
         completed_at: task.completed_at.map(|value| value.to_rfc3339()),
         updated_at: task.last_updated_at().to_rfc3339(),
         file_path: task.file_path.clone(),
+        temp_dir: task.temp_dir.clone(),
+        hls_media_kind: task.hls_media_kind,
+        segment_count: task.segment_count,
     }
 }
 

@@ -257,6 +257,7 @@ pub fn run() {
             commands::clear_live_history,
             commands::get_live_record_counts,
             commands::get_live_records_page,
+            commands::convert_live_hls_to_mp4,
             update::check_for_update,
             update::download_update_installer,
             update::open_update_installer,

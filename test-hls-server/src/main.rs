@@ -1,18 +1,19 @@
 use std::cmp::min;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use aes::{Aes128, Aes192, Aes256};
-use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Form, Multipart, Path as AxumPath, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
+use axum::Json;
 use axum::Router;
 use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
 use chrono::Local;
@@ -34,6 +35,37 @@ struct AppState {
     data_dir: PathBuf,
     temp_dir: PathBuf,
     mp4_source_path: Arc<Mutex<Option<PathBuf>>>,
+    live_source_path: Arc<Mutex<Option<PathBuf>>>,
+    live_jobs: Arc<Mutex<HashMap<String, Arc<LiveJob>>>>,
+}
+
+#[derive(Debug, Clone)]
+struct LiveSegment {
+    file_name: String,
+    duration: f64,
+}
+
+#[derive(Debug)]
+struct LiveJob {
+    id: String,
+    source_name: String,
+    target_duration: u64,
+    ts_segments: Vec<LiveSegment>,
+    fmp4_segments: Vec<LiveSegment>,
+    fmp4_init_name: String,
+    started_at: Instant,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LiveJobMeta {
+    id: String,
+    source_name: String,
+    created_at: String,
+    #[serde(default)]
+    target_duration: Option<u64>,
+    #[serde(default)]
+    fmp4_init_name: Option<String>,
 }
 
 const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024 * 1024;
@@ -206,6 +238,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mp4_source_path: Arc::new(Mutex::new(
             std::env::var_os("TEST_HLS_SERVER_MP4_PATH").map(PathBuf::from),
         )),
+        live_source_path: Arc::new(Mutex::new(
+            std::env::var_os("TEST_HLS_SERVER_LIVE_PATH").map(PathBuf::from),
+        )),
+        live_jobs: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let app = Router::new()
@@ -233,16 +269,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/hls/{job_id}/{*file}", get(serve_hls_file))
         .route("/dash-test/{job_id}/{*file}", get(serve_dash_file))
         .route("/mp4/local-file.mp4", get(serve_mp4_test_file))
+        .route("/live", get(live_index).post(set_live_source))
+        .route("/live/pick", post(pick_live_source))
+        .route("/generate/live", post(generate_live_from_local_file))
+        .route("/live-test/{job_id}/{flavor}/{file}", get(serve_live_file))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 7878));
     println!("Test HLS server listening at http://{}", addr);
     println!("DASH generation page: http://{}/dash", addr);
     println!("Direct MP4 playback page: http://{}/mp4", addr);
-    println!(
-        "Direct MP4 test URL: http://{}/mp4/local-file.mp4",
-        addr
-    );
+    println!("HLS Live simulation page: http://{}/live", addr);
+    println!("Direct MP4 test URL: http://{}/mp4/local-file.mp4", addr);
     println!(
         "DASH test MPD URL template: http://{}/dash-test/<job_id>/manifest.mpd",
         addr
@@ -316,9 +354,7 @@ async fn set_mp4_source(
     Ok(Redirect::to("/mp4"))
 }
 
-async fn pick_mp4_source(
-    State(state): State<AppState>,
-) -> Result<Json<Mp4PickResponse>, AppError> {
+async fn pick_mp4_source(State(state): State<AppState>) -> Result<Json<Mp4PickResponse>, AppError> {
     let Some(selected_path) = pick_mp4_file_with_system_dialog().await? else {
         return Ok(Json(Mp4PickResponse {
             selected: false,
@@ -495,9 +531,7 @@ async fn generate_from_local_file(
         video_path = Some(file_path);
     }
 
-    let video_path = video_path.ok_or_else(|| {
-        AppError::bad_request("请先选择一个本地视频文件")
-    })?;
+    let video_path = video_path.ok_or_else(|| AppError::bad_request("请先选择一个本地视频文件"))?;
     let source_name = source_name.unwrap_or_else(|| {
         video_path
             .file_name()
@@ -686,16 +720,14 @@ async fn serve_hls_file(
     State(state): State<AppState>,
     AxumPath((job_id, file)): AxumPath<(String, String)>,
 ) -> Result<Response, AppError> {
-    let clean_file = sanitize_relative_hls_path(&file)
-        .ok_or_else(|| AppError::bad_request("非法文件路径"))?;
+    let clean_file =
+        sanitize_relative_hls_path(&file).ok_or_else(|| AppError::bad_request("非法文件路径"))?;
     let file_path = state.data_dir.join(&job_id).join(clean_file);
 
-    let bytes = tokio::fs::read(&file_path)
-        .await
-        .map_err(|_| AppError {
-            status: StatusCode::NOT_FOUND,
-            message: "文件不存在".to_string(),
-        })?;
+    let bytes = tokio::fs::read(&file_path).await.map_err(|_| AppError {
+        status: StatusCode::NOT_FOUND,
+        message: "文件不存在".to_string(),
+    })?;
 
     let content_type = content_type_for_path(&file_path);
     let mut headers = HeaderMap::new();
@@ -790,7 +822,8 @@ async fn serve_mp4_test_file(
         response_headers.insert(header::CONTENT_LENGTH, value);
     }
     if status == StatusCode::PARTIAL_CONTENT {
-        if let Ok(value) = HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_len)) {
+        if let Ok(value) = HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_len))
+        {
             response_headers.insert(header::CONTENT_RANGE, value);
         }
     }
@@ -934,7 +967,10 @@ async fn run_ffmpeg_dash_encode(input_path: &Path, manifest_path: &Path) -> Resu
         .args(["-use_template", "1"])
         .args(["-use_timeline", "1"])
         .args(["-init_seg_name", "init-stream$RepresentationID$.m4s"])
-        .args(["-media_seg_name", "chunk-stream$RepresentationID$-$Number%05d$.m4s"])
+        .args([
+            "-media_seg_name",
+            "chunk-stream$RepresentationID$-$Number%05d$.m4s",
+        ])
         .arg(manifest_path);
 
     let output = command
@@ -962,7 +998,11 @@ async fn run_ffmpeg_dash_encode(input_path: &Path, manifest_path: &Path) -> Resu
     Err(AppError::internal(format!(
         "ffmpeg 生成 DASH 失败，退出码: {}。错误详情: {}",
         output.status.code().unwrap_or(-1),
-        if detail.is_empty() { "未返回额外错误信息" } else { &detail }
+        if detail.is_empty() {
+            "未返回额外错误信息"
+        } else {
+            &detail
+        }
     )))
 }
 
@@ -1109,7 +1149,8 @@ async fn generate_encrypted_playlists(
             let plain_bytes = tokio::fs::read(job_dir.join(segment_name))
                 .await
                 .map_err(|e| AppError::internal(format!("读取明文切片失败: {}", e)))?;
-            let encrypted_bytes = encrypt_segment(&plain_bytes, &encryption.key_bytes, &encryption.iv)?;
+            let encrypted_bytes =
+                encrypt_segment(&plain_bytes, &encryption.key_bytes, &encryption.iv)?;
             tokio::fs::write(job_dir.join(mode.segment_name(index)), encrypted_bytes)
                 .await
                 .map_err(|e| AppError::internal(format!("写入加密切片失败: {}", e)))?;
@@ -1275,44 +1316,162 @@ fn normalize_mp4_source_path(input: &str) -> Result<PathBuf, AppError> {
 }
 
 async fn pick_mp4_file_with_system_dialog() -> Result<Option<String>, AppError> {
-    if !cfg!(target_os = "windows") {
+    pick_video_file_with_system_dialog(VideoFilter::Mp4Only).await
+}
+
+fn normalize_video_source_path(input: &str) -> Result<PathBuf, AppError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::bad_request("请填写本机视频文件路径"));
+    }
+    let file_path = PathBuf::from(trimmed);
+    if !file_path.is_file() {
+        return Err(AppError::bad_request("本机视频文件不存在"));
+    }
+    let name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if !is_supported_video_file(name) {
         return Err(AppError::bad_request(
-            "当前只支持在 Windows 上通过按钮选择本机 MP4",
+            "请选择常见视频文件 (mp4 / mov / mkv / webm / ...)",
         ));
     }
+    Ok(file_path.canonicalize().unwrap_or(file_path))
+}
 
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-STA", "-Command"])
-        .arg(
+#[derive(Debug, Clone, Copy)]
+enum VideoFilter {
+    Mp4Only,
+    AnyVideo,
+}
+
+async fn pick_video_file_with_system_dialog(
+    filter: VideoFilter,
+) -> Result<Option<String>, AppError> {
+    if cfg!(target_os = "windows") {
+        let win_filter = match filter {
+            VideoFilter::Mp4Only => "MP4 文件 (*.mp4)|*.mp4",
+            VideoFilter::AnyVideo => {
+                "视频文件 (*.mp4;*.mov;*.m4v;*.mkv;*.webm;*.avi;*.flv;*.mpeg;*.mpg;*.ts)|\
+                 *.mp4;*.mov;*.m4v;*.mkv;*.webm;*.avi;*.flv;*.mpeg;*.mpg;*.ts"
+            }
+        };
+        let script = format!(
             "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
              Add-Type -AssemblyName System.Windows.Forms; \
              $dialog = New-Object System.Windows.Forms.OpenFileDialog; \
-             $dialog.Filter = 'MP4 文件 (*.mp4)|*.mp4'; \
+             $dialog.Filter = '{}'; \
              $dialog.Multiselect = $false; \
-             if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { \
+             if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ \
                  Write-Output $dialog.FileName \
-             }",
-        )
+             }}",
+            win_filter
+        );
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-STA", "-Command"])
+            .arg(script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| AppError::internal(format!("打开文件选择框失败: {}", e)))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::internal(format!(
+                "文件选择框退出失败: {}",
+                stderr.trim()
+            )));
+        }
+        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok(if selected.is_empty() {
+            None
+        } else {
+            Some(selected)
+        });
+    }
+
+    if cfg!(target_os = "macos") {
+        let type_list = match filter {
+            VideoFilter::Mp4Only => "{\"mp4\", \"public.mpeg-4\"}",
+            VideoFilter::AnyVideo => {
+                "{\"mp4\", \"mov\", \"m4v\", \"mkv\", \"webm\", \"avi\", \"flv\", \
+                 \"mpeg\", \"mpg\", \"ts\", \"public.movie\", \"public.video\"}"
+            }
+        };
+        let prompt = match filter {
+            VideoFilter::Mp4Only => "选择本机 MP4 文件",
+            VideoFilter::AnyVideo => "选择本机视频文件",
+        };
+        let script = format!(
+            "try\n  set f to choose file with prompt \"{prompt}\" of type {types}\n  POSIX path of f\non error number -128\n  return \"\"\nend try",
+            prompt = prompt,
+            types = type_list,
+        );
+        let output = Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| AppError::internal(format!("打开文件选择框失败: {}", e)))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::internal(format!(
+                "文件选择框退出失败: {}",
+                stderr.trim()
+            )));
+        }
+        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok(if selected.is_empty() {
+            None
+        } else {
+            Some(selected)
+        });
+    }
+
+    // Linux / other: try zenity then kdialog.
+    let zenity_filter = match filter {
+        VideoFilter::Mp4Only => "*.mp4",
+        VideoFilter::AnyVideo => "*.mp4 *.mov *.m4v *.mkv *.webm *.avi *.flv *.mpeg *.mpg *.ts",
+    };
+    if let Ok(output) = Command::new("zenity")
+        .args(["--file-selection", "--title=选择本机视频"])
+        .arg(format!("--file-filter=视频 | {}", zenity_filter))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await
-        .map_err(|e| AppError::internal(format!("打开文件选择框失败: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AppError::internal(format!(
-            "文件选择框退出失败: {}",
-            stderr.trim()
-        )));
+    {
+        if output.status.success() {
+            let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Ok(if selected.is_empty() {
+                None
+            } else {
+                Some(selected)
+            });
+        } else if output.status.code() == Some(1) {
+            // User cancelled.
+            return Ok(None);
+        }
     }
-
-    let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if selected.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(selected))
+    if let Ok(output) = Command::new("kdialog")
+        .args(["--getopenfilename", ".", zenity_filter])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+    {
+        if output.status.success() {
+            let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Ok(if selected.is_empty() {
+                None
+            } else {
+                Some(selected)
+            });
+        }
     }
+    Err(AppError::bad_request(
+        "当前系统未检测到可用的文件选择框（请安装 zenity 或 kdialog，或手动粘贴文件路径）",
+    ))
 }
 
 async fn load_jobs(state: &AppState) -> Result<Vec<JobSummary>, AppError> {
@@ -1616,7 +1775,8 @@ fn render_index_page(
     );
 
     let jobs_html = if jobs.is_empty() {
-        "<div class=\"empty\">还没有生成过测试流。上传一个视频或填写本地路径试试。</div>".to_string()
+        "<div class=\"empty\">还没有生成过测试流。上传一个视频或填写本地路径试试。</div>"
+            .to_string()
     } else {
         jobs.iter()
             .map(|job| {
@@ -1915,7 +2075,12 @@ fn render_mp4_page(mp4_url: &str, root_dir: &Path, current_path: Option<&Path>) 
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_default();
     let current_path_html = current_path
-        .map(|path| format!("<p>当前本地文件：<code>{}</code></p>", escape_html(&path.to_string_lossy())))
+        .map(|path| {
+            format!(
+                "<p>当前本地文件：<code>{}</code></p>",
+                escape_html(&path.to_string_lossy())
+            )
+        })
         .unwrap_or_else(|| "<p>当前还没有设置本地 MP4 文件。</p>".to_string());
     format!(
         "<!doctype html>\
@@ -2060,7 +2225,11 @@ fn parse_single_byte_range(value: &str, total_len: u64) -> Option<(StatusCode, u
         if suffix_len == 0 {
             return None;
         }
-        return Some((StatusCode::PARTIAL_CONTENT, total_len - suffix_len, total_len - 1));
+        return Some((
+            StatusCode::PARTIAL_CONTENT,
+            total_len - suffix_len,
+            total_len - 1,
+        ));
     }
 
     let start = start.parse::<u64>().ok()?;
@@ -2110,7 +2279,11 @@ fn sanitize_relative_hls_path(path: &str) -> Option<PathBuf> {
 }
 
 fn content_type_for_path(path: &Path) -> &'static str {
-    match path.extension().and_then(|ext| ext.to_str()).unwrap_or_default() {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+    {
         "m3u8" => "application/vnd.apple.mpegurl",
         "mpd" => "application/dash+xml",
         "m4s" | "mp4" => "video/iso.segment",
@@ -2165,13 +2338,7 @@ fn sanitize_slug(input: &str, fallback: &str) -> String {
     let lowered = input.trim().to_lowercase();
     let slug = lowered
         .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch
-            } else {
-                '-'
-            }
-        })
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect::<String>()
         .split('-')
         .filter(|part| !part.is_empty())
@@ -2199,4 +2366,609 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{:02x}", byte))
         .collect::<String>()
+}
+
+// ============================================================================
+// HLS Live simulation
+// ============================================================================
+
+async fn live_index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, AppError> {
+    ensure_live_jobs_loaded(&state).await?;
+    let base_url = request_base_url(&headers);
+    let current_path = state.live_source_path.lock().await.clone();
+    let jobs: Vec<(String, String, String, String, String, String)> = {
+        let map = state.live_jobs.lock().await;
+        let mut list: Vec<_> = map
+            .values()
+            .map(|job| {
+                (
+                    job.id.clone(),
+                    job.source_name.clone(),
+                    job.created_at.clone(),
+                    format!("{}/live-test/{}/ts/index.m3u8", base_url, job.id),
+                    format!("{}/live-test/{}/fmp4/index.m3u8", base_url, job.id),
+                    format!("{}", job.ts_segments.len().max(job.fmp4_segments.len())),
+                )
+            })
+            .collect();
+        list.sort_by(|a, b| b.2.cmp(&a.2));
+        list
+    };
+    Ok(Html(render_live_page(
+        &base_url,
+        &state.root_dir,
+        current_path.as_deref(),
+        &jobs,
+    )))
+}
+
+async fn set_live_source(
+    State(state): State<AppState>,
+    Form(form): Form<Mp4PathForm>,
+) -> Result<Redirect, AppError> {
+    let canonical = normalize_video_source_path(&form.path)?;
+    *state.live_source_path.lock().await = Some(canonical);
+    Ok(Redirect::to("/live"))
+}
+
+async fn pick_live_source(State(state): State<AppState>) -> Json<Mp4PickResponse> {
+    let selected_path = match pick_video_file_with_system_dialog(VideoFilter::AnyVideo).await {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            return Json(Mp4PickResponse {
+                selected: false,
+                path: None,
+                message: Some("已取消选择".to_string()),
+            });
+        }
+        Err(err) => {
+            return Json(Mp4PickResponse {
+                selected: false,
+                path: None,
+                message: Some(err.message),
+            });
+        }
+    };
+    let canonical = match normalize_video_source_path(&selected_path) {
+        Ok(p) => p,
+        Err(err) => {
+            return Json(Mp4PickResponse {
+                selected: false,
+                path: None,
+                message: Some(err.message),
+            });
+        }
+    };
+    let display_path = canonical.to_string_lossy().to_string();
+    *state.live_source_path.lock().await = Some(canonical);
+    Json(Mp4PickResponse {
+        selected: true,
+        path: Some(display_path),
+        message: None,
+    })
+}
+
+async fn generate_live_from_local_file(
+    State(state): State<AppState>,
+) -> Result<Redirect, AppError> {
+    ensure_ffmpeg_available().await?;
+    let source = state
+        .live_source_path
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| AppError::bad_request("请先选择本地视频文件"))?;
+    if !source.is_file() {
+        return Err(AppError::bad_request("当前选择的不是有效的视频文件"));
+    }
+
+    let job_id = Uuid::new_v4().to_string();
+    let job_dir = state.data_dir.join(format!("live_{}", job_id));
+    let ts_dir = job_dir.join("ts");
+    let fmp4_dir = job_dir.join("fmp4");
+    tokio::fs::create_dir_all(&ts_dir)
+        .await
+        .map_err(|e| AppError::internal(format!("创建 ts 目录失败: {}", e)))?;
+    tokio::fs::create_dir_all(&fmp4_dir)
+        .await
+        .map_err(|e| AppError::internal(format!("创建 fmp4 目录失败: {}", e)))?;
+
+    // Generate TS playlist + segments.
+    let ts_playlist = ts_dir.join("source.m3u8");
+    let ts_pattern = ts_dir.join("seg_%04d.ts");
+    run_ffmpeg_hls_encode(&source, &ts_playlist, &ts_pattern).await?;
+
+    // Generate fMP4 playlist + segments (init.mp4 + seg_%04d.m4s).
+    let fmp4_playlist = fmp4_dir.join("source.m3u8");
+    let fmp4_pattern = fmp4_dir.join("seg_%04d.m4s");
+    let fmp4_init = fmp4_dir.join("init.mp4");
+    run_ffmpeg_hls_fmp4_encode(&source, &fmp4_playlist, &fmp4_pattern, &fmp4_init).await?;
+
+    let ts_segments = parse_segment_list(&ts_playlist).await?;
+    let fmp4_segments = parse_segment_list(&fmp4_playlist).await?;
+
+    if ts_segments.is_empty() {
+        return Err(AppError::internal("ts 切片为空，无法启动直播模拟"));
+    }
+    let target_duration = ts_segments
+        .iter()
+        .map(|seg| seg.duration.ceil() as u64)
+        .max()
+        .unwrap_or(6)
+        .max(1);
+
+    let source_name = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("video.mp4")
+        .to_string();
+    let created_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    let job = LiveJob {
+        id: job_id.clone(),
+        source_name: source_name.clone(),
+        target_duration,
+        ts_segments,
+        fmp4_segments,
+        fmp4_init_name: "init.mp4".to_string(),
+        started_at: Instant::now(),
+        created_at: created_at.clone(),
+    };
+    write_live_job_meta(
+        &job_dir,
+        &LiveJobMeta {
+            id: job_id.clone(),
+            source_name,
+            created_at,
+            target_duration: Some(target_duration),
+            fmp4_init_name: Some("init.mp4".to_string()),
+        },
+    )
+    .await?;
+
+    {
+        let mut map = state.live_jobs.lock().await;
+        map.insert(job_id.clone(), Arc::new(job));
+    }
+
+    Ok(Redirect::to("/live"))
+}
+
+async fn serve_live_file(
+    State(state): State<AppState>,
+    AxumPath((job_id, flavor, file)): AxumPath<(String, String, String)>,
+) -> Result<Response, AppError> {
+    ensure_live_jobs_loaded(&state).await?;
+    let job = {
+        let map = state.live_jobs.lock().await;
+        map.get(&job_id).cloned()
+    }
+    .ok_or_else(|| AppError {
+        status: StatusCode::NOT_FOUND,
+        message: "live 任务不存在".to_string(),
+    })?;
+
+    let flavor = flavor.as_str();
+    if !matches!(flavor, "ts" | "fmp4") {
+        return Err(AppError::bad_request("flavor 必须为 ts 或 fmp4"));
+    }
+
+    // Dynamic playlist endpoint.
+    if file == "index.m3u8" {
+        let body = build_live_playlist(&job, flavor);
+        return Ok((
+            [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+            body,
+        )
+            .into_response());
+    }
+
+    // Static file (segment / init).
+    let clean =
+        sanitize_relative_hls_path(&file).ok_or_else(|| AppError::bad_request("非法文件路径"))?;
+    let file_path = state
+        .data_dir
+        .join(format!("live_{}", job_id))
+        .join(flavor)
+        .join(clean);
+    let bytes = tokio::fs::read(&file_path).await.map_err(|_| AppError {
+        status: StatusCode::NOT_FOUND,
+        message: "文件不存在".to_string(),
+    })?;
+    let content_type = content_type_for_path(&file_path);
+    Ok(([(header::CONTENT_TYPE, content_type)], bytes).into_response())
+}
+
+async fn ensure_live_jobs_loaded(state: &AppState) -> Result<(), AppError> {
+    let mut entries = tokio::fs::read_dir(&state.data_dir)
+        .await
+        .map_err(|e| AppError::internal(format!("读取直播任务目录失败: {}", e)))?;
+
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| AppError::internal(format!("读取直播任务失败: {}", e)))?
+    {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(dir_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(job_id) = dir_name.strip_prefix("live_") else {
+            continue;
+        };
+
+        {
+            let map = state.live_jobs.lock().await;
+            if map.contains_key(job_id) {
+                continue;
+            }
+        }
+
+        if let Some(job) = load_live_job_from_dir(&path, job_id).await? {
+            let mut map = state.live_jobs.lock().await;
+            map.entry(job.id.clone()).or_insert_with(|| Arc::new(job));
+        }
+    }
+
+    Ok(())
+}
+
+async fn load_live_job_from_dir(
+    job_dir: &Path,
+    fallback_job_id: &str,
+) -> Result<Option<LiveJob>, AppError> {
+    let ts_playlist = job_dir.join("ts").join("source.m3u8");
+    if !ts_playlist.is_file() {
+        return Ok(None);
+    }
+
+    let ts_segments = parse_segment_list(&ts_playlist).await?;
+    if ts_segments.is_empty() {
+        return Ok(None);
+    }
+
+    let fmp4_playlist = job_dir.join("fmp4").join("source.m3u8");
+    let fmp4_segments = if fmp4_playlist.is_file() {
+        parse_segment_list(&fmp4_playlist).await?
+    } else {
+        Vec::new()
+    };
+
+    let meta = read_live_job_meta(job_dir).await?;
+    let target_duration = meta
+        .as_ref()
+        .and_then(|meta| meta.target_duration)
+        .unwrap_or_else(|| {
+            ts_segments
+                .iter()
+                .map(|seg| seg.duration.ceil() as u64)
+                .max()
+                .unwrap_or(6)
+                .max(1)
+        });
+    let created_at = match meta.as_ref().map(|meta| meta.created_at.trim()) {
+        Some(value) if !value.is_empty() => value.to_string(),
+        _ => live_job_dir_time(job_dir).await,
+    };
+    let source_name = meta
+        .as_ref()
+        .map(|meta| meta.source_name.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_job_id)
+        .to_string();
+    let fmp4_init_name = meta
+        .as_ref()
+        .and_then(|meta| meta.fmp4_init_name.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("init.mp4")
+        .to_string();
+
+    Ok(Some(LiveJob {
+        id: fallback_job_id.to_string(),
+        source_name,
+        target_duration,
+        ts_segments,
+        fmp4_segments,
+        fmp4_init_name,
+        started_at: Instant::now(),
+        created_at,
+    }))
+}
+
+async fn read_live_job_meta(job_dir: &Path) -> Result<Option<LiveJobMeta>, AppError> {
+    let meta_path = job_dir.join("live-job.json");
+    if !meta_path.is_file() {
+        return Ok(None);
+    }
+    let meta_bytes = tokio::fs::read(&meta_path)
+        .await
+        .map_err(|e| AppError::internal(format!("读取直播任务信息失败: {}", e)))?;
+    let meta: LiveJobMeta = serde_json::from_slice(&meta_bytes)
+        .map_err(|e| AppError::internal(format!("解析直播任务信息失败: {}", e)))?;
+    Ok(Some(meta))
+}
+
+async fn write_live_job_meta(job_dir: &Path, meta: &LiveJobMeta) -> Result<(), AppError> {
+    let meta_json = serde_json::to_vec_pretty(meta)
+        .map_err(|e| AppError::internal(format!("序列化直播任务信息失败: {}", e)))?;
+    tokio::fs::write(job_dir.join("live-job.json"), meta_json)
+        .await
+        .map_err(|e| AppError::internal(format!("写入直播任务信息失败: {}", e)))?;
+    Ok(())
+}
+
+async fn live_job_dir_time(job_dir: &Path) -> String {
+    let modified = match tokio::fs::metadata(job_dir).await {
+        Ok(metadata) => metadata.modified().unwrap_or_else(|_| SystemTime::now()),
+        Err(_) => SystemTime::now(),
+    };
+    let datetime: chrono::DateTime<Local> = modified.into();
+    datetime.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn build_live_playlist(job: &LiveJob, flavor: &str) -> String {
+    let (segments, is_fmp4) = if flavor == "fmp4" && !job.fmp4_segments.is_empty() {
+        (&job.fmp4_segments, true)
+    } else {
+        (&job.ts_segments, false)
+    };
+    let total = segments.len();
+    let elapsed = job.started_at.elapsed().as_secs_f64();
+    let avg = (job.target_duration as f64).max(1.0);
+    let current_seq = (elapsed / avg).floor() as i64;
+    let window: usize = 6;
+    let start_seq = current_seq.saturating_sub((window as i64) - 1).max(0) as u64;
+    let last_seq = (start_seq + window as u64).saturating_sub(1);
+
+    let mut out = String::new();
+    out.push_str("#EXTM3U\n");
+    out.push_str("#EXT-X-VERSION:6\n");
+    out.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", job.target_duration));
+    out.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", start_seq));
+    if is_fmp4 {
+        out.push_str(&format!("#EXT-X-MAP:URI=\"{}\"\n", job.fmp4_init_name));
+    }
+    for seq in start_seq..=last_seq {
+        let idx = (seq as usize) % total;
+        let seg = &segments[idx];
+        out.push_str(&format!("#EXTINF:{:.3},\n", seg.duration));
+        out.push_str(&format!("{}\n", seg.file_name));
+    }
+    // No #EXT-X-ENDLIST — this is a live playlist.
+    out
+}
+
+async fn parse_segment_list(playlist_path: &Path) -> Result<Vec<LiveSegment>, AppError> {
+    let text = tokio::fs::read_to_string(playlist_path)
+        .await
+        .map_err(|e| AppError::internal(format!("读取切片播放列表失败: {}", e)))?;
+    let mut out = Vec::new();
+    let mut pending_duration: Option<f64> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("#EXTINF:") {
+            let value = rest.split(',').next().unwrap_or("0");
+            if let Ok(d) = value.trim().parse::<f64>() {
+                pending_duration = Some(d);
+            }
+        } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            if let Some(d) = pending_duration.take() {
+                out.push(LiveSegment {
+                    file_name: trimmed.to_string(),
+                    duration: d,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+async fn run_ffmpeg_hls_fmp4_encode(
+    input_path: &Path,
+    playlist_path: &Path,
+    segment_pattern: &Path,
+    init_path: &Path,
+) -> Result<(), AppError> {
+    // `-hls_fmp4_init_filename` only accepts a bare filename (it is also written into
+    // the playlist as the EXT-X-MAP URI). ffmpeg resolves it against its current working
+    // directory, so run ffmpeg from the playlist's directory to keep init.mp4 next to
+    // the segments instead of dropping it into the process CWD.
+    let work_dir = init_path
+        .parent()
+        .ok_or_else(|| AppError::internal("fmp4 输出目录无效"))?;
+    let init_name = init_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("init.mp4");
+
+    let mut command = Command::new("ffmpeg");
+    command
+        .current_dir(work_dir)
+        .arg("-y")
+        .arg("-i")
+        .arg(input_path)
+        .args(["-c:v", "libx264"])
+        .args(["-c:a", "aac"])
+        .args(["-f", "hls"])
+        .args(["-hls_time", "6"])
+        .args(["-hls_playlist_type", "vod"])
+        .args(["-hls_segment_type", "fmp4"])
+        .arg("-hls_fmp4_init_filename")
+        .arg(init_name)
+        .arg("-hls_segment_filename")
+        .arg(segment_pattern)
+        .arg(playlist_path);
+    let output = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| AppError::internal(format!("启动 ffmpeg (fmp4) 失败: {}", e)))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(AppError::internal(format!(
+        "ffmpeg (fmp4) 退出码 {}: {}",
+        output.status.code().unwrap_or(-1),
+        stderr
+            .lines()
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join(" | ")
+    )))
+}
+
+fn render_live_page(
+    base_url: &str,
+    root_dir: &Path,
+    current_path: Option<&Path>,
+    jobs: &[(String, String, String, String, String, String)],
+) -> String {
+    let current_path_value = current_path
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let current_path_html = current_path
+        .map(|p| {
+            format!(
+                "<p>当前选择视频：<code>{}</code></p>",
+                escape_html(&p.to_string_lossy())
+            )
+        })
+        .unwrap_or_else(|| "<p>还没有选择本地视频。</p>".to_string());
+
+    let mut job_rows = String::new();
+    if jobs.is_empty() {
+        job_rows.push_str(
+            "<p style=\"color:#475467\">还没有 Live 任务，选择一个本地视频并点击「切片并启动」开始模拟。</p>",
+        );
+    } else {
+        job_rows.push_str("<ul style=\"padding-left:0;list-style:none;display:grid;gap:12px\">");
+        for (id, source_name, created_at, ts_url, fmp4_url, seg_count) in jobs {
+            job_rows.push_str(&format!(
+                "<li style=\"border:1px solid #e5e7eb;border-radius:14px;padding:14px;background:#fff\">\
+                   <p><strong>{name}</strong> · 切片数 {count} · 创建于 {time}</p>\
+                   <p>TS 直播：<code>{ts}</code></p>\
+                   <p>fMP4 直播：<code>{fmp4}</code></p>\
+                   <p style=\"color:#94a3b8;font-size:12px\">job_id: {id}</p>\
+                 </li>",
+                name = escape_html(source_name),
+                count = escape_html(seg_count),
+                time = escape_html(created_at),
+                ts = escape_html(ts_url),
+                fmp4 = escape_html(fmp4_url),
+                id = escape_html(id),
+            ));
+        }
+        job_rows.push_str("</ul>");
+    }
+
+    format!(
+        "<!doctype html>\
+         <html lang=\"zh-CN\">\
+         <head>\
+           <meta charset=\"utf-8\">\
+           <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+           <title>HLS Live Simulation</title>\
+           <style>\
+             *{{box-sizing:border-box}}\
+             body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;color:#0f172a}}\
+             main{{max-width:1000px;margin:0 auto;padding:32px 20px 48px}}\
+             .hero,.panel{{background:#fff;border:1px solid #dbe5f0;border-radius:20px;padding:22px;box-shadow:0 10px 30px rgba(15,23,42,.05);margin-bottom:20px}}\
+             .hero{{border-radius:24px;padding:28px}}\
+             h1{{margin:0;font-size:32px}}h2{{margin:0 0 12px;font-size:20px}}\
+             p{{margin:8px 0;color:#475467}}\
+             code{{font-family:'SFMono-Regular',Consolas,monospace;background:#f2f4f7;padding:2px 6px;border-radius:6px;word-break:break-all}}\
+             label{{display:block;font-weight:600;margin-bottom:8px}}\
+             input[type='text']{{width:100%;padding:12px 14px;border:1px solid #cbd5e1;border-radius:12px;font:inherit;background:#fff}}\
+             button{{appearance:none;border:none;border-radius:12px;background:#2563eb;color:#fff;padding:12px 16px;font:inherit;font-weight:700;cursor:pointer}}\
+             button:hover{{background:#1d4ed8}}\
+             .button-secondary{{background:#e2e8f0;color:#0f172a}}\
+             .button-secondary:hover{{background:#cbd5e1}}\
+             a{{color:#2563eb;font-weight:600;text-decoration:none}}\
+             .actions{{display:flex;gap:12px;flex-wrap:wrap;margin-top:14px}}\
+             .field{{display:grid;gap:8px;margin-bottom:16px}}\
+             .form-actions{{display:flex;gap:12px;flex-wrap:wrap}}\
+             .pick-status{{min-height:22px;font-size:14px;color:#475467}}\
+           </style>\
+         </head>\
+         <body>\
+           <main>\
+             <section class=\"hero\">\
+               <h1>HLS Live 模拟</h1>\
+               <p>选择一个本地视频，本服务会用 ffmpeg 预切成 TS 和 fMP4 两套分片，然后通过 <code>/live-test/&lt;job&gt;/&lt;flavor&gt;/index.m3u8</code> 输出一个会随服务器时间滚动的播放列表，模拟一个一直在播放该视频的直播流。</p>\
+               <p>服务根目录：<code>{root}</code></p>\
+               <p>基础地址：<code>{base}</code></p>\
+               {current}\
+               <p><a href=\"/\">返回 HLS VOD 页面</a></p>\
+             </section>\
+             <form class=\"panel\" action=\"/live\" method=\"post\">\
+               <h2>选择本机视频</h2>\
+               <div class=\"field\">\
+                 <label for=\"live_path\">本机视频绝对路径</label>\
+                 <input id=\"live_path\" type=\"text\" name=\"path\" value=\"{value}\" placeholder=\"例如 /Users/me/Videos/sample.mp4 或 D:\\Videos\\sample.mkv\" required>\
+               </div>\
+               <div class=\"form-actions\">\
+                 <button type=\"button\" id=\"live_pick\" class=\"button-secondary\">浏览选择</button>\
+                 <button type=\"submit\">使用这个视频</button>\
+               </div>\
+               <p id=\"live_pick_status\" class=\"pick-status\"></p>\
+             </form>\
+             <section class=\"panel\">\
+               <h2>切片并启动直播模拟</h2>\
+               <p>使用上方选择的视频，预切成 TS 和 fMP4，然后注册一个直播任务。每次刷新 <code>index.m3u8</code> 时窗口都会向前滚动。</p>\
+               <form action=\"/generate/live\" method=\"post\">\
+                 <button type=\"submit\">切片并启动</button>\
+               </form>\
+             </section>\
+             <section class=\"panel\">\
+               <h2>已有的直播任务</h2>\
+               {jobs}\
+             </section>\
+             <script>\
+               (() => {{\
+                 const pickButton = document.getElementById('live_pick');\
+                 const pathInput = document.getElementById('live_path');\
+                 const statusText = document.getElementById('live_pick_status');\
+                 pickButton.addEventListener('click', async () => {{\
+                   pickButton.disabled = true;\
+                   statusText.textContent = '正在打开文件选择框...';\
+                   try {{\
+                     const response = await fetch('/live/pick', {{ method: 'POST' }});\
+                     const data = await response.json();\
+                     if (!response.ok) {{ throw new Error(data.message || '选择失败'); }}\
+                     if (data.selected && data.path) {{\
+                       pathInput.value = data.path;\
+                       statusText.textContent = '已选择，正在刷新。';\
+                       window.location.reload();\
+                     }} else {{\
+                       statusText.textContent = data.message || '已取消选择。';\
+                     }}\
+                   }} catch (error) {{\
+                     statusText.textContent = '选择失败：' + (error.message || String(error));\
+                   }} finally {{\
+                     pickButton.disabled = false;\
+                   }}\
+                 }});\
+               }})();\
+             </script>\
+           </main>\
+         </body>\
+         </html>",
+        root = escape_html(&root_dir.to_string_lossy()),
+        base = escape_html(base_url),
+        current = current_path_html,
+        value = escape_html(&current_path_value),
+        jobs = job_rows,
+    )
 }

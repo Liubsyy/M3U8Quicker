@@ -74,6 +74,7 @@ export interface DownloadTaskSummary {
   updated_at: string;
   playback_available: boolean;
   file_path: string | null;
+  is_live?: boolean;
 }
 
 export interface DownloadTaskSegmentState {
@@ -319,7 +320,9 @@ export function canOpenInProgressPlayback(
 
 // ===================== Live recording =====================
 
-export type LiveProtocol = "flv";
+export type LiveProtocol = "flv" | "hls";
+
+export type LiveHlsMediaKind = "mpeg_ts" | "fmp4";
 
 export type LiveRecordStatus =
   | "Recording"
@@ -344,6 +347,9 @@ export interface LiveRecordSummary {
   completed_at: string | null;
   updated_at: string;
   file_path: string | null;
+  temp_dir?: string | null;
+  hls_media_kind?: LiveHlsMediaKind | null;
+  segment_count?: number;
 }
 
 export interface LiveRecordCounts {
@@ -393,12 +399,13 @@ export function liveRecordStatusToDownloadStatus(
 export function liveRecordToDownloadSummary(
   live: LiveRecordSummary
 ): DownloadTaskSummary {
+  const isHls = live.protocol === "hls";
   return {
     id: live.id,
     filename: live.filename,
-    file_type: "flv",
+    file_type: isHls ? "hls" : "flv",
     hls_output_mode: "single_stream",
-    hls_media_kind: "mpeg_ts",
+    hls_media_kind: live.hls_media_kind ?? "mpeg_ts",
     hls_selection: null,
     encryption_method: null,
     output_dir: live.output_dir,
@@ -413,6 +420,7 @@ export function liveRecordToDownloadSummary(
     updated_at: live.updated_at,
     playback_available: live.status === "Recorded" && Boolean(live.file_path),
     file_path: live.file_path,
+    is_live: true,
   };
 }
 

@@ -533,6 +533,7 @@ pub struct FirefoxExtensionInstallResult {
 #[serde(rename_all = "snake_case")]
 pub enum LiveProtocol {
     Flv,
+    Hls,
 }
 
 impl Default for LiveProtocol {
@@ -545,6 +546,7 @@ impl LiveProtocol {
     pub fn default_extension(self) -> &'static str {
         match self {
             LiveProtocol::Flv => "flv",
+            LiveProtocol::Hls => "m3u8",
         }
     }
 }
@@ -598,6 +600,15 @@ pub struct LiveRecordTask {
     pub completed_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
+    /// HLS only: working directory containing live segments + index.m3u8 while recording.
+    #[serde(default)]
+    pub temp_dir: Option<String>,
+    /// HLS only: detected at runtime from EXT-X-MAP presence.
+    #[serde(default)]
+    pub hls_media_kind: Option<HlsMediaKind>,
+    /// HLS only: number of segments captured so far.
+    #[serde(default)]
+    pub segment_count: u64,
 }
 
 impl LiveRecordTask {
@@ -641,6 +652,12 @@ pub struct LiveRecordSummary {
     pub completed_at: Option<String>,
     pub updated_at: String,
     pub file_path: Option<String>,
+    #[serde(default)]
+    pub temp_dir: Option<String>,
+    #[serde(default)]
+    pub hls_media_kind: Option<HlsMediaKind>,
+    #[serde(default)]
+    pub segment_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

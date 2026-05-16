@@ -10,6 +10,7 @@
 - 首页生成 HLS 输出，包含普通流、AES-128、AES-192、AES-256 四套播放列表
 - `/dash` 页面单独生成 DASH 输出
 - `/mp4` 页面把本机已有 MP4 通过本地端口暴露成 Direct MP4 测试地址
+- `/live` 页面选择本机视频后预切片，生成一个会随时间滚动播放该视频的 HLS 直播模拟地址（TS 与 fMP4 两种）
 - 生成后可直接访问 `.m3u8`、`.ts`、AES key、`.mpd`、`.m4s`，以及用于粘贴测试的 DASH JSON
 
 ## 环境要求
@@ -75,5 +76,12 @@ http://127.0.0.1:7878
   - 直链：`http://127.0.0.1:7878/mp4/local-file.mp4`
   - 页面里的“浏览选择”按钮会在 Windows 上打开系统文件选择框
   - 可选启动环境变量：`TEST_HLS_SERVER_MP4_PATH=D:\Videos\sample.mp4`
+- `/live` 页面提供 HLS 直播模拟（循环播放选择的视频以构造滚动窗口 m3u8）：
+  - 页面：`http://127.0.0.1:7878/live`
+  - TS 直播 URL：`http://127.0.0.1:7878/live-test/<job_id>/ts/index.m3u8`
+  - fMP4 直播 URL：`http://127.0.0.1:7878/live-test/<job_id>/fmp4/index.m3u8`
+  - 播放列表不带 `#EXT-X-ENDLIST`，`#EXT-X-MEDIA-SEQUENCE` 随服务器时间递增
+  - 可选启动环境变量：`TEST_HLS_SERVER_LIVE_PATH=/path/to/sample.mp4`
+  - 切片产物保留在 `data/live_<job_id>/{ts,fmp4}/` 下；任务列表会在服务进程退出后失效（不持久化）
 - 其中 AES-192 / AES-256 主要用于当前仓库下载逻辑联调，浏览器原生或 `hls.js` 未必能正常在线播放。
 - DASH 测试流用于当前仓库未加密 VOD DASH 下载联调，不覆盖 DRM 或 live/dynamic MPD。

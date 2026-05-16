@@ -435,6 +435,10 @@ export async function getLiveRecordsPage(
   });
 }
 
+export async function convertLiveHlsToMp4(id: string): Promise<string> {
+  return invoke<string>("convert_live_hls_to_mp4", { id });
+}
+
 export async function checkForUpdate(): Promise<UpdateInfo> {
   return invoke<UpdateInfo>("check_for_update");
 }
