@@ -883,9 +883,8 @@
         recordButton.textContent = "录制";
         recordButton.style.border = "none";
         recordButton.style.background = "transparent";
-        recordButton.style.color = "#cc1f3a";
+        recordButton.style.color = "#1155cc";
         recordButton.style.fontSize = "12px";
-        recordButton.style.fontWeight = "600";
         recordButton.style.cursor = "pointer";
         recordButton.style.padding = "2px 4px";
         recordButton.style.flex = "0 0 auto";

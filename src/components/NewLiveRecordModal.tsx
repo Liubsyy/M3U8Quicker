@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Form, Input, message, Modal, Select, Space, Typography } from "antd";
+import { Button, Form, Input, message, Modal, Select, Space } from "antd";
 import { FolderOpenOutlined } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -132,7 +132,7 @@ export function NewLiveRecordModal({
       okText="开始录制"
       cancelText="取消"
       confirmLoading={submitting}
-      width={640}
+      width={560}
       destroyOnClose
     >
       <Form layout="vertical" form={form} initialValues={{ protocol: "flv" }}>
@@ -176,10 +176,6 @@ export function NewLiveRecordModal({
             placeholder={"每行一个，格式 name:value\n例如\nReferer:https://example.com\nUser-Agent:Mozilla/5.0"}
           />
         </Form.Item>
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
-          直播录制会持续到主动停止；可以暂停后继续录制。
-          HLS 直播会把 ts / fMP4 分片先写入临时目录，停止时再确认是否合并为 MP4。
-        </Typography.Paragraph>
       </Form>
     </Modal>
   );
