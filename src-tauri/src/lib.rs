@@ -111,6 +111,24 @@ pub fn run() {
                     *proxy = settings.proxy;
                 }
                 {
+                    let proxy = state.proxy_settings.lock().await;
+                    let proxy_url = proxy.url.trim();
+                    let next_client = if proxy.enabled && !proxy_url.is_empty() {
+                        downloader::build_http_client(Some(proxy_url))
+                    } else {
+                        downloader::build_http_client(None)
+                    };
+                    match next_client {
+                        Ok(client) => {
+                            let mut current_client = state.http_client.write().await;
+                            *current_client = client;
+                        }
+                        Err(err) => {
+                            eprintln!("启动时按持久化代理配置重建 HTTP 客户端失败: {err}");
+                        }
+                    }
+                }
+                {
                     let mut max_concurrent_segments = state.max_concurrent_segments.lock().await;
                     *max_concurrent_segments = settings.download_concurrency;
                 }
