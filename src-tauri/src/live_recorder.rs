@@ -30,6 +30,58 @@ const HLS_MAX_REFRESH_INTERVAL: Duration = Duration::from_secs(6);
 const HLS_PLAYLIST_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 const LIVE_RECORD_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const FLV_LIVE_RECORD_RETRY_INTERVAL: Duration = Duration::from_millis(300);
+const FLV_SPEED_WINDOW: Duration = Duration::from_secs(3);
+
+/// Sliding-window throughput tracker. Survives across FLV reconnect attempts so
+/// brief disconnects do not collapse the displayed download speed to 0.
+#[derive(Debug)]
+struct SpeedTracker {
+    window: Duration,
+    samples: VecDeque<(Instant, u64)>,
+}
+
+impl SpeedTracker {
+    fn new(window: Duration) -> Self {
+        Self {
+            window,
+            samples: VecDeque::with_capacity(16),
+        }
+    }
+
+    fn record(&mut self, total_bytes: u64) {
+        let now = Instant::now();
+        let bytes = match self.samples.back() {
+            Some(&(_, last)) if total_bytes < last => last,
+            _ => total_bytes,
+        };
+        self.samples.push_back((now, bytes));
+        let cutoff = now.checked_sub(self.window);
+        if let Some(cutoff) = cutoff {
+            while self.samples.len() > 2 {
+                match self.samples.front() {
+                    Some(&(t, _)) if t < cutoff => {
+                        self.samples.pop_front();
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
+
+    fn speed_bps(&self) -> u64 {
+        if self.samples.len() < 2 {
+            return 0;
+        }
+        let (t0, b0) = *self.samples.front().unwrap();
+        let (t1, b1) = *self.samples.back().unwrap();
+        let dt = t1.saturating_duration_since(t0).as_secs_f64();
+        if dt <= 0.0 {
+            return 0;
+        }
+        let db = b1.saturating_sub(b0) as f64;
+        (db / dt) as u64
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FlvTagFingerprint {
@@ -293,6 +345,10 @@ pub async fn run_live_record(
     let client = client.read().await.clone();
 
     let mut append_next = append;
+    let mut speed_tracker = SpeedTracker::new(FLV_SPEED_WINDOW);
+    if protocol == LiveProtocol::Flv {
+        speed_tracker.record(initial_bytes);
+    }
     let final_status = loop {
         let (current_bytes, current_duration_ms) = current_live_record_counters(
             &live_records,
@@ -317,6 +373,7 @@ pub async fn run_live_record(
                     current_bytes,
                     current_duration_ms,
                     append_next,
+                    &mut speed_tracker,
                 )
                 .await
             }
@@ -366,13 +423,21 @@ pub async fn run_live_record(
                     current_duration_ms,
                 )
                 .await;
+                // Hold the most recently computed speed across the reconnect
+                // attempt — do not add new tracker samples here, so the value
+                // does not decay while the connection is down.
+                let retry_speed = if protocol == LiveProtocol::Flv {
+                    speed_tracker.speed_bps()
+                } else {
+                    0
+                };
                 emit_live_progress(
                     &app_handle,
                     &live_records,
                     &task_id,
                     LiveRecordStatus::Recording,
                     total_bytes,
-                    0,
+                    retry_speed,
                     duration_ms,
                 )
                 .await;
@@ -672,6 +737,7 @@ async fn run_flv_record(
     _initial_bytes: u64,
     initial_duration_ms: u64,
     append: bool,
+    speed_tracker: &mut SpeedTracker,
 ) -> Result<LiveRecordOutcome, AppError> {
     if let Some(parent) = output_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -733,7 +799,10 @@ async fn run_flv_record(
 
     let start_instant = Instant::now();
     let mut last_emit = Instant::now();
-    let mut last_emit_bytes = total_bytes;
+    // Note: do not push a same-byte sample here. We want the displayed speed
+    // to stay frozen at the pre-disconnect value until real chunks arrive
+    // again. `speed_tracker.record(total_bytes)` happens inside the chunk
+    // loop below when bytes actually flow.
 
     emit_live_progress(
         &app_handle,
@@ -741,7 +810,7 @@ async fn run_flv_record(
         &task_id,
         LiveRecordStatus::Recording,
         total_bytes,
-        0,
+        speed_tracker.speed_bps(),
         initial_duration_ms,
     )
     .await;
@@ -765,6 +834,9 @@ async fn run_flv_record(
                 let duration_ms = initial_duration_ms + start_instant.elapsed().as_millis() as u64;
                 update_live_record_counters(&live_records, &task_id, total_bytes, duration_ms)
                     .await;
+                // Capture bytes received during this short-lived connection
+                // so rapid reconnects still accumulate samples in the window.
+                speed_tracker.record(total_bytes);
                 drop(file);
                 return Err(AppError::Network(err.to_string()));
             }
@@ -773,6 +845,7 @@ async fn run_flv_record(
                 let duration_ms = initial_duration_ms + start_instant.elapsed().as_millis() as u64;
                 update_live_record_counters(&live_records, &task_id, total_bytes, duration_ms)
                     .await;
+                speed_tracker.record(total_bytes);
                 drop(file);
                 return Err(AppError::Network(
                     "HTTP-FLV stream ended before user stopped recording".to_string(),
@@ -813,10 +886,8 @@ async fn run_flv_record(
         }
 
         if last_emit.elapsed() >= PROGRESS_EMIT_INTERVAL {
-            let delta_bytes = total_bytes.saturating_sub(last_emit_bytes);
-            let elapsed = last_emit.elapsed().as_secs_f64().max(0.001);
-            let speed = (delta_bytes as f64 / elapsed) as u64;
-            last_emit_bytes = total_bytes;
+            speed_tracker.record(total_bytes);
+            let speed = speed_tracker.speed_bps();
             last_emit = Instant::now();
 
             let duration_ms = initial_duration_ms + start_instant.elapsed().as_millis() as u64;
@@ -1622,6 +1693,54 @@ mod tests {
             live_record_retry_interval(LiveProtocol::Hls),
             LIVE_RECORD_RETRY_INTERVAL
         );
+    }
+
+    #[test]
+    fn speed_tracker_returns_zero_with_single_sample() {
+        let mut tracker = SpeedTracker::new(Duration::from_secs(3));
+        tracker.record(1_000);
+        assert_eq!(tracker.speed_bps(), 0);
+    }
+
+    #[test]
+    fn speed_tracker_clamps_monotonic_regression() {
+        let mut tracker = SpeedTracker::new(Duration::from_secs(3));
+        tracker.record(1_000);
+        std::thread::sleep(Duration::from_millis(20));
+        // Regress; tracker should clamp to the previous max so speed never
+        // becomes negative / underflows.
+        tracker.record(500);
+        std::thread::sleep(Duration::from_millis(20));
+        tracker.record(2_000);
+        assert!(tracker.speed_bps() > 0);
+    }
+
+    #[test]
+    fn speed_tracker_computes_average_over_window() {
+        let mut tracker = SpeedTracker::new(Duration::from_secs(3));
+        tracker.record(0);
+        std::thread::sleep(Duration::from_millis(500));
+        tracker.record(500_000);
+        let speed = tracker.speed_bps();
+        // Expect roughly 1_000_000 B/s; allow wide tolerance for CI jitter.
+        assert!(
+            speed > 500_000 && speed < 2_000_000,
+            "speed out of expected range: {speed}"
+        );
+    }
+
+    #[test]
+    fn speed_tracker_holds_value_when_no_new_samples() {
+        let mut tracker = SpeedTracker::new(Duration::from_millis(300));
+        tracker.record(0);
+        std::thread::sleep(Duration::from_millis(50));
+        tracker.record(500_000);
+        let frozen = tracker.speed_bps();
+        assert!(frozen > 0);
+        // Simulate the reconnect-wait period: no new samples pushed. The
+        // tracker should keep returning the same speed, not decay to 0.
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(tracker.speed_bps(), frozen);
     }
 
     #[tokio::test]
