@@ -39,6 +39,35 @@ pub fn live_output_file_path(task: &LiveRecordTask) -> PathBuf {
     Path::new(&task.output_dir).join(format!("{}.{}", task.filename, extension))
 }
 
+/// Pick an available file stem under `output_dir`; otherwise append `_N`.
+pub fn pick_available_file_stem(
+    output_dir: &Path,
+    filename: &str,
+    extension: &str,
+    is_reserved: impl Fn(&Path) -> bool,
+) -> String {
+    let candidate_path =
+        |candidate_name: &str| output_dir.join(format!("{}.{}", candidate_name, extension));
+
+    let initial = candidate_path(filename);
+    if !initial.exists() && !is_reserved(&initial) {
+        return filename.to_string();
+    }
+
+    let mut counter: u32 = 1;
+    loop {
+        let candidate_name = format!("{}_{}", filename, counter);
+        let candidate = candidate_path(&candidate_name);
+        if !candidate.exists() && !is_reserved(&candidate) {
+            return candidate_name;
+        }
+        counter += 1;
+        if counter > 9999 {
+            return format!("{}_{}", filename, Utc::now().timestamp_millis());
+        }
+    }
+}
+
 /// Build the working directory path for an HLS live task. Segments + local index.m3u8 are
 /// written here during recording and moved to a permanent location on Stop.
 pub fn live_hls_temp_dir(task: &LiveRecordTask) -> PathBuf {
@@ -230,11 +259,15 @@ pub async fn run_live_record(
                                     err
                                 );
                             }
-                            let final_dir = pick_available_dir(&PathBuf::from(&task.output_dir), &task.filename);
+                            let final_dir = pick_available_dir(
+                                &PathBuf::from(&task.output_dir),
+                                &task.filename,
+                            );
                             match tokio::fs::rename(&temp_dir, &final_dir).await {
                                 Ok(()) => {
                                     let final_playlist = final_dir.join("index.m3u8");
-                                    task.file_path = Some(final_playlist.to_string_lossy().to_string());
+                                    task.file_path =
+                                        Some(final_playlist.to_string_lossy().to_string());
                                     task.temp_dir = None;
                                 }
                                 Err(err) => {
@@ -247,7 +280,8 @@ pub async fn run_live_record(
                                     // Fall back to keeping the temp dir; expose the playlist path inside it.
                                     let playlist = temp_dir.join("index.m3u8");
                                     if playlist.exists() {
-                                        task.file_path = Some(playlist.to_string_lossy().to_string());
+                                        task.file_path =
+                                            Some(playlist.to_string_lossy().to_string());
                                     }
                                 }
                             }
@@ -387,8 +421,7 @@ async fn run_flv_record(
             last_emit_bytes = total_bytes;
             last_emit = Instant::now();
 
-            let duration_ms =
-                initial_duration_ms + start_instant.elapsed().as_millis() as u64;
+            let duration_ms = initial_duration_ms + start_instant.elapsed().as_millis() as u64;
 
             emit_live_progress(
                 &app_handle,
@@ -530,11 +563,7 @@ async fn run_hls_record(
             new_segments.push((remote_seq, segment.clone()));
         }
 
-        if media
-            .segments
-            .last()
-            .is_some()
-        {
+        if media.segments.last().is_some() {
             let last_remote = media.media_sequence + media.segments.len() as u64 - 1;
             last_remote_seq = Some(match last_remote_seq {
                 Some(prev) => prev.max(last_remote),
@@ -708,9 +737,8 @@ async fn fetch_media_playlist_inner(
     }
     let response = request.send().await?.error_for_status()?;
     let bytes = response.bytes().await?;
-    let playlist = m3u8_rs::parse_playlist_res(&bytes).map_err(|_| {
-        AppError::InvalidInput("链接内容不是有效的 M3U8 播放列表".to_string())
-    })?;
+    let playlist = m3u8_rs::parse_playlist_res(&bytes)
+        .map_err(|_| AppError::InvalidInput("链接内容不是有效的 M3U8 播放列表".to_string()))?;
     match playlist {
         m3u8_rs::Playlist::MediaPlaylist(media) => Ok((base_url, media)),
         m3u8_rs::Playlist::MasterPlaylist(master) => {
@@ -720,9 +748,17 @@ async fn fetch_media_playlist_inner(
                 .filter(|v| !v.is_i_frame)
                 .filter(|v| !v.uri.trim().is_empty())
                 .max_by_key(|v| v.bandwidth)
-                .ok_or_else(|| AppError::M3u8Parse("Master playlist has no variants".to_string()))?;
+                .ok_or_else(|| {
+                    AppError::M3u8Parse("Master playlist has no variants".to_string())
+                })?;
             let next_url = resolve_url(&base_url, &variant.uri);
-            Box::pin(fetch_media_playlist_inner(client, &next_url, headers, depth + 1)).await
+            Box::pin(fetch_media_playlist_inner(
+                client,
+                &next_url,
+                headers,
+                depth + 1,
+            ))
+            .await
         }
     }
 }
@@ -913,10 +949,7 @@ async fn emit_live_progress(
 }
 
 pub(crate) fn emit_live_progress_from_task(app_handle: &AppHandle, task: &LiveRecordTask) {
-    let updated_at = task
-        .updated_at
-        .unwrap_or_else(Utc::now)
-        .to_rfc3339();
+    let updated_at = task.updated_at.unwrap_or_else(Utc::now).to_rfc3339();
     let event = LiveProgressEvent {
         id: task.id.clone(),
         status: task.status.clone(),

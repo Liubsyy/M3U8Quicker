@@ -53,7 +53,11 @@ pub async fn inspect_dash_tracks(
 ) -> Result<InspectHlsTracksResult, AppError> {
     let client = state.http_client.read().await.clone();
     let request_headers = parse_request_headers(params.extra_headers.as_deref())?;
-    let source = dash_source_from_parts(&params.url, params.source_text.as_deref(), params.source_kind)?;
+    let source = dash_source_from_parts(
+        &params.url,
+        params.source_text.as_deref(),
+        params.source_kind,
+    )?;
     downloader::inspect_dash_tracks(&client, &source, &request_headers, params.source_kind).await
 }
 
@@ -68,21 +72,24 @@ pub async fn create_download(
     let request_headers = parse_request_headers(params.extra_headers.as_deref())?;
     let file_type = resolve_create_download_file_type(&params)?;
 
-    let output_dir =
-        if let Some(output_dir) = params.output_dir.clone().filter(|dir| !dir.trim().is_empty()) {
-            let output_dir = output_dir.trim().to_string();
-            let mut default_download_dir = state.default_download_dir.lock().await;
-            if *default_download_dir != output_dir {
-                *default_download_dir = output_dir.clone();
-                persistence::update_settings(&app_handle, |settings| {
-                    settings.default_download_dir = Some(output_dir.clone());
-                })
-                .await;
-            }
-            output_dir
-        } else {
-            state.default_download_dir.lock().await.clone()
-        };
+    let output_dir = if let Some(output_dir) = params
+        .output_dir
+        .clone()
+        .filter(|dir| !dir.trim().is_empty())
+    {
+        let output_dir = output_dir.trim().to_string();
+        let mut default_download_dir = state.default_download_dir.lock().await;
+        if *default_download_dir != output_dir {
+            *default_download_dir = output_dir.clone();
+            persistence::update_settings(&app_handle, |settings| {
+                settings.default_download_dir = Some(output_dir.clone());
+            })
+            .await;
+        }
+        output_dir
+    } else {
+        state.default_download_dir.lock().await.clone()
+    };
     let filename = normalize_download_filename(
         params
             .filename
@@ -494,7 +501,9 @@ pub async fn resume_download(
             .file_path
             .clone()
             .map(PathBuf::from)
-            .unwrap_or_else(|| resolve_bundle_output_dir(Path::new(&task.output_dir), &task.filename));
+            .unwrap_or_else(|| {
+                resolve_bundle_output_dir(Path::new(&task.output_dir), &task.filename)
+            });
 
         let updated_task = {
             let mut downloads = state.downloads.lock().await;
@@ -757,7 +766,9 @@ pub async fn retry_failed_segments(
             .file_path
             .clone()
             .map(PathBuf::from)
-            .unwrap_or_else(|| resolve_bundle_output_dir(Path::new(&task.output_dir), &task.filename));
+            .unwrap_or_else(|| {
+                resolve_bundle_output_dir(Path::new(&task.output_dir), &task.filename)
+            });
 
         let updated_task = {
             let mut downloads = state.downloads.lock().await;
@@ -2116,10 +2127,7 @@ pub async fn create_preview_session(
     let normalized_source_text = match source_kind {
         DownloadSourceKind::Url => None,
         DownloadSourceKind::InlineDashJson => {
-            let raw = source_text
-                .as_deref()
-                .unwrap_or(trimmed_url)
-                .trim();
+            let raw = source_text.as_deref().unwrap_or(trimmed_url).trim();
             if raw.is_empty() {
                 return Err(AppError::InvalidInput("DASH JSON 不能为空".to_string()));
             }
@@ -3059,7 +3067,9 @@ fn resolve_create_download_file_type(params: &CreateDownloadParams) -> Result<Fi
         return Ok(file_type);
     }
 
-    if looks_like_dash_input(&params.url) || params.source_kind == DownloadSourceKind::InlineDashJson {
+    if looks_like_dash_input(&params.url)
+        || params.source_kind == DownloadSourceKind::InlineDashJson
+    {
         return Ok(FileType::Dash);
     }
 
@@ -3125,7 +3135,12 @@ fn dash_task_url(url: &str, source_text: Option<&str>, source_kind: DownloadSour
 fn extract_dash_json_base_url(raw: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(raw)
         .ok()
-        .and_then(|value| value.get("base_url").and_then(|value| value.as_str()).map(str::to_string))
+        .and_then(|value| {
+            value
+                .get("base_url")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
 }
 
 fn infer_direct_file_type_from_url(url: &str) -> Option<FileType> {
@@ -3724,21 +3739,24 @@ pub async fn create_live_record(
     let request_headers = parse_request_headers(params.extra_headers.as_deref())?;
     let protocol = params.protocol.unwrap_or_default();
 
-    let output_dir =
-        if let Some(output_dir) = params.output_dir.clone().filter(|dir| !dir.trim().is_empty()) {
-            let output_dir = output_dir.trim().to_string();
-            let mut default_download_dir = state.default_download_dir.lock().await;
-            if *default_download_dir != output_dir {
-                *default_download_dir = output_dir.clone();
-                persistence::update_settings(&app_handle, |settings| {
-                    settings.default_download_dir = Some(output_dir.clone());
-                })
-                .await;
-            }
-            output_dir
-        } else {
-            state.default_download_dir.lock().await.clone()
-        };
+    let output_dir = if let Some(output_dir) = params
+        .output_dir
+        .clone()
+        .filter(|dir| !dir.trim().is_empty())
+    {
+        let output_dir = output_dir.trim().to_string();
+        let mut default_download_dir = state.default_download_dir.lock().await;
+        if *default_download_dir != output_dir {
+            *default_download_dir = output_dir.clone();
+            persistence::update_settings(&app_handle, |settings| {
+                settings.default_download_dir = Some(output_dir.clone());
+            })
+            .await;
+        }
+        output_dir
+    } else {
+        state.default_download_dir.lock().await.clone()
+    };
 
     let filename = normalize_live_filename(
         params
@@ -3773,28 +3791,50 @@ pub async fn create_live_record(
 
     let task = match protocol {
         LiveProtocol::Flv => {
-            let output_path = live_recorder::live_output_file_path(&task);
-            LiveRecordTask {
+            let output_root = Path::new(&output_dir);
+            let mut live_records = state.live_records.lock().await;
+            let filename = live_recorder::pick_available_file_stem(
+                output_root,
+                &filename,
+                protocol.default_extension(),
+                |candidate| {
+                    live_records.values().any(|record| {
+                        matches!(
+                            record.status,
+                            LiveRecordStatus::Recording | LiveRecordStatus::Paused
+                        ) && record.protocol == LiveProtocol::Flv
+                            && record
+                                .file_path
+                                .as_deref()
+                                .map(|path| Path::new(path) == candidate)
+                                .unwrap_or(false)
+                    })
+                },
+            );
+            let output_path =
+                output_root.join(format!("{}.{}", filename, protocol.default_extension()));
+            let task = LiveRecordTask {
+                filename,
                 file_path: Some(output_path.to_string_lossy().to_string()),
                 ..task
-            }
+            };
+            live_records.insert(id.clone(), task.clone());
+            task
         }
         LiveProtocol::Hls => {
             let temp_dir = live_recorder::live_hls_temp_dir(&task);
             // Pre-create the working directory so listing UIs can find it immediately.
             tokio::fs::create_dir_all(&temp_dir).await?;
-            LiveRecordTask {
+            let task = LiveRecordTask {
                 file_path: None,
                 temp_dir: Some(temp_dir.to_string_lossy().to_string()),
                 ..task
-            }
+            };
+            let mut live_records = state.live_records.lock().await;
+            live_records.insert(id.clone(), task.clone());
+            task
         }
     };
-
-    {
-        let mut map = state.live_records.lock().await;
-        map.insert(id.clone(), task.clone());
-    }
     persistence::save_live_task(&app_handle, &task).await?;
 
     spawn_live_worker(&app_handle, &state, &id, request_headers, false).await;
@@ -3803,10 +3843,7 @@ pub async fn create_live_record(
 }
 
 #[tauri::command]
-pub async fn pause_live_record(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), AppError> {
+pub async fn pause_live_record(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
     let signal = {
         let signals = state.live_stop_signals.lock().await;
         signals.get(&id).cloned()
@@ -3853,10 +3890,7 @@ pub async fn resume_live_record(
 }
 
 #[tauri::command]
-pub async fn stop_live_record(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), AppError> {
+pub async fn stop_live_record(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
     let signal = {
         let signals = state.live_stop_signals.lock().await;
         signals.get(&id).cloned()
@@ -3935,7 +3969,11 @@ pub async fn remove_live_record(
     let (file_path, temp_dir, protocol) = {
         let mut map = state.live_records.lock().await;
         match map.remove(&id) {
-            Some(task) => (task.file_path.clone(), task.temp_dir.clone(), Some(task.protocol)),
+            Some(task) => (
+                task.file_path.clone(),
+                task.temp_dir.clone(),
+                Some(task.protocol),
+            ),
             None => (None, None, None),
         }
     };
@@ -3968,17 +4006,13 @@ pub async fn remove_live_record(
 }
 
 #[tauri::command]
-pub async fn clear_live_history(
-    app_handle: AppHandle,
-) -> Result<(), AppError> {
+pub async fn clear_live_history(app_handle: AppHandle) -> Result<(), AppError> {
     persistence::clear_live_history(&app_handle).await?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn get_live_record_counts(
-    app_handle: AppHandle,
-) -> Result<LiveRecordCounts, AppError> {
+pub async fn get_live_record_counts(app_handle: AppHandle) -> Result<LiveRecordCounts, AppError> {
     persistence::get_live_record_counts(&app_handle).await
 }
 
