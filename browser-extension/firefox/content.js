@@ -473,6 +473,26 @@
     }
   }
 
+  // Only when the stored target carries no usable title (e.g. detected before the
+  // page title finished loading) do we re-read the current document.title at action time.
+  function ensureTitleParam(url) {
+    try {
+      const urlObj = new URL(url, window.location.href);
+      const existing = urlObj.searchParams.get("title");
+      if (existing && existing.trim()) {
+        return url;
+      }
+      const fresh = getPageTitle();
+      if (!fresh || !fresh.trim()) {
+        return url;
+      }
+      urlObj.searchParams.set("title", fresh);
+      return urlObj.href;
+    } catch (error) {
+      return url;
+    }
+  }
+
   function getPageTitle() {
     let title = document.title;
     try {
@@ -844,7 +864,7 @@
       copyButton.style.flex = "0 0 auto";
       copyButton.addEventListener("click", async (event) => {
         event.stopPropagation();
-        const copied = await copyTextToClipboard(item.url);
+        const copied = await copyTextToClipboard(ensureTitleParam(item.url));
         const originalText = copyButton.textContent;
         copyButton.textContent = copied ? "已复制" : "失败";
         window.setTimeout(() => {
@@ -911,6 +931,7 @@
     if (!target) {
       return;
     }
+    target = ensureTitleParam(target);
     const params = new URLSearchParams({
       url: target,
     });
@@ -948,6 +969,7 @@
     if (!target) {
       return;
     }
+    target = ensureTitleParam(target);
     const params = new URLSearchParams({
       url: target,
     });
