@@ -287,7 +287,7 @@ pub fn pick_available_file_stem(
 /// Build the working directory path for an HLS live task. Segments + local index.m3u8 are
 /// written here during recording and moved to a permanent location on Stop.
 pub fn live_hls_temp_dir(task: &LiveRecordTask) -> PathBuf {
-    Path::new(&task.output_dir).join(format!(".live_{}", task.id))
+    Path::new(&task.output_dir).join(format!("live_{}", task.id))
 }
 
 /// Reason driving the worker to stop (must be set by the command layer
