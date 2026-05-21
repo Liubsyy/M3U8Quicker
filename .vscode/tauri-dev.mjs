@@ -76,9 +76,10 @@ function wireCleanup() {
 // --- 非 macOS：直接委托 tauri dev ---------------------------------------------
 
 function runTauriDev() {
-  const bin = process.platform === "win32" ? "tauri.cmd" : "tauri";
-  const tauriBin = join(ROOT, "node_modules", ".bin", bin);
-  const child = run(tauriBin, ["dev"], { cwd: ROOT });
+  const child =
+    process.platform === "win32"
+      ? run("cmd.exe", ["/d", "/s", "/c", "npm run tauri dev"], { cwd: ROOT })
+      : run("npm", ["run", "tauri", "dev"], { cwd: ROOT });
   child.on("exit", (code) => process.exit(code ?? 0));
 }
 
