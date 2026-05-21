@@ -165,9 +165,17 @@ npm install
 
 #### 2. 启动桌面应用调试
 
+VSCode 直接按 **F5**，或：
+
 ```bash
-npm run tauri dev
+npm run dev:desktop
 ```
+
+`npm run dev:desktop` 是跨平台启动入口（VSCode F5 也指向它）：
+
+- Windows / Linux：等价于 `npm run tauri dev`。
+- macOS：自起 Vite + 构建 dev 二进制，并把它包进一个声明了 `m3u8quicker://` 协议的 `.app` 后注册运行。
+  这样浏览器扩展在调试期也能像 Windows 一样唤起应用（`tauri dev` 产出的裸二进制无法被 macOS 注册为协议处理器）。
 
 ### 常用命令
 
@@ -175,8 +183,9 @@ npm run tauri dev
 | --- | --- |
 | `npm install` | 安装前端依赖 |
 | `npm run dev` | 启动前端开发服务器 |
+| `npm run dev:desktop` | 启动桌面应用调试（macOS 下额外注册深链 `.app`） |
 | `npm run preview` | 预览前端构建产物 |
-| `npm run tauri dev` | 启动桌面应用开发模式 |
+| `npm run tauri dev` | 启动桌面应用开发模式（macOS 下不支持扩展深链跳转） |
 | `npm run lint` | 检查前端代码规范 |
 | `npm run build` | 执行 TypeScript 检查并构建前端 |
 | `npm run tauri build` | 构建桌面应用安装包 |

@@ -25,6 +25,7 @@ test-hls-server/**/.DS_Store
 .vscode/*
 !.vscode/extensions.json
 !.vscode/launch.json
+!.vscode/tauri-dev.mjs
 .idea
 .DS_Store
 *.suo

@@ -5,7 +5,7 @@
       "name": "Tauri Dev",
       "type": "node-terminal",
       "request": "launch",
-      "command": "npm run tauri dev",
+      "command": "npm run dev:desktop",
       "cwd": "${workspaceFolder}"
     }
   ]
