@@ -476,6 +476,11 @@
   // Only when the stored target carries no usable title (e.g. detected before the
   // page title finished loading) do we re-read the current document.title at action time.
   function ensureTitleParam(url) {
+    // Inline dash manifests are JSON strings, not URLs; never run them through
+    // the URL parser or they get percent-encoded into a broken page URL.
+    if (typeof url === "string" && url.trim().startsWith("{")) {
+      return url;
+    }
     try {
       const urlObj = new URL(url, window.location.href);
       const existing = urlObj.searchParams.get("title");
