@@ -19,6 +19,7 @@
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "antd": "^6.3.4",
     "hls.js": "^1.6.15",
+    "mpegts.js": "^1.8.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },

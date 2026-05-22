@@ -1,14 +1,18 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { Alert, Spin } from "antd";
 import type Hls from "hls.js";
+import type Mpegts from "mpegts.js";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   DownloadProgressEvent,
   DownloadStatus,
+  LiveProgressEvent,
   PlaybackSourceKind,
 } from "../types";
+import { liveRecordStatusToDownloadStatus } from "../types";
 import {
   closeDownloadPlaybackSession,
+  closeLivePlaybackSession,
   getDownloadSummary,
   prioritizeDownloadPlaybackPosition,
 } from "../services/api";
@@ -22,17 +26,23 @@ interface PlaybackWindowQuery {
   playbackKind: PlaybackSourceKind;
   sessionToken: string;
   filename: string;
+  isLive: boolean;
+  scope: "download" | "live";
+  initialStatus: DownloadStatus | null;
 }
 
 export function PlaybackWindow() {
   const query = useMemo(() => parsePlaybackWindowQuery(window.location.search), []);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const mpegtsRef = useRef<Mpegts.Player | null>(null);
   const sessionClosedRef = useRef(false);
   const taskStatusRef = useRef<DownloadStatus | null>(null);
   const lastPrioritizedRef = useRef<{ position: number; at: number } | null>(null);
   const suppressSeekGuardRef = useRef(false);
-  const [taskStatus, setTaskStatus] = useState<DownloadStatus | null>(null);
+  const [taskStatus, setTaskStatus] = useState<DownloadStatus | null>(
+    query?.initialStatus ?? null
+  );
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(
     query ? null : "播放器参数不完整，无法打开当前任务。"
@@ -92,6 +102,31 @@ export function PlaybackWindow() {
 
     let disposed = false;
     let unlisten: UnlistenFn | undefined;
+
+    if (query.scope === "live") {
+      // Live recordings are not in the download table; follow live-progress
+      // events for status. Finished recordings keep the initial status.
+      setLoading(false);
+      listen<LiveProgressEvent>("live-progress", (event) => {
+        if (event.payload.id !== query.taskId) {
+          return;
+        }
+        appendDebugLog(`收到直播进度事件 status=${String(event.payload.status)}`);
+        setTaskStatus(liveRecordStatusToDownloadStatus(event.payload.status));
+      }).then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      });
+
+      return () => {
+        disposed = true;
+        unlisten?.();
+      };
+    }
+
     const syncTask = async () => {
       try {
         const task = await getDownloadSummary(query.taskId);
@@ -154,12 +189,14 @@ export function PlaybackWindow() {
       }
       sessionClosedRef.current = true;
       appendDebugLog("准备关闭播放会话");
-      void closeDownloadPlaybackSession(query.taskId, query.sessionToken).catch(
-        (error) => {
-          console.debug("Failed to close playback session", error);
-          appendDebugLog(`关闭播放会话失败: ${String(error)}`);
-        }
-      );
+      const closeSessionFn =
+        query.scope === "live"
+          ? closeLivePlaybackSession
+          : closeDownloadPlaybackSession;
+      void closeSessionFn(query.taskId, query.sessionToken).catch((error) => {
+        console.debug("Failed to close playback session", error);
+        appendDebugLog(`关闭播放会话失败: ${String(error)}`);
+      });
     };
 
     const handleBeforeUnload = () => {
@@ -187,7 +224,7 @@ export function PlaybackWindow() {
     applySavedVolume(video);
 
     const prioritizeCurrentPosition = async () => {
-      if (query.playbackKind !== "hls") {
+      if (query.scope !== "download" || query.playbackKind !== "hls") {
         return;
       }
 
@@ -305,7 +342,49 @@ export function PlaybackWindow() {
     video.addEventListener("error", handleVideoError);
     video.addEventListener("volumechange", handleVolumeChange);
 
-    if (query.playbackKind === "file") {
+    if (query.playbackKind === "flv" || query.playbackKind === "mpegts") {
+      const mediaType = query.playbackKind === "mpegts" ? "mpegts" : "flv";
+      void (async () => {
+        appendDebugLog(`准备按需加载 mpegts.js (type=${mediaType})`);
+        const mpegtsModule = (await import("mpegts.js")).default;
+        if (disposed) {
+          return;
+        }
+
+        if (!mpegtsModule.isSupported()) {
+          appendDebugLog(`mpegts.js 报告当前环境不支持 ${mediaType}`);
+          setErrorText(
+            mediaType === "mpegts"
+              ? "当前环境不支持该视频的软解码播放。"
+              : "当前环境不支持 FLV 播放。"
+          );
+          return;
+        }
+
+        appendDebugLog(`mpegts.js 已加载，创建播放器 type=${mediaType} isLive=${query.isLive}`);
+        const player = mpegtsModule.createPlayer(
+          { type: mediaType, isLive: query.isLive, url: query.playbackUrl },
+          { enableWorker: true, liveBufferLatencyChasing: query.isLive }
+        );
+        mpegtsRef.current = player;
+        player.attachMediaElement(video);
+        player.on(mpegtsModule.Events.ERROR, (type, detail) => {
+          console.error("mpegts playback error", type, detail);
+          appendDebugLog(
+            `mpegts: error type=${String(type)} detail=${String(detail)}`
+          );
+          setErrorText(
+            `视频流暂不可用，请稍后重试。(${String(detail ?? type)})`
+          );
+        });
+        player.load();
+        setLoading(false);
+      })().catch((error) => {
+        console.error("Failed to load mpegts.js", error);
+        appendDebugLog(`加载 mpegts.js 失败: ${String(error)}`);
+        setErrorText("播放器初始化失败，请关闭后重试。");
+      });
+    } else if (query.playbackKind === "file") {
       appendDebugLog("使用文件直连播放");
       video.src = query.playbackUrl;
       video.load();
@@ -406,6 +485,14 @@ export function PlaybackWindow() {
       video.removeEventListener("stalled", handleStalled);
       video.removeEventListener("error", handleVideoError);
       video.removeEventListener("volumechange", handleVolumeChange);
+      if (mpegtsRef.current) {
+        try {
+          mpegtsRef.current.destroy();
+        } catch (error) {
+          console.debug("Failed to destroy mpegts player", error);
+        }
+        mpegtsRef.current = null;
+      }
       hlsRef.current?.destroy();
       hlsRef.current = null;
       video.removeAttribute("src");
@@ -464,6 +551,9 @@ function parsePlaybackWindowQuery(search: string): PlaybackWindowQuery | null {
   const playbackKind = normalizePlaybackKind(params.get("playbackKind"));
   const sessionToken = params.get("sessionToken")?.trim() || "";
   const filename = params.get("filename")?.trim() || "正在播放";
+  const scope = params.get("scope")?.trim() === "live" ? "live" : "download";
+  const isLive = params.get("isLive")?.trim() === "1";
+  const initialStatus = parseStatusParam(params.get("status"));
 
   if (!taskId || !playbackUrl || !sessionToken) {
     return null;
@@ -475,11 +565,28 @@ function parsePlaybackWindowQuery(search: string): PlaybackWindowQuery | null {
     playbackKind,
     sessionToken,
     filename,
+    scope,
+    isLive,
+    initialStatus,
   };
 }
 
 function normalizePlaybackKind(value: string | null): PlaybackSourceKind {
-  return value === "file" ? "file" : "hls";
+  if (value === "file") return "file";
+  if (value === "flv") return "flv";
+  if (value === "mpegts") return "mpegts";
+  return "hls";
+}
+
+function parseStatusParam(value: string | null): DownloadStatus | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed === "Failed") {
+    return { Failed: "" };
+  }
+  return trimmed as DownloadStatus;
 }
 
 function isInProgressProgressiveFilePlayback(

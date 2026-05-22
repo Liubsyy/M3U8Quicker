@@ -178,12 +178,13 @@ export interface OpenPlaybackSessionResponse {
   window_label: string;
   playback_url: string;
   playback_kind: PlaybackSourceKind;
+  is_live?: boolean;
   session_token: string;
   filename: string;
   status: DownloadStatus;
 }
 
-export type PlaybackSourceKind = "hls" | "file";
+export type PlaybackSourceKind = "hls" | "file" | "flv" | "mpegts";
 
 export type ChromiumBrowser = "chrome" | "edge";
 
@@ -303,7 +304,10 @@ export function supportsProgressivePlayback(fileType: FileType): boolean {
 }
 
 export function canOpenInProgressPlayback(
-  task: Pick<DownloadTaskSummary, "file_type" | "status" | "playback_available">
+  task: Pick<
+    DownloadTaskSummary,
+    "file_type" | "status" | "playback_available" | "is_live"
+  >
 ): boolean {
   if (!task.playback_available) {
     return false;
@@ -314,6 +318,12 @@ export function canOpenInProgressPlayback(
 
   if (!isInProgress) {
     return task.status === "Completed";
+  }
+
+  // Live recordings can always be played while recording: FLV streams through
+  // mpegts.js (tailing) and HLS through its growing local playlist.
+  if (task.is_live) {
+    return true;
   }
 
   return task.file_type === "hls" || supportsProgressivePlayback(task.file_type);
@@ -419,7 +429,10 @@ export function liveRecordToDownloadSummary(
     created_at: live.created_at,
     completed_at: live.completed_at,
     updated_at: live.updated_at,
-    playback_available: live.status === "Recorded" && Boolean(live.file_path),
+    playback_available:
+      live.status === "Recording" ||
+      live.status === "Paused" ||
+      (live.status === "Recorded" && Boolean(live.file_path)),
     file_path: live.file_path,
     is_live: true,
   };

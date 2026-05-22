@@ -21,7 +21,10 @@ use tokio_util::io::ReaderStream;
 use crate::downloader;
 use crate::error::AppError;
 use crate::models::HlsMediaKind;
-use crate::models::{DownloadId, DownloadStatus, DownloadTask, PlaybackSourceKind};
+use crate::models::{
+    DownloadId, DownloadStatus, DownloadTask, FileType, LiveProtocol, LiveRecordStatus,
+    LiveRecordTask, PlaybackSourceKind,
+};
 
 pub const PLAYBACK_PRIORITY_WINDOW_SIZE: usize = 4;
 
@@ -37,9 +40,20 @@ pub struct PlaybackSession {
     pub window_label: String,
     pub playback_kind: PlaybackSourceKind,
     pub playback_path: String,
+    pub is_live: bool,
     pub task_snapshot: DownloadTask,
     pub last_accessed_at: DateTime<Utc>,
     pub active_client_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct LivePlaybackSession {
+    pub session_token: String,
+    pub window_label: String,
+    pub playback_kind: PlaybackSourceKind,
+    pub playback_path: String,
+    pub is_live: bool,
+    pub last_accessed_at: DateTime<Utc>,
 }
 
 #[derive(Debug)]
@@ -60,6 +74,8 @@ struct PlaybackHttpState {
     downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
     playback_sessions: Arc<Mutex<HashMap<DownloadId, PlaybackSession>>>,
     download_priorities: Arc<Mutex<HashMap<DownloadId, Arc<DownloadPriorityState>>>>,
+    live_records: Arc<Mutex<HashMap<DownloadId, LiveRecordTask>>>,
+    live_playback_sessions: Arc<Mutex<HashMap<DownloadId, LivePlaybackSession>>>,
 }
 
 #[derive(Debug)]
@@ -209,6 +225,8 @@ pub async fn start_playback_server(
     downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
     playback_sessions: Arc<Mutex<HashMap<DownloadId, PlaybackSession>>>,
     download_priorities: Arc<Mutex<HashMap<DownloadId, Arc<DownloadPriorityState>>>>,
+    live_records: Arc<Mutex<HashMap<DownloadId, LiveRecordTask>>>,
+    live_playback_sessions: Arc<Mutex<HashMap<DownloadId, LivePlaybackSession>>>,
 ) -> Result<PlaybackServerState, AppError> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let local_addr = listener.local_addr()?;
@@ -216,6 +234,8 @@ pub async fn start_playback_server(
         downloads,
         playback_sessions,
         download_priorities,
+        live_records,
+        live_playback_sessions,
     };
 
     playback_log(&format!(
@@ -239,6 +259,7 @@ fn build_playback_router(state: PlaybackHttpState) -> Router {
     Router::new()
         .route("/playback/{task_id}/index.m3u8", get(serve_playlist))
         .route("/playback/{task_id}/file", get(serve_file))
+        .route("/playback/{task_id}/stream", get(serve_download_ts_stream))
         .route(
             "/playback/{task_id}/init/{init_index}",
             get(serve_init_segment),
@@ -247,6 +268,10 @@ fn build_playback_router(state: PlaybackHttpState) -> Router {
             "/playback/{task_id}/segments/{segment_index}",
             get(serve_segment),
         )
+        .route("/live/{task_id}/index.m3u8", get(serve_live_playlist))
+        .route("/live/{task_id}/seg/{name}", get(serve_live_segment))
+        .route("/live/{task_id}/stream", get(serve_live_flv_stream))
+        .route("/live/{task_id}/file", get(serve_live_flv_file))
         .with_state(state)
 }
 
@@ -362,6 +387,20 @@ pub async fn remove_playback_session(
     removed
 }
 
+pub async fn remove_live_playback_session(
+    live_playback_sessions: &Arc<Mutex<HashMap<DownloadId, LivePlaybackSession>>>,
+    task_id: &str,
+) -> Option<LivePlaybackSession> {
+    let mut sessions = live_playback_sessions.lock().await;
+    let removed = sessions.remove(task_id);
+    playback_log(&format!(
+        "remove live playback session task_id={} existed={}",
+        task_id,
+        removed.is_some()
+    ));
+    removed
+}
+
 pub fn playback_window_label(task_id: &str) -> String {
     format!("player-{}", task_id)
 }
@@ -378,6 +417,32 @@ pub fn playlist_path(task_id: &str) -> String {
 
 pub fn file_path(task_id: &str) -> String {
     format!("/playback/{}/file", task_id)
+}
+
+pub fn download_stream_path(task_id: &str) -> String {
+    format!("/playback/{}/stream", task_id)
+}
+
+pub fn live_playback_window_label(task_id: &str) -> String {
+    format!("live-player-{}", task_id)
+}
+
+pub fn task_id_from_live_window_label(label: &str) -> Option<&str> {
+    label
+        .strip_prefix("live-player-")
+        .filter(|task_id| !task_id.is_empty())
+}
+
+pub fn live_playlist_path(task_id: &str) -> String {
+    format!("/live/{}/index.m3u8", task_id)
+}
+
+pub fn live_flv_stream_path(task_id: &str) -> String {
+    format!("/live/{}/stream", task_id)
+}
+
+pub fn live_flv_file_path(task_id: &str) -> String {
+    format!("/live/{}/file", task_id)
 }
 
 pub fn task_can_open_playback(task: &DownloadTask) -> bool {
@@ -655,6 +720,498 @@ async fn serve_segment(
 
     lease.finish().await;
     response
+}
+
+struct DownloadTsStreamState {
+    state: PlaybackHttpState,
+    task: DownloadTask,
+    token: String,
+    next_index: usize,
+}
+
+/// Stream a download's MPEG-TS segments concatenated into a single continuous
+/// TS byte stream, in playback order. Used for HEVC content played via
+/// mpegts.js (which consumes a single stream rather than an HLS playlist).
+/// Each segment is fetched through the same priority/wait path as the HLS
+/// route, so it follows the download and waits for not-yet-downloaded
+/// segments. The stream ends once every segment has been served or the
+/// session is closed / the task is cancelled.
+async fn serve_download_ts_stream(
+    State(state): State<PlaybackHttpState>,
+    Path(task_id): Path<String>,
+    Query(query): Query<PlaybackTokenQuery>,
+) -> Response {
+    playback_log(&format!(
+        "download ts stream request task_id={} token_suffix={}",
+        task_id,
+        token_suffix(&query.token)
+    ));
+    let (lease, task) = match acquire_session_task(&state, &task_id, &query.token).await {
+        Ok(value) => value,
+        Err(error) => return error.into_response(),
+    };
+    // The stream outlives this handler; per-segment waits re-validate the
+    // session, so we release the lease immediately instead of holding it for
+    // the whole playback.
+    lease.finish().await;
+
+    let init = DownloadTsStreamState {
+        state: state.clone(),
+        task,
+        token: query.token.clone(),
+        next_index: 0,
+    };
+
+    let stream = futures::stream::unfold(init, |mut st| async move {
+        if st.next_index >= st.task.total_segments {
+            return None;
+        }
+        let segment_index = st.next_index;
+        match read_or_wait_for_segment(&st.state, &st.task, &st.token, segment_index).await {
+            Ok(bytes) => {
+                st.next_index += 1;
+                Some((Ok::<Bytes, std::io::Error>(bytes), st))
+            }
+            Err(error) => {
+                playback_log(&format!(
+                    "download ts stream stopped task_id={} segment_index={} status={}",
+                    st.task.id, segment_index, error.status
+                ));
+                None
+            }
+        }
+    });
+
+    let body = Body::from_stream(stream);
+    let mut response = Response::new(body);
+    {
+        let response_headers = response.headers_mut();
+        response_headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp2t"));
+        response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("none"));
+    }
+    with_playback_headers(response)
+}
+
+async fn acquire_live_session(
+    state: &PlaybackHttpState,
+    task_id: &str,
+    token: &str,
+) -> Result<LiveRecordTask, PlaybackHttpError> {
+    {
+        let mut sessions = state.live_playback_sessions.lock().await;
+        let Some(session) = sessions.get_mut(task_id) else {
+            playback_log(&format!(
+                "reject live playback request because session missing task_id={}",
+                task_id
+            ));
+            return Err(PlaybackHttpError::new(
+                StatusCode::NOT_FOUND,
+                "播放会话不存在",
+            ));
+        };
+        if session.session_token != token {
+            playback_log(&format!(
+                "reject live playback request because token invalid task_id={}",
+                task_id
+            ));
+            return Err(PlaybackHttpError::new(
+                StatusCode::FORBIDDEN,
+                "播放会话令牌无效",
+            ));
+        }
+        session.last_accessed_at = Utc::now();
+    }
+
+    let task = {
+        let map = state.live_records.lock().await;
+        map.get(task_id).cloned()
+    };
+    task.ok_or_else(|| PlaybackHttpError::new(StatusCode::NOT_FOUND, "直播任务不存在"))
+}
+
+/// HLS only: the directory currently holding `index.m3u8` + segments.
+/// While recording it is the working `temp_dir`; once finished it is the
+/// parent directory of the finalized `file_path`.
+fn live_active_dir(task: &LiveRecordTask) -> Option<PathBuf> {
+    match task.status {
+        LiveRecordStatus::Recording | LiveRecordStatus::Paused => {
+            task.temp_dir.as_ref().map(PathBuf::from)
+        }
+        _ => task
+            .file_path
+            .as_ref()
+            .map(PathBuf::from)
+            .and_then(|path| path.parent().map(|parent| parent.to_path_buf())),
+    }
+}
+
+fn live_is_recording(task: &LiveRecordTask) -> bool {
+    matches!(
+        task.status,
+        LiveRecordStatus::Recording | LiveRecordStatus::Paused
+    )
+}
+
+/// Rewrite the on-disk local playlist for serving:
+/// - segment + EXT-X-MAP URIs get the session token and a `seg/` prefix
+/// - while recording it is served as a growing EVENT playlist (no ENDLIST) so
+///   hls.js keeps reloading and follows new segments; once finished it is VOD
+///   with ENDLIST so the whole recording is seekable.
+fn rewrite_live_playlist(text: &str, token: &str, recording: bool) -> String {
+    let mut body: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed == "#EXTM3U" {
+            continue;
+        }
+        if trimmed.starts_with("#EXT-X-PLAYLIST-TYPE:") {
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("#EXT-X-ENDLIST") {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("#EXT-X-MAP:URI=\"") {
+            if let Some(end) = rest.find('"') {
+                let name = &rest[..end];
+                let tail = &rest[end + 1..];
+                body.push(format!(
+                    "#EXT-X-MAP:URI=\"seg/{}?token={}\"{}",
+                    name, token, tail
+                ));
+                continue;
+            }
+        }
+        if trimmed.starts_with('#') {
+            body.push(trimmed.to_string());
+            continue;
+        }
+        body.push(format!("seg/{}?token={}", trimmed, token));
+    }
+
+    let mut lines: Vec<String> = Vec::with_capacity(body.len() + 4);
+    lines.push("#EXTM3U".to_string());
+    if recording {
+        lines.push("#EXT-X-PLAYLIST-TYPE:EVENT".to_string());
+        lines.push("#EXT-X-START:TIME-OFFSET=0,PRECISE=YES".to_string());
+    } else {
+        lines.push("#EXT-X-PLAYLIST-TYPE:VOD".to_string());
+    }
+    lines.extend(body);
+    if !recording {
+        lines.push("#EXT-X-ENDLIST".to_string());
+    }
+    lines.join("\n")
+}
+
+fn is_valid_live_segment_name(name: &str) -> bool {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    let valid = |prefix: &str, exts: &[&str]| {
+        lower
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.split_once('.'))
+            .map(|(digits, ext)| {
+                !digits.is_empty()
+                    && digits.bytes().all(|byte| byte.is_ascii_digit())
+                    && exts.contains(&ext)
+            })
+            .unwrap_or(false)
+    };
+    valid("seg_", &["ts", "m4s"]) || valid("init_", &["mp4"])
+}
+
+fn live_segment_content_type(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".ts") {
+        "video/mp2t"
+    } else if lower.ends_with(".m4s") {
+        "video/iso.segment"
+    } else if lower.ends_with(".mp4") {
+        "video/mp4"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+async fn serve_live_playlist(
+    State(state): State<PlaybackHttpState>,
+    Path(task_id): Path<String>,
+    Query(query): Query<PlaybackTokenQuery>,
+) -> Response {
+    playback_log(&format!(
+        "live playlist request task_id={} token_suffix={}",
+        task_id,
+        token_suffix(&query.token)
+    ));
+    let task = match acquire_live_session(&state, &task_id, &query.token).await {
+        Ok(task) => task,
+        Err(error) => return error.into_response(),
+    };
+    if task.protocol != LiveProtocol::Hls {
+        return PlaybackHttpError::new(StatusCode::CONFLICT, "当前直播任务不是 HLS")
+            .into_response();
+    }
+    let Some(dir) = live_active_dir(&task) else {
+        return PlaybackHttpError::new(StatusCode::NOT_FOUND, "直播录制目录不存在").into_response();
+    };
+    let playlist_path = dir.join("index.m3u8");
+    let text = match tokio::fs::read_to_string(&playlist_path).await {
+        Ok(text) => text,
+        Err(error) => {
+            return PlaybackHttpError::new(StatusCode::NOT_FOUND, error.to_string()).into_response()
+        }
+    };
+    let playlist = rewrite_live_playlist(&text, &query.token, live_is_recording(&task));
+    with_playback_headers(
+        (
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/vnd.apple.mpegurl"),
+            )],
+            playlist,
+        )
+            .into_response(),
+    )
+}
+
+async fn serve_live_segment(
+    State(state): State<PlaybackHttpState>,
+    Path((task_id, name)): Path<(String, String)>,
+    Query(query): Query<PlaybackTokenQuery>,
+) -> Response {
+    let task = match acquire_live_session(&state, &task_id, &query.token).await {
+        Ok(task) => task,
+        Err(error) => return error.into_response(),
+    };
+    if !is_valid_live_segment_name(&name) {
+        return PlaybackHttpError::new(StatusCode::BAD_REQUEST, "非法的分片名称").into_response();
+    }
+    let Some(dir) = live_active_dir(&task) else {
+        return PlaybackHttpError::new(StatusCode::NOT_FOUND, "直播录制目录不存在").into_response();
+    };
+    let segment_path = dir.join(&name);
+    match tokio::fs::read(&segment_path).await {
+        Ok(bytes) => with_playback_headers(
+            (
+                [(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static(live_segment_content_type(&name)),
+                )],
+                bytes,
+            )
+                .into_response(),
+        ),
+        Err(error) => {
+            PlaybackHttpError::new(StatusCode::NOT_FOUND, error.to_string()).into_response()
+        }
+    }
+}
+
+async fn serve_live_flv_file(
+    State(state): State<PlaybackHttpState>,
+    Path(task_id): Path<String>,
+    Query(query): Query<PlaybackTokenQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let task = match acquire_live_session(&state, &task_id, &query.token).await {
+        Ok(task) => task,
+        Err(error) => return error.into_response(),
+    };
+    if task.protocol != LiveProtocol::Flv {
+        return PlaybackHttpError::new(StatusCode::CONFLICT, "当前直播任务不是 FLV")
+            .into_response();
+    }
+    let Some(path) = task.file_path.as_ref().map(PathBuf::from) else {
+        return PlaybackHttpError::new(StatusCode::NOT_FOUND, "录制文件不存在").into_response();
+    };
+    match build_ranged_file_response(&path, "video/x-flv", &headers).await {
+        Ok(response) => response,
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn live_session_token_matches(
+    live_playback_sessions: &Arc<Mutex<HashMap<DownloadId, LivePlaybackSession>>>,
+    task_id: &str,
+    token: &str,
+) -> bool {
+    let sessions = live_playback_sessions.lock().await;
+    sessions
+        .get(task_id)
+        .map(|session| session.session_token == token)
+        .unwrap_or(false)
+}
+
+async fn live_record_finished(
+    live_records: &Arc<Mutex<HashMap<DownloadId, LiveRecordTask>>>,
+    task_id: &str,
+) -> bool {
+    let map = live_records.lock().await;
+    match map.get(task_id) {
+        Some(task) => matches!(
+            task.status,
+            LiveRecordStatus::Recorded
+                | LiveRecordStatus::Failed(_)
+                | LiveRecordStatus::Cancelled
+        ),
+        None => true,
+    }
+}
+
+struct FlvTailState {
+    file: File,
+    task_id: DownloadId,
+    token: String,
+    live_records: Arc<Mutex<HashMap<DownloadId, LiveRecordTask>>>,
+    live_playback_sessions: Arc<Mutex<HashMap<DownloadId, LivePlaybackSession>>>,
+}
+
+/// Stream an FLV file that is still being appended to during recording. Reads
+/// what is present, then keeps polling the growing file until the recording
+/// finishes (or the playback session is closed), at which point the stream ends.
+async fn serve_live_flv_stream(
+    State(state): State<PlaybackHttpState>,
+    Path(task_id): Path<String>,
+    Query(query): Query<PlaybackTokenQuery>,
+) -> Response {
+    playback_log(&format!(
+        "live flv stream request task_id={} token_suffix={}",
+        task_id,
+        token_suffix(&query.token)
+    ));
+    let task = match acquire_live_session(&state, &task_id, &query.token).await {
+        Ok(task) => task,
+        Err(error) => return error.into_response(),
+    };
+    if task.protocol != LiveProtocol::Flv {
+        return PlaybackHttpError::new(StatusCode::CONFLICT, "当前直播任务不是 FLV")
+            .into_response();
+    }
+    let Some(path) = task.file_path.as_ref().map(PathBuf::from) else {
+        return PlaybackHttpError::new(StatusCode::NOT_FOUND, "录制文件不存在").into_response();
+    };
+    let file = match File::open(&path).await {
+        Ok(file) => file,
+        Err(error) => {
+            return PlaybackHttpError::new(StatusCode::NOT_FOUND, error.to_string()).into_response()
+        }
+    };
+
+    let init = FlvTailState {
+        file,
+        task_id: task_id.clone(),
+        token: query.token.clone(),
+        live_records: state.live_records.clone(),
+        live_playback_sessions: state.live_playback_sessions.clone(),
+    };
+
+    let stream = futures::stream::unfold(init, |mut st| async move {
+        let mut buffer = vec![0u8; 64 * 1024];
+        loop {
+            match st.file.read(&mut buffer).await {
+                Ok(0) => {
+                    if !live_session_token_matches(
+                        &st.live_playback_sessions,
+                        &st.task_id,
+                        &st.token,
+                    )
+                    .await
+                    {
+                        return None;
+                    }
+                    if live_record_finished(&st.live_records, &st.task_id).await {
+                        // Recording is done — flush any final bytes, then end.
+                        match st.file.read(&mut buffer).await {
+                            Ok(n) if n > 0 => {
+                                let chunk = Bytes::copy_from_slice(&buffer[..n]);
+                                return Some((Ok::<Bytes, std::io::Error>(chunk), st));
+                            }
+                            _ => return None,
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    continue;
+                }
+                Ok(n) => {
+                    let chunk = Bytes::copy_from_slice(&buffer[..n]);
+                    return Some((Ok::<Bytes, std::io::Error>(chunk), st));
+                }
+                Err(error) => {
+                    return Some((Err(error), st));
+                }
+            }
+        }
+    });
+
+    let body = Body::from_stream(stream);
+    let mut response = Response::new(body);
+    {
+        let response_headers = response.headers_mut();
+        response_headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("video/x-flv"));
+        response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("none"));
+    }
+    with_playback_headers(response)
+}
+
+async fn build_ranged_file_response(
+    path: &FsPath,
+    content_type: &'static str,
+    headers: &HeaderMap,
+) -> Result<Response, PlaybackHttpError> {
+    let mut file = File::open(path)
+        .await
+        .map_err(|error| PlaybackHttpError::new(StatusCode::NOT_FOUND, error.to_string()))?;
+    let file_size = file
+        .metadata()
+        .await
+        .map_err(|error| {
+            PlaybackHttpError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        })?
+        .len();
+    if file_size == 0 {
+        return Err(PlaybackHttpError::new(
+            StatusCode::NOT_FOUND,
+            "录制文件为空",
+        ));
+    }
+
+    let (start, end, status) = match parse_byte_range(headers, file_size)? {
+        Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
+        None => (0, file_size - 1, StatusCode::OK),
+    };
+    let content_length = end - start + 1;
+
+    file.seek(SeekFrom::Start(start)).await.map_err(|error| {
+        PlaybackHttpError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+    })?;
+
+    let stream = ReaderStream::new(file.take(content_length));
+    let body = Body::from_stream(stream);
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    let response_headers = response.headers_mut();
+    response_headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    response_headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&content_length.to_string()).map_err(|error| {
+            PlaybackHttpError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        })?,
+    );
+    if status == StatusCode::PARTIAL_CONTENT {
+        response_headers.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, file_size)).map_err(
+                |error| {
+                    PlaybackHttpError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                },
+            )?,
+        );
+    }
+
+    Ok(with_playback_headers(response))
 }
 
 async fn build_file_response(
@@ -1198,6 +1755,254 @@ fn content_type_for_file_path(file_path: &str) -> &'static str {
     }
 }
 
+const TS_PACKET_LEN: usize = 188;
+/// MPEG-TS PMT stream_type value for HEVC/H.265 video.
+const TS_STREAM_TYPE_HEVC: u8 = 0x24;
+/// How many bytes from the front of a segment/file to inspect for codec info.
+/// PAT/PMT appear within the first few KiB; 256 KiB is a generous margin.
+const HEVC_PROBE_BYTES: usize = 256 * 1024;
+
+/// Decide whether a download task's video should be played through mpegts.js
+/// for H.265/HEVC compatibility. Only MPEG-TS content is eligible (mpegts.js
+/// cannot consume fMP4 / MP4 / MKV …), so this returns `false` for any other
+/// container and `true` only when an HEVC video elementary stream is detected.
+pub async fn download_video_is_hevc(task: &DownloadTask) -> bool {
+    let probe_path = match task.status {
+        DownloadStatus::Completed => {
+            let file_path = match task.file_path.as_deref() {
+                Some(path) => PathBuf::from(path),
+                None => return false,
+            };
+            let is_ts = file_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("ts"))
+                .unwrap_or(false);
+            if !is_ts {
+                return false;
+            }
+            file_path
+        }
+        DownloadStatus::Downloading | DownloadStatus::Paused => {
+            if task.file_type != FileType::Hls || task.hls_media_kind != HlsMediaKind::MpegTs {
+                return false;
+            }
+            match first_available_segment_path(task) {
+                Some(path) => path,
+                None => return false,
+            }
+        }
+        _ => return false,
+    };
+
+    let head = read_file_head(&probe_path, HEVC_PROBE_BYTES).await;
+    let is_hevc = matches!(ts_video_is_hevc(&head), Some(true));
+    playback_log(&format!(
+        "hevc probe task_id={} path={} bytes={} is_hevc={}",
+        task.id,
+        probe_path.display(),
+        head.len(),
+        is_hevc
+    ));
+    is_hevc
+}
+
+/// Locate an already-downloaded MPEG-TS segment to probe for codec info. Any
+/// segment carries the PAT/PMT, so the lowest available index is fine.
+fn first_available_segment_path(task: &DownloadTask) -> Option<PathBuf> {
+    let temp_dir = downloader::temp_dir_for_task(FsPath::new(&task.output_dir), &task.id);
+
+    let mut completed: Vec<usize> = task
+        .completed_segment_indices
+        .iter()
+        .filter_map(|value| value.checked_sub(1))
+        .collect();
+    completed.sort_unstable();
+    for segment_index in completed {
+        let path = downloader::segment_file_path(&temp_dir, segment_index);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    let scan_limit = task.total_segments.min(64);
+    for segment_index in 0..scan_limit {
+        let path = downloader::segment_file_path(&temp_dir, segment_index);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+async fn read_file_head(path: &FsPath, max_bytes: usize) -> Vec<u8> {
+    let mut file = match File::open(path).await {
+        Ok(file) => file,
+        Err(_) => return Vec::new(),
+    };
+    let mut buffer = Vec::with_capacity(max_bytes.min(64 * 1024));
+    let mut chunk = vec![0u8; 64 * 1024];
+    while buffer.len() < max_bytes {
+        match file.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+            Err(_) => break,
+        }
+    }
+    buffer.truncate(max_bytes);
+    buffer
+}
+
+/// Inspect an MPEG-TS byte slice and report whether its video elementary
+/// stream is HEVC. `Some(true)` = HEVC present, `Some(false)` = a PMT was
+/// parsed but no HEVC stream, `None` = the data could not be interpreted.
+fn ts_video_is_hevc(data: &[u8]) -> Option<bool> {
+    let base = ts_sync_offset(data)?;
+    let mut pmt_pids: HashSet<u16> = HashSet::new();
+    let mut parsed_pmt = false;
+
+    let mut offset = base;
+    while offset + TS_PACKET_LEN <= data.len() {
+        let packet = &data[offset..offset + TS_PACKET_LEN];
+        offset += TS_PACKET_LEN;
+        if packet[0] != 0x47 {
+            // Lost alignment; try to re-sync from the next byte.
+            match ts_sync_offset(&data[offset - TS_PACKET_LEN + 1..]) {
+                Some(next) => {
+                    offset = offset - TS_PACKET_LEN + 1 + next;
+                    continue;
+                }
+                None => break,
+            }
+        }
+
+        let pusi = packet[1] & 0x40 != 0;
+        let pid = (((packet[1] & 0x1F) as u16) << 8) | packet[2] as u16;
+        let adaptation_field_control = (packet[3] >> 4) & 0x03;
+        if adaptation_field_control == 0 || adaptation_field_control == 2 {
+            continue; // no payload
+        }
+        let mut payload_start = 4;
+        if adaptation_field_control == 3 {
+            let adaptation_field_length = packet[4] as usize;
+            payload_start = 5 + adaptation_field_length;
+            if payload_start >= TS_PACKET_LEN {
+                continue;
+            }
+        }
+        let payload = &packet[payload_start..];
+
+        if pid == 0x0000 {
+            if let Some(section) = psi_section(payload, pusi) {
+                collect_pat_pmt_pids(section, &mut pmt_pids);
+            }
+        } else if pmt_pids.contains(&pid) {
+            if let Some(section) = psi_section(payload, pusi) {
+                if let Some(is_hevc) = pmt_has_hevc(section) {
+                    if is_hevc {
+                        return Some(true);
+                    }
+                    parsed_pmt = true;
+                }
+            }
+        }
+    }
+
+    if parsed_pmt {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Find the byte offset of the first MPEG-TS sync byte that lines up with the
+/// 188-byte packet grid (verified across a few packets where possible).
+fn ts_sync_offset(data: &[u8]) -> Option<usize> {
+    let scan_limit = data.len().min(TS_PACKET_LEN);
+    for start in 0..scan_limit {
+        if data[start] != 0x47 {
+            continue;
+        }
+        let mut aligned = true;
+        let mut probe = start + TS_PACKET_LEN;
+        for _ in 0..3 {
+            if probe >= data.len() {
+                break;
+            }
+            if data[probe] != 0x47 {
+                aligned = false;
+                break;
+            }
+            probe += TS_PACKET_LEN;
+        }
+        if aligned {
+            return Some(start);
+        }
+    }
+    None
+}
+
+/// Extract a PSI section from a TS packet payload, honoring the `pointer_field`
+/// present when `payload_unit_start_indicator` is set. Only section-start
+/// packets are handled (PAT/PMT almost always fit in a single packet).
+fn psi_section(payload: &[u8], pusi: bool) -> Option<&[u8]> {
+    if !pusi || payload.is_empty() {
+        return None;
+    }
+    let pointer_field = payload[0] as usize;
+    let start = 1 + pointer_field;
+    payload.get(start..)
+}
+
+fn collect_pat_pmt_pids(section: &[u8], out: &mut HashSet<u16>) {
+    if section.len() < 8 || section[0] != 0x00 {
+        return;
+    }
+    let section_length = (((section[1] & 0x0F) as usize) << 8) | section[2] as usize;
+    let total = (3 + section_length).min(section.len());
+    if total < 12 {
+        return;
+    }
+    let limit = total - 4; // exclude CRC32
+    let mut index = 8;
+    while index + 4 <= limit {
+        let program_number = ((section[index] as u16) << 8) | section[index + 1] as u16;
+        let pid = (((section[index + 2] & 0x1F) as u16) << 8) | section[index + 3] as u16;
+        if program_number != 0 {
+            out.insert(pid);
+        }
+        index += 4;
+    }
+}
+
+/// Parse a PMT section and report whether any elementary stream is HEVC.
+/// Returns `None` when the section cannot be parsed as a PMT.
+fn pmt_has_hevc(section: &[u8]) -> Option<bool> {
+    if section.len() < 12 || section[0] != 0x02 {
+        return None;
+    }
+    let section_length = (((section[1] & 0x0F) as usize) << 8) | section[2] as usize;
+    let total = (3 + section_length).min(section.len());
+    if total < 16 {
+        return None;
+    }
+    let program_info_length = (((section[10] & 0x0F) as usize) << 8) | section[11] as usize;
+    let limit = total - 4; // exclude CRC32
+    let mut index = 12 + program_info_length;
+    let mut found_hevc = false;
+    while index + 5 <= limit {
+        let stream_type = section[index];
+        let es_info_length =
+            (((section[index + 3] & 0x0F) as usize) << 8) | section[index + 4] as usize;
+        if stream_type == TS_STREAM_TYPE_HEVC {
+            found_hevc = true;
+        }
+        index += 5 + es_info_length;
+    }
+    Some(found_hevc)
+}
+
 fn with_playback_headers(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(
@@ -1285,6 +2090,74 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    fn ts_psi_packet(pid: u16, section: &[u8]) -> [u8; TS_PACKET_LEN] {
+        let mut packet = [0xFFu8; TS_PACKET_LEN];
+        packet[0] = 0x47;
+        packet[1] = 0x40 | ((pid >> 8) as u8 & 0x1F); // payload_unit_start_indicator set
+        packet[2] = (pid & 0xFF) as u8;
+        packet[3] = 0x10; // payload only, continuity_counter=0
+        packet[4] = 0x00; // pointer_field
+        packet[5..5 + section.len()].copy_from_slice(section);
+        packet
+    }
+
+    fn pat_section(pmt_pid: u16) -> Vec<u8> {
+        let mut section = vec![
+            0x00, // table_id (PAT)
+            0xB0, 0x0D, // section_syntax_indicator + section_length(13)
+            0x00, 0x01, // transport_stream_id
+            0xC1, // version / current_next
+            0x00, // section_number
+            0x00, // last_section_number
+            0x00, 0x01, // program_number = 1
+            0xE0 | ((pmt_pid >> 8) as u8 & 0x1F),
+            (pmt_pid & 0xFF) as u8,
+        ];
+        section.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // CRC32 (ignored by parser)
+        section
+    }
+
+    fn pmt_section(video_stream_type: u8) -> Vec<u8> {
+        let mut section = vec![
+            0x02, // table_id (PMT)
+            0xB0, 0x17, // section_syntax_indicator + section_length(23)
+            0x00, 0x01, // program_number
+            0xC1, // version / current_next
+            0x00, // section_number
+            0x00, // last_section_number
+            0xE1, 0x01, // reserved + PCR_PID
+            0xF0, 0x00, // reserved + program_info_length(0)
+            video_stream_type, 0xE1, 0x01, 0xF0, 0x00, // video ES, PID 0x0101
+            0x0F, 0xE1, 0x02, 0xF0, 0x00, // AAC audio ES, PID 0x0102
+        ];
+        section.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // CRC32 (ignored by parser)
+        section
+    }
+
+    fn ts_stream(video_stream_type: u8) -> Vec<u8> {
+        let pmt_pid = 0x0100u16;
+        let mut data = Vec::new();
+        data.extend_from_slice(&ts_psi_packet(0x0000, &pat_section(pmt_pid)));
+        data.extend_from_slice(&ts_psi_packet(pmt_pid, &pmt_section(video_stream_type)));
+        data
+    }
+
+    #[test]
+    fn detects_hevc_video_in_mpegts() {
+        assert_eq!(ts_video_is_hevc(&ts_stream(0x24)), Some(true));
+    }
+
+    #[test]
+    fn reports_non_hevc_video_in_mpegts() {
+        // 0x1B = AVC/H.264
+        assert_eq!(ts_video_is_hevc(&ts_stream(0x1B)), Some(false));
+    }
+
+    #[test]
+    fn returns_none_for_non_ts_bytes() {
+        assert_eq!(ts_video_is_hevc(b"not a transport stream at all"), None);
+    }
+
     #[test]
     fn segment_index_for_position_maps_boundaries() {
         let durations = vec![5.0, 7.5, 6.0];
@@ -1349,6 +2222,8 @@ mod tests {
             downloads: Arc::new(Mutex::new(HashMap::new())),
             playback_sessions: Arc::new(Mutex::new(HashMap::new())),
             download_priorities: Arc::new(Mutex::new(HashMap::new())),
+            live_records: Arc::new(Mutex::new(HashMap::new())),
+            live_playback_sessions: Arc::new(Mutex::new(HashMap::new())),
         };
 
         let _router = build_playback_router(state);
@@ -1362,6 +2237,52 @@ mod tests {
         assert_eq!(task_id_from_window_label(&label), Some(task_id));
         assert_eq!(task_id_from_window_label("main"), None);
         assert_eq!(task_id_from_window_label("player-"), None);
+    }
+
+    #[test]
+    fn live_segment_name_validation_rejects_traversal() {
+        assert!(is_valid_live_segment_name("seg_00000001.ts"));
+        assert!(is_valid_live_segment_name("seg_00000001.m4s"));
+        assert!(is_valid_live_segment_name("init_000000.mp4"));
+        assert!(!is_valid_live_segment_name("seg_1.mp4"));
+        assert!(!is_valid_live_segment_name("init_0.ts"));
+        assert!(!is_valid_live_segment_name("../index.m3u8"));
+        assert!(!is_valid_live_segment_name("seg_/0.ts"));
+        assert!(!is_valid_live_segment_name("seg_abc.ts"));
+        assert!(!is_valid_live_segment_name("index.m3u8"));
+    }
+
+    #[test]
+    fn rewrite_live_playlist_recording_is_event_without_endlist() {
+        let source = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:4.000,\nseg_00000000.ts\n";
+        let out = rewrite_live_playlist(source, "tok", true);
+
+        assert!(out.contains("#EXT-X-PLAYLIST-TYPE:EVENT"));
+        assert!(out.contains("#EXT-X-START:TIME-OFFSET=0,PRECISE=YES"));
+        assert!(!out.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
+        assert!(!out.contains("#EXT-X-ENDLIST"));
+        assert!(out.contains("seg/seg_00000000.ts?token=tok"));
+        assert!(out.contains("#EXT-X-TARGETDURATION:4"));
+    }
+
+    #[test]
+    fn rewrite_live_playlist_finished_is_vod_with_endlist_and_map() {
+        let source = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MAP:URI=\"init_000000.mp4\"\n#EXTINF:4.000,\nseg_00000000.m4s\n#EXT-X-ENDLIST\n";
+        let out = rewrite_live_playlist(source, "tok", false);
+
+        assert!(out.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
+        assert!(out.trim_end().ends_with("#EXT-X-ENDLIST"));
+        assert_eq!(out.matches("#EXT-X-ENDLIST").count(), 1);
+        assert!(out.contains("#EXT-X-MAP:URI=\"seg/init_000000.mp4?token=tok\""));
+        assert!(out.contains("seg/seg_00000000.m4s?token=tok"));
+    }
+
+    #[test]
+    fn live_window_label_round_trips_task_id() {
+        let label = live_playback_window_label("abc");
+        assert_eq!(task_id_from_live_window_label(&label), Some("abc"));
+        assert_eq!(task_id_from_live_window_label("player-abc"), None);
+        assert_eq!(task_id_from_live_window_label("live-player-"), None);
     }
 
     #[test]

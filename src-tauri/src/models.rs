@@ -500,6 +500,8 @@ pub struct ResumeDownloadCheckResult {
 pub enum PlaybackSourceKind {
     Hls,
     File,
+    Flv,
+    Mpegts,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -514,6 +516,8 @@ pub struct OpenPlaybackSessionResponse {
     pub window_label: String,
     pub playback_url: String,
     pub playback_kind: PlaybackSourceKind,
+    #[serde(default)]
+    pub is_live: bool,
     pub session_token: String,
     pub filename: String,
     pub status: DownloadStatus,

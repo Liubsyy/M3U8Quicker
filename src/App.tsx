@@ -37,6 +37,7 @@ import {
   openFirefoxAddonsPage,
   openFileLocation,
   openDownloadPlaybackSession,
+  openLivePlaybackSession,
   createPreviewSession,
   closePreviewSession,
   getAppSettings,
@@ -299,6 +300,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         taskId: task.id,
         playbackUrl: session.playback_url,
         playbackKind: session.playback_kind,
+        isLive: session.is_live ? "1" : "0",
         sessionToken: session.session_token,
         filename: session.filename,
       }).toString()}`;
@@ -323,6 +325,53 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
       });
     } catch (error) {
       console.error("Failed to open playback window", error);
+      message.error(`打开播放器失败: ${error}`);
+    }
+  };
+
+  const handleOpenLivePlaybackWindow = async (task: DownloadTaskSummary) => {
+    try {
+      const session = await openLivePlaybackSession(task.id);
+      const existingWindow = await WebviewWindow.getByLabel(session.window_label);
+
+      if (existingWindow) {
+        await existingWindow.show();
+        await existingWindow.setFocus();
+        return;
+      }
+
+      const url = `/?${new URLSearchParams({
+        view: "player",
+        scope: "live",
+        taskId: task.id,
+        playbackUrl: session.playback_url,
+        playbackKind: session.playback_kind,
+        isLive: session.is_live ? "1" : "0",
+        sessionToken: session.session_token,
+        filename: session.filename,
+        status: typeof session.status === "object" ? "Failed" : session.status,
+      }).toString()}`;
+
+      const playerWindow = new WebviewWindow(session.window_label, {
+        url,
+        title: `播放中 - ${session.filename}`,
+        width: 960,
+        height: 640,
+        minWidth: 720,
+        minHeight: 420,
+        resizable: true,
+        center: true,
+      });
+
+      playerWindow.once("tauri://created", () => {
+        void playerWindow.setFocus();
+      });
+      playerWindow.once("tauri://error", (event) => {
+        console.error("Failed to create live playback window", event);
+        message.error("打开播放器窗口失败");
+      });
+    } catch (error) {
+      console.error("Failed to open live playback window", error);
       message.error(`打开播放器失败: ${error}`);
     }
   };
@@ -576,8 +625,11 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
           onCancel={cancelLive}
           onRemove={removeLive}
           onStop={requestStopLive}
+          onPlay={(task) => {
+            void handleOpenLivePlaybackWindow(task);
+          }}
           loading={loadingLiveActive}
-          showActions={["pause", "resume", "stop", "cancel", "open"]}
+          showActions={["play", "pause", "resume", "stop", "cancel", "open"]}
           statusTagOverride={liveStatusTagOverride}
           cancelLabels={{
             title: "确认取消录制?",
@@ -606,8 +658,11 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
           onRetryFailed={() => undefined}
           onCancel={() => undefined}
           onRemove={removeLive}
+          onPlay={(task) => {
+            void handleOpenLivePlaybackWindow(task);
+          }}
           loading={loadingLiveHistory}
-          showActions={["remove", "open"]}
+          showActions={["play", "remove", "open"]}
           showSpeed={false}
           statusTagOverride={liveStatusTagOverride}
           actionsHeaderExtra={

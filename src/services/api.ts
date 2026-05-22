@@ -218,6 +218,24 @@ export async function closeDownloadPlaybackSession(
   });
 }
 
+export async function openLivePlaybackSession(
+  id: string
+): Promise<OpenPlaybackSessionResponse> {
+  return invoke<OpenPlaybackSessionResponse>("open_live_playback_session", {
+    id,
+  });
+}
+
+export async function closeLivePlaybackSession(
+  id: string,
+  sessionToken: string
+): Promise<void> {
+  return invoke("close_live_playback_session", {
+    id,
+    sessionToken,
+  });
+}
+
 export async function mergeTsFiles(
   inputDir: string,
   outputPath: string

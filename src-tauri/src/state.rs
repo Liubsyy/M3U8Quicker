@@ -10,7 +10,9 @@ use crate::models::{
     DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS, DEFAULT_PREVIEW_COLUMNS, DEFAULT_PREVIEW_COUNT,
     DEFAULT_PREVIEW_JPEG_QUALITY, DEFAULT_PREVIEW_THUMBNAIL_WIDTH,
 };
-use crate::playback::{DownloadPriorityState, PlaybackServerState, PlaybackSession};
+use crate::playback::{
+    DownloadPriorityState, LivePlaybackSession, PlaybackServerState, PlaybackSession,
+};
 use crate::preview::PreviewSession;
 
 pub struct AppState {
@@ -34,6 +36,7 @@ pub struct AppState {
     pub ffmpeg_enabled: Arc<Mutex<bool>>,
     pub playback_server: Arc<RwLock<Option<PlaybackServerState>>>,
     pub playback_sessions: Arc<Mutex<HashMap<DownloadId, PlaybackSession>>>,
+    pub live_playback_sessions: Arc<Mutex<HashMap<DownloadId, LivePlaybackSession>>>,
     pub download_priorities: Arc<Mutex<HashMap<DownloadId, Arc<DownloadPriorityState>>>>,
     pub ffmpeg_path: Arc<Mutex<Option<String>>>,
     pub preview_sessions: Arc<Mutex<HashMap<String, Arc<PreviewSession>>>>,
@@ -66,6 +69,7 @@ impl AppState {
             ffmpeg_enabled: Arc::new(Mutex::new(true)),
             playback_server: Arc::new(RwLock::new(None)),
             playback_sessions: Arc::new(Mutex::new(HashMap::new())),
+            live_playback_sessions: Arc::new(Mutex::new(HashMap::new())),
             download_priorities: Arc::new(Mutex::new(HashMap::new())),
             ffmpeg_path: Arc::new(Mutex::new(None)),
             preview_sessions: Arc::new(Mutex::new(HashMap::new())),

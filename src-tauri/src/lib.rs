@@ -65,6 +65,26 @@ pub fn run() {
                 return;
             }
 
+            if let Some(task_id) =
+                playback::task_id_from_live_window_label(window.label()).map(str::to_owned)
+            {
+                api.prevent_close();
+                let window = window.clone();
+                let app_handle = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = window.hide();
+                    let _ = window.destroy();
+
+                    let state = app_handle.state::<AppState>();
+                    playback::remove_live_playback_session(
+                        &state.live_playback_sessions,
+                        &task_id,
+                    )
+                    .await;
+                });
+                return;
+            }
+
             let Some(task_id) =
                 playback::task_id_from_window_label(window.label()).map(str::to_owned)
             else {
@@ -92,6 +112,8 @@ pub fn run() {
                 state.downloads.clone(),
                 state.playback_sessions.clone(),
                 state.download_priorities.clone(),
+                state.live_records.clone(),
+                state.live_playback_sessions.clone(),
             ))?;
             tauri::async_runtime::block_on(async {
                 let mut playback_server_state = state.playback_server.write().await;
@@ -266,6 +288,8 @@ pub fn run() {
             commands::open_download_playback_session,
             commands::prioritize_download_playback_position,
             commands::close_download_playback_session,
+            commands::open_live_playback_session,
+            commands::close_live_playback_session,
             commands::create_live_record,
             commands::pause_live_record,
             commands::resume_live_record,

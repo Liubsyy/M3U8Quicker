@@ -1419,9 +1419,34 @@ pub async fn open_download_playback_session(
     } else {
         task
     };
-    let (playback_kind, playback_path) = playback_target_for_task(&task)?;
+    let (mut playback_kind, mut playback_path) = playback_target_for_task(&task)?;
+    let mut is_live = false;
 
-    if playback_kind == PlaybackSourceKind::Hls {
+    // H.265/HEVC compatibility: the WebView/MSE cannot always decode HEVC, but
+    // mpegts.js can. For MPEG-TS download content carrying an HEVC video stream,
+    // play it through mpegts.js instead of native HLS / direct file.
+    if playback::download_video_is_hevc(&task).await {
+        match task.status {
+            DownloadStatus::Completed => {
+                // Completed merged .ts → seekable VOD via the file route.
+                playback_kind = PlaybackSourceKind::Mpegts;
+                playback_path = playback::file_path(&task.id);
+            }
+            DownloadStatus::Downloading | DownloadStatus::Paused => {
+                // Still downloading → growing concatenated TS stream (live tail).
+                playback_kind = PlaybackSourceKind::Mpegts;
+                playback_path = playback::download_stream_path(&task.id);
+                is_live = true;
+            }
+            _ => {}
+        }
+    }
+
+    // The HLS route and the live mpegts stream both pull segments through the
+    // download priority/wait machinery.
+    if playback_kind == PlaybackSourceKind::Hls
+        || (playback_kind == PlaybackSourceKind::Mpegts && is_live)
+    {
         playback::ensure_download_priority_state(&state.download_priorities, &task).await;
     }
 
@@ -1450,6 +1475,7 @@ pub async fn open_download_playback_session(
                 playback_server.base_url, session.playback_path, session.session_token
             ),
             playback_kind: session.playback_kind,
+            is_live: session.is_live,
             session_token: session.session_token,
             filename: task.filename,
             status: task.status,
@@ -1464,6 +1490,7 @@ pub async fn open_download_playback_session(
         window_label: window_label.clone(),
         playback_kind: playback_kind.clone(),
         playback_path: playback_path.clone(),
+        is_live,
         task_snapshot: task.clone(),
         last_accessed_at: Utc::now(),
         active_client_count: 0,
@@ -1489,6 +1516,7 @@ pub async fn open_download_playback_session(
             playback_server.base_url, playback_path, session_token
         ),
         playback_kind,
+        is_live,
         session_token,
         filename: task.filename,
         status: task.status,
@@ -4006,8 +4034,26 @@ pub async fn remove_live_record(
 }
 
 #[tauri::command]
-pub async fn clear_live_history(app_handle: AppHandle) -> Result<(), AppError> {
-    persistence::clear_live_history(&app_handle).await?;
+pub async fn clear_live_history(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let removed = persistence::clear_live_history(&app_handle).await?;
+
+    for item in removed {
+        {
+            let mut map = state.live_records.lock().await;
+            map.remove(&item.id);
+        }
+        if let Some(session) =
+            playback::remove_live_playback_session(&state.live_playback_sessions, &item.id).await
+        {
+            if let Some(window) = app_handle.get_webview_window(&session.window_label) {
+                let _ = window.close();
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -4076,6 +4122,178 @@ pub async fn convert_live_hls_to_mp4(
     .await?;
 
     Ok(final_output.to_string_lossy().to_string())
+}
+
+fn live_status_to_download_status(status: &LiveRecordStatus) -> DownloadStatus {
+    match status {
+        LiveRecordStatus::Recording => DownloadStatus::Downloading,
+        LiveRecordStatus::Paused => DownloadStatus::Paused,
+        LiveRecordStatus::Recorded => DownloadStatus::Completed,
+        LiveRecordStatus::Cancelled => DownloadStatus::Cancelled,
+        LiveRecordStatus::Failed(message) => DownloadStatus::Failed(message.clone()),
+    }
+}
+
+/// Open (or reuse) a playback session for a live recording. Works both while
+/// recording (FLV → tailing stream, HLS → growing EVENT playlist) and after it
+/// finished (FLV → seekable file, HLS → finalized VOD playlist).
+#[tauri::command]
+pub async fn open_live_playback_session(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<OpenPlaybackSessionResponse, AppError> {
+    let task_snapshot = {
+        let map = state.live_records.lock().await;
+        map.get(&id).cloned()
+    };
+    let (task, loaded_from_store) = match task_snapshot {
+        Some(task) => (Some(task), false),
+        None => (persistence::load_live_task(&app_handle, &id).await?, true),
+    };
+    let Some(task) = task else {
+        return Err(AppError::InvalidInput("直播任务不存在".into()));
+    };
+
+    let recording = matches!(
+        task.status,
+        LiveRecordStatus::Recording | LiveRecordStatus::Paused
+    );
+    if !recording && !matches!(task.status, LiveRecordStatus::Recorded) {
+        return Err(AppError::InvalidInput(
+            "只有录制中、已暂停或已录制的任务可以播放".into(),
+        ));
+    }
+
+    if loaded_from_store {
+        let mut map = state.live_records.lock().await;
+        map.insert(id.clone(), task.clone());
+    }
+
+    let (playback_kind, playback_path, is_live) = match task.protocol {
+        LiveProtocol::Hls => {
+            let dir = if recording {
+                task.temp_dir.clone().map(PathBuf::from)
+            } else {
+                task.file_path
+                    .clone()
+                    .map(PathBuf::from)
+                    .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+            };
+            let Some(dir) = dir else {
+                return Err(AppError::InvalidInput("找不到直播录制目录".into()));
+            };
+            if !recording && !dir.join("index.m3u8").is_file() {
+                return Err(AppError::InvalidInput("找不到本地 m3u8 文件".into()));
+            }
+            (
+                PlaybackSourceKind::Hls,
+                playback::live_playlist_path(&id),
+                recording,
+            )
+        }
+        LiveProtocol::Flv => {
+            let Some(path) = task.file_path.clone() else {
+                return Err(AppError::InvalidInput("找不到录制文件".into()));
+            };
+            if !recording && !PathBuf::from(&path).is_file() {
+                return Err(AppError::InvalidInput("找不到录制文件".into()));
+            }
+            if recording {
+                (
+                    PlaybackSourceKind::Flv,
+                    playback::live_flv_stream_path(&id),
+                    true,
+                )
+            } else {
+                (
+                    PlaybackSourceKind::Flv,
+                    playback::live_flv_file_path(&id),
+                    false,
+                )
+            }
+        }
+    };
+
+    let playback_server = state
+        .playback_server
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| AppError::Internal("播放服务尚未初始化".to_string()))?;
+
+    let status = live_status_to_download_status(&task.status);
+
+    // Reuse an existing session only if it still targets the same source. The
+    // kind/path can change when recording finishes (FLV stream → file, HLS
+    // EVENT → VOD), in which case we mint a fresh session below.
+    if let Some(session) = {
+        let sessions = state.live_playback_sessions.lock().await;
+        sessions.get(&id).cloned()
+    } {
+        if session.playback_kind == playback_kind && session.playback_path == playback_path {
+            return Ok(OpenPlaybackSessionResponse {
+                window_label: session.window_label,
+                playback_url: format!(
+                    "{}{}?token={}",
+                    playback_server.base_url, session.playback_path, session.session_token
+                ),
+                playback_kind: session.playback_kind,
+                is_live: session.is_live,
+                session_token: session.session_token,
+                filename: task.filename,
+                status,
+            });
+        }
+    }
+
+    let session_token = Uuid::new_v4().to_string();
+    let window_label = playback::live_playback_window_label(&id);
+    let session = playback::LivePlaybackSession {
+        session_token: session_token.clone(),
+        window_label: window_label.clone(),
+        playback_kind: playback_kind.clone(),
+        playback_path: playback_path.clone(),
+        is_live,
+        last_accessed_at: Utc::now(),
+    };
+    {
+        let mut sessions = state.live_playback_sessions.lock().await;
+        sessions.insert(id.clone(), session);
+    }
+    playback::playback_log(&format!(
+        "create live playback session task_id={} kind={:?} is_live={} path={}",
+        id, playback_kind, is_live, playback_path
+    ));
+
+    Ok(OpenPlaybackSessionResponse {
+        window_label,
+        playback_url: format!(
+            "{}{}?token={}",
+            playback_server.base_url, playback_path, session_token
+        ),
+        playback_kind,
+        is_live,
+        session_token,
+        filename: task.filename,
+        status,
+    })
+}
+
+#[tauri::command]
+pub async fn close_live_playback_session(
+    state: State<'_, AppState>,
+    id: String,
+    session_token: String,
+) -> Result<(), AppError> {
+    let mut sessions = state.live_playback_sessions.lock().await;
+    if let Some(session) = sessions.get(&id) {
+        if session.session_token == session_token {
+            sessions.remove(&id);
+            playback::playback_log(&format!("live playback session closed task_id={}", id));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
