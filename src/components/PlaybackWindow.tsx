@@ -389,7 +389,7 @@ export function PlaybackWindow() {
       video.src = query.playbackUrl;
       video.load();
       setLoading(false);
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    } else if (!query.isLive && video.canPlayType("application/vnd.apple.mpegurl")) {
       appendDebugLog("使用原生 HLS 播放");
       video.src = query.playbackUrl;
       video.load();
@@ -400,7 +400,7 @@ export function PlaybackWindow() {
       }
     } else {
       void (async () => {
-        appendDebugLog("准备按需加载 hls.js");
+        appendDebugLog(query.isLive ? "直播 HLS 优先使用 hls.js" : "准备按需加载 hls.js");
         const { default: HlsConstructor } = await import("hls.js");
         if (disposed) {
           return;
