@@ -718,16 +718,19 @@ async fn generate_dash_from_local_file(
 
 async fn serve_hls_file(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxumPath((job_id, file)): AxumPath<(String, String)>,
 ) -> Result<Response, AppError> {
     let clean_file =
         sanitize_relative_hls_path(&file).ok_or_else(|| AppError::bad_request("非法文件路径"))?;
-    let file_path = state.data_dir.join(&job_id).join(clean_file);
+    let file_path = state.data_dir.join(&job_id).join(&clean_file);
 
     let bytes = tokio::fs::read(&file_path).await.map_err(|_| AppError {
         status: StatusCode::NOT_FOUND,
         message: "文件不存在".to_string(),
     })?;
+
+    log_segment_request("hls", &job_id, None, &clean_file, bytes.len(), &headers);
 
     let content_type = content_type_for_path(&file_path);
     let mut headers = HeaderMap::new();
@@ -782,6 +785,7 @@ async fn serve_dash_file(
     let bytes = tokio::fs::read(&file_path)
         .await
         .map_err(|e| AppError::internal(format!("读取 DASH 文件失败: {}", e)))?;
+    log_segment_request("dash", &job_id, None, &clean_file, bytes.len(), &headers);
     let content_type = content_type_for_path(&file_path);
     Ok(([(header::CONTENT_TYPE, content_type)], bytes).into_response())
 }
@@ -2293,6 +2297,49 @@ fn content_type_for_path(path: &Path) -> &'static str {
     }
 }
 
+fn is_media_segment_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("ts") | Some("m4s") | Some("mp4")
+    )
+}
+
+fn request_user_agent(headers: &HeaderMap) -> &str {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("<missing>")
+}
+
+fn log_segment_request(
+    stream_kind: &str,
+    job_id: &str,
+    flavor: Option<&str>,
+    file: &Path,
+    byte_len: usize,
+    headers: &HeaderMap,
+) {
+    if !is_media_segment_path(file) {
+        return;
+    }
+
+    let flavor_suffix = flavor
+        .map(|value| format!(" flavor={}", value))
+        .unwrap_or_default();
+    println!(
+        "[segment] kind={} job_id={}{} file={} bytes={} user_agent={}",
+        stream_kind,
+        job_id,
+        flavor_suffix,
+        file.display(),
+        byte_len,
+        request_user_agent(headers)
+    );
+}
+
 fn is_supported_video_file(name: &str) -> bool {
     matches!(
         Path::new(name)
@@ -2539,6 +2586,7 @@ async fn generate_live_from_local_file(
 
 async fn serve_live_file(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxumPath((job_id, flavor, file)): AxumPath<(String, String, String)>,
 ) -> Result<Response, AppError> {
     ensure_live_jobs_loaded(&state).await?;
@@ -2573,11 +2621,12 @@ async fn serve_live_file(
         .data_dir
         .join(format!("live_{}", job_id))
         .join(flavor)
-        .join(clean);
+        .join(&clean);
     let bytes = tokio::fs::read(&file_path).await.map_err(|_| AppError {
         status: StatusCode::NOT_FOUND,
         message: "文件不存在".to_string(),
     })?;
+    log_segment_request("live", &job_id, Some(flavor), &clean, bytes.len(), &headers);
     let content_type = content_type_for_path(&file_path);
     Ok(([(header::CONTENT_TYPE, content_type)], bytes).into_response())
 }
