@@ -124,7 +124,7 @@ origin:https://example.com
 
 ### 浏览器扩展（可选）
 
-安装浏览器扩展后，网页中会自动扫描出`m3u8`链接和视频地址，右上角会出现一个按钮`M3U8 Quicker`，点击后唤起桌面应用新建下载任务，并自动带入 `url`、`referer`、`origin`、`user-agent`。
+安装浏览器扩展后，网页中会自动扫描出视频地址和直播地址，右上角会出现一个按钮`M3U8 Quicker`，点击后唤起桌面应用新建下载任务（也可以直播录制），并自动带入 `url`、`referer`、`origin`、`user-agent`。
 > 安装扩展引导：打开M3U8 Quicker-> 工具 -> 安装浏览器扩展，按引导可安装Chrome扩展、Firefox扩展和Microsoft Edge扩展。
 
 ![Chrome 扩展安装引导](./doc/img/chrome-extension.png)
