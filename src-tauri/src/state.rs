@@ -7,8 +7,8 @@ use crate::downloader;
 use crate::live_recorder::LiveStopSignal;
 use crate::models::{
     DownloadId, DownloadTask, LiveRecordTask, ProxySettings, DEFAULT_DOWNLOAD_CONCURRENCY,
-    DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS, DEFAULT_PREVIEW_COLUMNS, DEFAULT_PREVIEW_COUNT,
-    DEFAULT_PREVIEW_JPEG_QUALITY, DEFAULT_PREVIEW_THUMBNAIL_WIDTH,
+    DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS, DEFAULT_HISTORY_PAGE_SIZE, DEFAULT_PREVIEW_COLUMNS,
+    DEFAULT_PREVIEW_COUNT, DEFAULT_PREVIEW_JPEG_QUALITY, DEFAULT_PREVIEW_THUMBNAIL_WIDTH,
 };
 use crate::models::default_user_agent;
 use crate::playback::{
@@ -42,6 +42,7 @@ pub struct AppState {
     pub download_priorities: Arc<Mutex<HashMap<DownloadId, Arc<DownloadPriorityState>>>>,
     pub ffmpeg_path: Arc<Mutex<Option<String>>>,
     pub preview_sessions: Arc<Mutex<HashMap<String, Arc<PreviewSession>>>>,
+    pub history_page_size: Arc<Mutex<usize>>,
 }
 
 impl AppState {
@@ -77,6 +78,7 @@ impl AppState {
             download_priorities: Arc::new(Mutex::new(HashMap::new())),
             ffmpeg_path: Arc::new(Mutex::new(None)),
             preview_sessions: Arc::new(Mutex::new(HashMap::new())),
+            history_page_size: Arc::new(Mutex::new(DEFAULT_HISTORY_PAGE_SIZE)),
         }
     }
 }

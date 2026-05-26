@@ -9,6 +9,7 @@ import {
   Progress,
   Radio,
   Segmented,
+  Select,
   Space,
   Switch,
   Tabs,
@@ -39,12 +40,14 @@ import {
   setDownloadSpeedLimit,
   setFfmpegEnabled,
   setFfmpegPath,
+  setHistoryPageSize,
   setLiveRecordSettings,
   setProxySettings,
   setTimeoutSettings,
   setUserAgent,
   openUrl,
 } from "../services/api";
+import { DEFAULT_HISTORY_PAGE_SIZE, HISTORY_PAGE_SIZE_OPTIONS } from "../types/settings";
 import type {
   FfmpegDownloadProgress,
   FfmpegStatus,
@@ -64,6 +67,11 @@ const SPEED_LIMIT_PRESETS: { label: string; value: number }[] = [
   { label: "5 MB/s", value: 5120 },
   { label: "10 MB/s", value: 10240 },
 ];
+
+const HISTORY_PAGE_SIZE_SELECT_OPTIONS = HISTORY_PAGE_SIZE_OPTIONS.map((value) => ({
+  label: `${value}`,
+  value,
+}));
 
 // 与后端 models.rs 的取值范围保持一致：仅约束下限（最小 1），无上限。
 const MIN_METADATA_TIMEOUT_SECS = 1;
@@ -96,8 +104,10 @@ interface SettingsModalProps {
   initialTab?: "general" | "network" | "download" | "live" | "ffmpeg" | "about";
   themeMode: ThemeMode;
   updateAvailable?: boolean;
+  historyPageSize?: number;
   onClose: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
+  onHistoryPageSizeChange?: (pageSize: number) => void;
   onUpdateAvailabilityChange?: (available: boolean) => void;
 }
 
@@ -106,8 +116,10 @@ export function SettingsModal({
   initialTab = "general",
   themeMode,
   updateAvailable = false,
+  historyPageSize = DEFAULT_HISTORY_PAGE_SIZE,
   onClose,
   onThemeModeChange,
+  onHistoryPageSizeChange,
   onUpdateAvailabilityChange,
 }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<
@@ -144,6 +156,9 @@ export function SettingsModal({
   const [savingFfmpegEnabled, setSavingFfmpegEnabled] = useState(false);
   const [appVersion, setAppVersion] = useState("");
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  const [historyPageSizeValue, setHistoryPageSizeValue] =
+    useState(historyPageSize);
+  const [savingHistoryPageSize, setSavingHistoryPageSize] = useState(false);
   // 默认下载目录
   const [defaultDownloadDir, setDefaultDownloadDirState] = useState("");
   // 默认 User-Agent
@@ -213,6 +228,8 @@ export function SettingsModal({
         setLiveSegmentTimeoutSecs(settings.live_segment_timeout_secs);
         setLiveRetryHlsMs(settings.live_retry_hls_ms);
         setLiveRetryFlvMs(settings.live_retry_flv_ms);
+        setHistoryPageSizeValue(settings.history_page_size);
+        onHistoryPageSizeChange?.(settings.history_page_size);
       })
       .catch((error) => {
         message.error(`读取设置失败：${formatSettingsError(error)}`);
@@ -221,7 +238,11 @@ export function SettingsModal({
 
     getDefaultDownloadDir().then(setDefaultDownloadDirState).catch(() => {});
     getFfmpegStatus().then(setFfmpegStatus).catch(() => {});
-  }, [initialTab, open]);
+  }, [initialTab, onHistoryPageSizeChange, open]);
+
+  useEffect(() => {
+    setHistoryPageSizeValue(historyPageSize);
+  }, [historyPageSize]);
 
   useEffect(() => {
     return () => {
@@ -404,6 +425,23 @@ export function SettingsModal({
     }
   };
 
+  const saveHistoryPageSizeValue = async (nextPageSize: number) => {
+    setHistoryPageSizeValue(nextPageSize);
+    setSavingHistoryPageSize(true);
+    try {
+      await setHistoryPageSize(nextPageSize);
+      onHistoryPageSizeChange?.(nextPageSize);
+      message.success("每页展示已保存");
+    } catch (error) {
+      message.error(`保存每页展示失败：${formatSettingsError(error)}`);
+      const settings = await getAppSettings();
+      setHistoryPageSizeValue(settings.history_page_size);
+      onHistoryPageSizeChange?.(settings.history_page_size);
+    } finally {
+      setSavingHistoryPageSize(false);
+    }
+  };
+
   const saveTimeoutSettingsValues = async () => {
     const metadata = clampInt(
       metadataTimeoutSecs ?? MIN_METADATA_TIMEOUT_SECS,
@@ -424,9 +462,9 @@ export function SettingsModal({
     setSavingTimeouts(true);
     try {
       await setTimeoutSettings(metadata, segment, mp4);
-      message.success("网络超时已保存");
+      message.success("请求超时已保存");
     } catch (error) {
-      message.error(`保存网络超时失败：${formatSettingsError(error)}`);
+      message.error(`保存请求超时失败：${formatSettingsError(error)}`);
       const settings = await getAppSettings();
       setMetadataTimeoutSecs(settings.metadata_timeout_secs);
       setSegmentTimeoutSecs(settings.segment_timeout_secs);
@@ -615,6 +653,20 @@ export function SettingsModal({
               </Radio>
             </Space>
           </Radio.Group>
+          <Space direction="vertical" size={8}>
+            <Typography.Text strong>列表展示</Typography.Text>
+            <Space size={8} align="center">
+              <Typography.Text>每页展示</Typography.Text>
+              <Select
+                value={historyPageSizeValue}
+                options={HISTORY_PAGE_SIZE_SELECT_OPTIONS}
+                style={{ width: 88 }}
+                disabled={loading || savingHistoryPageSize}
+                onChange={(value) => void saveHistoryPageSizeValue(value)}
+              />
+              <Typography.Text>条</Typography.Text>
+            </Space>
+          </Space>
         </Space>
       ),
     },
@@ -665,9 +717,6 @@ export function SettingsModal({
               onChange={(event) => setUserAgentState(event.target.value)}
               onBlur={() => void saveUserAgentValue()}
             />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              下载与录播共用此 UA；单个任务可在“附加 Header”中单独覆盖。
-            </Typography.Text>
           </Space>
         </Space>
       ),
@@ -679,7 +728,7 @@ export function SettingsModal({
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
             <Typography.Text strong>默认下载目录</Typography.Text>
-            <Space.Compact style={{ width: "100%" }}>
+            <Space.Compact style={{ width: "calc(100% - 24px)" }}>
               <Input value={defaultDownloadDir} readOnly placeholder="尚未设置" />
               <Button onClick={() => void handleSelectDefaultDownloadDir()}>
                 选择
@@ -852,7 +901,7 @@ export function SettingsModal({
             </Space>
           </Space>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>网络超时</Typography.Text>
+            <Typography.Text strong>请求超时</Typography.Text>
             <div
               style={{
                 display: "flex",

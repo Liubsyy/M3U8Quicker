@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { message, Modal } from "antd";
 import type {
@@ -97,7 +97,7 @@ function patchPageItem(
   };
 }
 
-export function useDownloads() {
+export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
   const [counts, setCounts] = useState<DownloadCounts>({
     active_count: 0,
     history_count: 0,
@@ -111,6 +111,7 @@ export function useDownloads() {
   const [segmentStateCache, setSegmentStateCache] = useState<
     Record<string, DownloadTaskSegmentState>
   >({});
+  const historyRequestIdRef = useRef(0);
 
   const refreshCounts = useCallback(async () => {
     const nextCounts = await api.getDownloadCounts();
@@ -122,10 +123,12 @@ export function useDownloads() {
     setLoadingGroups((prev) => ({ ...prev, [group]: true }));
     try {
       const currentPage = group === "active" ? activePage : historyPage;
+      const pageSize =
+        group === "history" ? historyPageSize : currentPage.pageSize;
       const nextPage = await api.getDownloadsPage(
         group,
         page ?? currentPage.page,
-        currentPage.pageSize
+        pageSize
       );
       const nextState = toPageState(nextPage);
 
@@ -137,32 +140,27 @@ export function useDownloads() {
     } finally {
       setLoadingGroups((prev) => ({ ...prev, [group]: false }));
     }
-  }, [activePage, historyPage]);
+  }, [activePage, historyPage, historyPageSize]);
 
   useEffect(() => {
     let disposed = false;
 
     const initialize = async () => {
       try {
-        const [nextCounts, active, history] = await Promise.all([
+        const [nextCounts, active] = await Promise.all([
           api.getDownloadCounts(),
           api.getDownloadsPage("active", 1, DEFAULT_PAGE_SIZE),
-          api.getDownloadsPage("history", 1, DEFAULT_PAGE_SIZE),
         ]);
         if (disposed) {
           return;
         }
         setCounts(nextCounts);
         setActivePage(toPageState(active));
-        setHistoryPage(toPageState(history));
       } catch (error) {
         console.error("Failed to initialize downloads", error);
       } finally {
         if (!disposed) {
-          setLoadingGroups({
-            active: false,
-            history: false,
-          });
+          setLoadingGroups((prev) => ({ ...prev, active: false }));
         }
       }
     };
@@ -172,6 +170,33 @@ export function useDownloads() {
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const requestId = historyRequestIdRef.current + 1;
+    historyRequestIdRef.current = requestId;
+
+    setLoadingGroups((prev) => ({ ...prev, history: true }));
+    void api
+      .getDownloadsPage("history", 1, historyPageSize)
+      .then((history) => {
+        if (!disposed && historyRequestIdRef.current === requestId) {
+          setHistoryPage(toPageState(history));
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to load history downloads", error);
+      })
+      .finally(() => {
+        if (!disposed && historyRequestIdRef.current === requestId) {
+          setLoadingGroups((prev) => ({ ...prev, history: false }));
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [historyPageSize]);
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;

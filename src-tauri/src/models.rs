@@ -281,6 +281,8 @@ pub const MAX_PREVIEW_THUMBNAIL_WIDTH: u32 = 1920;
 pub const DEFAULT_PREVIEW_JPEG_QUALITY: u8 = 4;
 pub const MIN_PREVIEW_JPEG_QUALITY: u8 = 2;
 pub const MAX_PREVIEW_JPEG_QUALITY: u8 = 10;
+pub const DEFAULT_HISTORY_PAGE_SIZE: usize = 50;
+pub const HISTORY_PAGE_SIZE_OPTIONS: [usize; 5] = [10, 20, 50, 100, 200];
 
 /// 默认 User-Agent，按操作系统给出更贴近真实浏览器的标识。
 pub fn default_user_agent() -> &'static str {
@@ -345,6 +347,14 @@ pub fn normalize_user_agent(value: &str) -> String {
         default_user_agent().to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+pub fn normalize_history_page_size(value: usize) -> usize {
+    if HISTORY_PAGE_SIZE_OPTIONS.contains(&value) {
+        value
+    } else {
+        DEFAULT_HISTORY_PAGE_SIZE
     }
 }
 
@@ -435,6 +445,8 @@ pub struct AppSettings {
     pub live_retry_hls_ms: u64,
     #[serde(default = "default_live_retry_flv_ms")]
     pub live_retry_flv_ms: u64,
+    #[serde(default = "default_history_page_size")]
+    pub history_page_size: usize,
 }
 
 impl Default for AppSettings {
@@ -462,8 +474,13 @@ impl Default for AppSettings {
             live_segment_timeout_secs: DEFAULT_LIVE_SEGMENT_TIMEOUT_SECS,
             live_retry_hls_ms: DEFAULT_LIVE_RETRY_HLS_MS,
             live_retry_flv_ms: DEFAULT_LIVE_RETRY_FLV_MS,
+            history_page_size: DEFAULT_HISTORY_PAGE_SIZE,
         }
     }
+}
+
+fn default_history_page_size() -> usize {
+    DEFAULT_HISTORY_PAGE_SIZE
 }
 
 fn default_ffmpeg_enabled() -> bool {
@@ -535,6 +552,7 @@ impl AppSettings {
             normalize_live_segment_timeout_secs(self.live_segment_timeout_secs);
         self.live_retry_hls_ms = normalize_live_retry_hls_ms(self.live_retry_hls_ms);
         self.live_retry_flv_ms = normalize_live_retry_flv_ms(self.live_retry_flv_ms);
+        self.history_page_size = normalize_history_page_size(self.history_page_size);
     }
 }
 
@@ -876,6 +894,7 @@ mod tests {
             DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS
         );
         assert!(settings.ffmpeg_enabled);
+        assert_eq!(settings.history_page_size, DEFAULT_HISTORY_PAGE_SIZE);
     }
 
     #[test]
@@ -888,6 +907,18 @@ mod tests {
         settings.sanitize();
 
         assert_eq!(settings.download_speed_limit_kbps, 1024);
+    }
+
+    #[test]
+    fn app_settings_normalizes_invalid_history_page_size() {
+        let mut settings = AppSettings {
+            history_page_size: 999,
+            ..AppSettings::default()
+        };
+
+        settings.sanitize();
+
+        assert_eq!(settings.history_page_size, DEFAULT_HISTORY_PAGE_SIZE);
     }
 
     #[test]

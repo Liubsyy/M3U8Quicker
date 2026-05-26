@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { message } from "antd";
 import type {
@@ -61,7 +61,7 @@ function patchPageItem(
   };
 }
 
-export function useLiveRecords() {
+export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
   const [counts, setCounts] = useState<LiveRecordCounts>({
     active_count: 0,
     history_count: 0,
@@ -72,6 +72,7 @@ export function useLiveRecords() {
     active: true,
     history: true,
   });
+  const historyRequestIdRef = useRef(0);
 
   const refreshCounts = useCallback(async () => {
     const next = await api.getLiveRecordCounts();
@@ -84,10 +85,12 @@ export function useLiveRecords() {
       setLoadingGroups((prev) => ({ ...prev, [group]: true }));
       try {
         const currentPage = group === "active" ? activePage : historyPage;
+        const pageSize =
+          group === "history" ? historyPageSize : currentPage.pageSize;
         const next = await api.getLiveRecordsPage(
           group,
           page ?? currentPage.page,
-          currentPage.pageSize
+          pageSize
         );
         const nextState = toPageState(next);
         if (group === "active") {
@@ -99,27 +102,25 @@ export function useLiveRecords() {
         setLoadingGroups((prev) => ({ ...prev, [group]: false }));
       }
     },
-    [activePage, historyPage]
+    [activePage, historyPage, historyPageSize]
   );
 
   useEffect(() => {
     let disposed = false;
     const initialize = async () => {
       try {
-        const [nextCounts, active, history] = await Promise.all([
+        const [nextCounts, active] = await Promise.all([
           api.getLiveRecordCounts(),
           api.getLiveRecordsPage("active", 1, DEFAULT_PAGE_SIZE),
-          api.getLiveRecordsPage("history", 1, DEFAULT_PAGE_SIZE),
         ]);
         if (disposed) return;
         setCounts(nextCounts);
         setActivePage(toPageState(active));
-        setHistoryPage(toPageState(history));
       } catch (error) {
         console.error("Failed to initialize live records", error);
       } finally {
         if (!disposed) {
-          setLoadingGroups({ active: false, history: false });
+          setLoadingGroups((prev) => ({ ...prev, active: false }));
         }
       }
     };
@@ -128,6 +129,33 @@ export function useLiveRecords() {
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const requestId = historyRequestIdRef.current + 1;
+    historyRequestIdRef.current = requestId;
+
+    setLoadingGroups((prev) => ({ ...prev, history: true }));
+    void api
+      .getLiveRecordsPage("history", 1, historyPageSize)
+      .then((history) => {
+        if (!disposed && historyRequestIdRef.current === requestId) {
+          setHistoryPage(toPageState(history));
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to load history live records", error);
+      })
+      .finally(() => {
+        if (!disposed && historyRequestIdRef.current === requestId) {
+          setLoadingGroups((prev) => ({ ...prev, history: false }));
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [historyPageSize]);
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;

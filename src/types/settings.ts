@@ -1,6 +1,8 @@
 export type ThemeMode = "light" | "dark";
 
 export const THEME_MODE_STORAGE_KEY = "m3u8quicker.themeMode";
+export const DEFAULT_HISTORY_PAGE_SIZE = 50;
+export const HISTORY_PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200] as const;
 
 export interface ProxySettings {
   enabled: boolean;
@@ -30,6 +32,7 @@ export interface AppSettings {
   live_segment_timeout_secs: number;
   live_retry_hls_ms: number;
   live_retry_flv_ms: number;
+  history_page_size: number;
 }
 
 export interface FfprobeInfo {

@@ -196,6 +196,10 @@ export async function setDownloadSpeedLimit(
   return invoke("set_download_speed_limit", { downloadSpeedLimitKbps });
 }
 
+export async function setHistoryPageSize(pageSize: number): Promise<void> {
+  return invoke("set_history_page_size", { pageSize });
+}
+
 export async function setPreviewColumns(previewColumns: number): Promise<void> {
   return invoke("set_preview_columns", { previewColumns });
 }

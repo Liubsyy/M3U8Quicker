@@ -62,6 +62,7 @@ import {
   parseFileType,
 } from "./types";
 import type { ThemeMode } from "./types/settings";
+import { DEFAULT_HISTORY_PAGE_SIZE } from "./types/settings";
 
 const { Header, Content } = Layout;
 
@@ -135,6 +136,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
   const [batchDownloadModalOpen, setBatchDownloadModalOpen] = useState(false);
   const [videoPreviewModalOpen, setVideoPreviewModalOpen] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [historyPageSize, setHistoryPageSize] = useState(DEFAULT_HISTORY_PAGE_SIZE);
   const [chromiumInstallGuide, setChromiumInstallGuide] =
     useState<ChromiumInstallGuideState | null>(null);
   const [firefoxInstallGuide, setFirefoxInstallGuide] =
@@ -168,7 +170,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     refreshActive,
     refreshHistory,
     getSegmentState,
-  } = useDownloads();
+  } = useDownloads(historyPageSize);
   const {
     counts: liveCounts,
     recording: liveRecording,
@@ -190,7 +192,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     refreshHistory: refreshLiveHistory,
     loadingActive: loadingLiveActive,
     loadingHistory: loadingLiveHistory,
-  } = useLiveRecords();
+  } = useLiveRecords(historyPageSize);
   const { token } = theme.useToken();
 
   useEffect(() => {
@@ -210,6 +212,24 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void getAppSettings()
+      .then((settings) => {
+        if (!cancelled) {
+          setHistoryPageSize(settings.history_page_size);
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to load history page size", error);
+      });
+
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -769,11 +789,13 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         initialTab={settingsInitialTab}
         themeMode={themeMode}
         updateAvailable={updateAvailable}
+        historyPageSize={historyPageSize}
         onClose={() => {
           setSettingsOpen(false);
           setSettingsInitialTab("general");
         }}
         onThemeModeChange={onThemeModeChange}
+        onHistoryPageSizeChange={setHistoryPageSize}
         onUpdateAvailabilityChange={setUpdateAvailable}
       />
       <ToolsModal

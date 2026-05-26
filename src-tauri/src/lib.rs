@@ -209,6 +209,10 @@ pub fn run() {
                     let mut ffmpeg_path = state.ffmpeg_path.lock().await;
                     *ffmpeg_path = settings.ffmpeg_path;
                 }
+                {
+                    let mut history_page_size = state.history_page_size.lock().await;
+                    *history_page_size = settings.history_page_size;
+                }
 
                 let _ = persistence::migrate_legacy_downloads(&handle).await;
                 let saved = persistence::load_active_downloads(&handle)
@@ -282,6 +286,7 @@ pub fn run() {
             commands::set_preview_count,
             commands::set_preview_thumbnail_settings,
             commands::set_download_output_settings,
+            commands::set_history_page_size,
             commands::open_file_location,
             commands::open_url,
             commands::install_chromium_extension,

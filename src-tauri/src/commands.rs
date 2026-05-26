@@ -1160,7 +1160,11 @@ pub async fn set_default_download_dir(
 }
 
 #[tauri::command]
-pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings, AppError> {
+pub async fn get_app_settings(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<AppSettings, AppError> {
+    let saved_settings = persistence::load_settings(&app_handle).await;
     let (metadata_timeout_secs, segment_timeout_secs, mp4_timeout_secs) =
         downloader::timeouts_secs_snapshot();
     let (
@@ -1195,6 +1199,7 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         live_segment_timeout_secs,
         live_retry_hls_ms,
         live_retry_flv_ms,
+        history_page_size: saved_settings.history_page_size,
     })
 }
 
@@ -1385,6 +1390,27 @@ pub async fn set_download_speed_limit(
 
     persistence::update_settings(&app_handle, |settings| {
         settings.download_speed_limit_kbps = normalized_limit;
+    })
+    .await;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_history_page_size(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    page_size: usize,
+) -> Result<(), AppError> {
+    let normalized_page_size = normalize_history_page_size(page_size);
+
+    {
+        let mut history_page_size = state.history_page_size.lock().await;
+        *history_page_size = normalized_page_size;
+    }
+
+    persistence::update_settings(&app_handle, |settings| {
+        settings.history_page_size = normalized_page_size;
     })
     .await;
 
