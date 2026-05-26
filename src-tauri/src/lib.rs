@@ -13,7 +13,10 @@ mod state;
 mod update;
 
 use std::collections::HashMap;
-use tauri::Manager;
+use std::sync::atomic::Ordering;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 use crate::models::{DownloadId, DownloadTask};
@@ -49,6 +52,21 @@ pub fn run() {
             let tauri::WindowEvent::CloseRequested { api, .. } = event else {
                 return;
             };
+
+            if window.label() == "main" {
+                let app_handle = window.app_handle();
+                let close_to_tray = app_handle
+                    .state::<AppState>()
+                    .close_to_tray
+                    .load(Ordering::Relaxed);
+                if close_to_tray {
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else {
+                    app_handle.exit(0);
+                }
+                return;
+            }
 
             if let Some(token) = preview::token_from_window_label(window.label()).map(str::to_owned)
             {
@@ -106,6 +124,86 @@ pub fn run() {
         .setup(|app| {
             #[cfg(any(windows, target_os = "linux"))]
             app.deep_link().register_all()?;
+
+            let new_download_item =
+                MenuItemBuilder::with_id("tray_new_download", "新建下载").build(app)?;
+            let live_record_item =
+                MenuItemBuilder::with_id("tray_live_record", "直播录制").build(app)?;
+            let video_preview_item =
+                MenuItemBuilder::with_id("tray_video_preview", "视频预览图").build(app)?;
+            let install_chrome_item =
+                MenuItemBuilder::with_id("tray_install_chrome", "Chrome 扩展").build(app)?;
+            let install_edge_item =
+                MenuItemBuilder::with_id("tray_install_edge", "Microsoft Edge 扩展")
+                    .build(app)?;
+            let install_firefox_item =
+                MenuItemBuilder::with_id("tray_install_firefox", "Firefox 扩展").build(app)?;
+            let install_extension_submenu = SubmenuBuilder::new(app, "安装浏览器扩展")
+                .items(&[
+                    &install_chrome_item,
+                    &install_edge_item,
+                    &install_firefox_item,
+                ])
+                .build()?;
+            let settings_item = MenuItemBuilder::with_id("tray_settings", "设置").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("tray_quit", "退出").build(app)?;
+            let tray_menu = MenuBuilder::new(app)
+                .items(&[
+                    &new_download_item,
+                    &live_record_item,
+                    &video_preview_item,
+                    &install_extension_submenu,
+                    &settings_item,
+                ])
+                .separator()
+                .items(&[&quit_item])
+                .build()?;
+
+            let mut tray_builder = TrayIconBuilder::with_id("main-tray")
+                .tooltip("M3U8 Quicker")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "tray_quit" => {
+                        app.exit(0);
+                    }
+                    "tray_new_download" => {
+                        emit_tray_action(app, "new-download");
+                    }
+                    "tray_live_record" => {
+                        emit_tray_action(app, "live-record");
+                    }
+                    "tray_video_preview" => {
+                        emit_tray_action(app, "open-video-preview");
+                    }
+                    "tray_install_chrome" => {
+                        emit_tray_action(app, "install-chrome-extension");
+                    }
+                    "tray_install_edge" => {
+                        emit_tray_action(app, "install-edge-extension");
+                    }
+                    "tray_install_firefox" => {
+                        emit_tray_action(app, "install-firefox-extension");
+                    }
+                    "tray_settings" => {
+                        emit_tray_action(app, "open-settings");
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+            tray_builder.build(app)?;
 
             let state = app.state::<AppState>();
             let playback_server = tauri::async_runtime::block_on(playback::start_playback_server(
@@ -213,6 +311,9 @@ pub fn run() {
                     let mut history_page_size = state.history_page_size.lock().await;
                     *history_page_size = settings.history_page_size;
                 }
+                state
+                    .close_to_tray
+                    .store(settings.close_to_tray, Ordering::Relaxed);
 
                 let _ = persistence::migrate_legacy_downloads(&handle).await;
                 let saved = persistence::load_active_downloads(&handle)
@@ -273,6 +374,7 @@ pub fn run() {
             commands::get_download_summary,
             commands::remove_download,
             commands::clear_history_downloads,
+            commands::get_task_referer,
             commands::get_default_download_dir,
             commands::set_default_download_dir,
             commands::get_app_settings,
@@ -287,6 +389,7 @@ pub fn run() {
             commands::set_preview_thumbnail_settings,
             commands::set_download_output_settings,
             commands::set_history_page_size,
+            commands::set_close_to_tray,
             commands::open_file_location,
             commands::open_url,
             commands::install_chromium_extension,
@@ -331,4 +434,17 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn emit_tray_action(app: &AppHandle, action: &str) {
+    show_main_window(app);
+    let _ = app.emit("tray-action", action);
 }

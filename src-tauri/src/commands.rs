@@ -1130,6 +1130,36 @@ pub async fn clear_history_downloads(
     Ok(())
 }
 
+/// Returns the `Referer` value parsed from a task's `extra_headers`, looking
+/// up either downloads or live records by id. Returns `None` when the task
+/// exists but has no Referer header, or when the id is unknown.
+#[tauri::command]
+pub async fn get_task_referer(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<String>, AppError> {
+    {
+        let downloads = state.downloads.lock().await;
+        if let Some(task) = downloads.get(&id) {
+            return Ok(persistence::extract_referer(task.extra_headers.as_deref()));
+        }
+    }
+    {
+        let lives = state.live_records.lock().await;
+        if let Some(task) = lives.get(&id) {
+            return Ok(persistence::extract_referer(task.extra_headers.as_deref()));
+        }
+    }
+    if let Some(task) = persistence::load_download_task(&app_handle, &id).await? {
+        return Ok(persistence::extract_referer(task.extra_headers.as_deref()));
+    }
+    if let Some(task) = persistence::load_live_task(&app_handle, &id).await? {
+        return Ok(persistence::extract_referer(task.extra_headers.as_deref()));
+    }
+    Ok(None)
+}
+
 #[tauri::command]
 pub async fn get_default_download_dir(state: State<'_, AppState>) -> Result<String, AppError> {
     Ok(state.default_download_dir.lock().await.clone())
@@ -1200,6 +1230,9 @@ pub async fn get_app_settings(
         live_retry_hls_ms,
         live_retry_flv_ms,
         history_page_size: saved_settings.history_page_size,
+        close_to_tray: state
+            .close_to_tray
+            .load(std::sync::atomic::Ordering::Relaxed),
     })
 }
 
@@ -1390,6 +1423,24 @@ pub async fn set_download_speed_limit(
 
     persistence::update_settings(&app_handle, |settings| {
         settings.download_speed_limit_kbps = normalized_limit;
+    })
+    .await;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_close_to_tray(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    close_to_tray: bool,
+) -> Result<(), AppError> {
+    state
+        .close_to_tray
+        .store(close_to_tray, std::sync::atomic::Ordering::Relaxed);
+
+    persistence::update_settings(&app_handle, |settings| {
+        settings.close_to_tray = close_to_tray;
     })
     .await;
 

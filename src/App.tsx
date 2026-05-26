@@ -530,6 +530,58 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     }
   };
 
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+
+    void listen<string>("tray-action", (event) => {
+      const action = event.payload;
+      switch (action) {
+        case "new-download":
+          setDownloadDraft(null);
+          setModalOpen(true);
+          break;
+        case "live-record":
+          setLiveRecordDraft(null);
+          setLiveRecordModalOpen(true);
+          break;
+        case "open-video-preview":
+          setVideoPreviewModalOpen(true);
+          break;
+        case "install-chrome-extension":
+          void handleInstallChromiumExtension("chrome");
+          break;
+        case "install-edge-extension":
+          void handleInstallChromiumExtension("edge");
+          break;
+        case "install-firefox-extension":
+          void handleInstallFirefoxExtension();
+          break;
+        case "open-settings":
+          setSettingsInitialTab("general");
+          setSettingsOpen(true);
+          break;
+        default:
+          break;
+      }
+    })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch((error) => {
+        console.error("[m3u8quicker] failed to subscribe tray-action", error);
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   const chromiumBrowserMeta = CHROMIUM_BROWSER_META[chromiumInstallGuide?.browser ?? "chrome"];
 
   const liveRecordingItems = liveRecording.map(liveRecordToDownloadSummary);

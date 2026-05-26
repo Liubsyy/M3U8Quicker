@@ -108,6 +108,10 @@ export async function clearHistoryDownloads(): Promise<void> {
   return invoke("clear_history_downloads");
 }
 
+export async function getTaskReferer(id: string): Promise<string | null> {
+  return invoke<string | null>("get_task_referer", { id });
+}
+
 export async function getDefaultDownloadDir(): Promise<string> {
   return invoke<string>("get_default_download_dir");
 }
@@ -198,6 +202,10 @@ export async function setDownloadSpeedLimit(
 
 export async function setHistoryPageSize(pageSize: number): Promise<void> {
   return invoke("set_history_page_size", { pageSize });
+}
+
+export async function setCloseToTray(closeToTray: boolean): Promise<void> {
+  return invoke("set_close_to_tray", { closeToTray });
 }
 
 export async function setPreviewColumns(previewColumns: number): Promise<void> {

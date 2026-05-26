@@ -204,6 +204,29 @@ pub fn task_to_summary(task: &DownloadTask) -> DownloadTaskSummary {
     }
 }
 
+/// Best-effort extraction of the `Referer` value from a multi-line
+/// `Name: Value` header blob. Returns `None` when the header is absent or
+/// empty so callers can decide how to surface that to the user.
+pub fn extract_referer(extra_headers: Option<&str>) -> Option<String> {
+    let raw = extra_headers?;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("referer") {
+            let v = value.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
 async fn refresh_completed_file_size(summary: &mut DownloadTaskSummary) {
     if !matches!(summary.status, crate::models::DownloadStatus::Completed) {
         return;

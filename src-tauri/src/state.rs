@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -43,6 +44,7 @@ pub struct AppState {
     pub ffmpeg_path: Arc<Mutex<Option<String>>>,
     pub preview_sessions: Arc<Mutex<HashMap<String, Arc<PreviewSession>>>>,
     pub history_page_size: Arc<Mutex<usize>>,
+    pub close_to_tray: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -79,6 +81,7 @@ impl AppState {
             ffmpeg_path: Arc::new(Mutex::new(None)),
             preview_sessions: Arc::new(Mutex::new(HashMap::new())),
             history_page_size: Arc::new(Mutex::new(DEFAULT_HISTORY_PAGE_SIZE)),
+            close_to_tray: Arc::new(AtomicBool::new(true)),
         }
     }
 }

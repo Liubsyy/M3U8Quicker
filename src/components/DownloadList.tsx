@@ -1,5 +1,6 @@
 import {
   Button,
+  Dropdown,
   Popconfirm,
   Popover,
   Progress,
@@ -9,7 +10,9 @@ import {
   Tag,
   Tooltip,
   Typography,
+  message,
 } from "antd";
+import type { MenuProps } from "antd";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import type { ColumnsType } from "antd/es/table";
@@ -19,6 +22,7 @@ import {
   CloseCircleOutlined,
   DeleteOutlined,
   FolderOpenOutlined,
+  GlobalOutlined,
   InfoCircleOutlined,
   PauseCircleOutlined,
   ReloadOutlined,
@@ -34,7 +38,7 @@ import {
   getFileTypeLabel,
   isDirectFileType,
 } from "../types";
-import { openFileLocation } from "../services/api";
+import { getTaskReferer, openFileLocation, openUrl } from "../services/api";
 
 interface CancelLabels {
   title?: string;
@@ -196,6 +200,163 @@ export function DownloadList({
     Record<string, DownloadTaskSegmentState>
   >({});
   const [segmentLoading, setSegmentLoading] = useState<Record<string, boolean>>({});
+  const [ctxMenu, setCtxMenu] = useState<
+    { record: DownloadTaskSummary; x: number; y: number } | null
+  >(null);
+  const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
+  const [removeConfirmId, setRemoveConfirmId] = useState<string | null>(null);
+
+  const buildMenuItems = (
+    record: DownloadTaskSummary | undefined
+  ): NonNullable<MenuProps["items"]> => {
+    if (!record) return [];
+    const opGroup: NonNullable<MenuProps["items"]> = [];
+    const dangerGroup: NonNullable<MenuProps["items"]> = [];
+    const fileGroup: NonNullable<MenuProps["items"]> = [];
+
+    if (
+      showActions.includes("play") &&
+      onPlay &&
+      (record.status === "Downloading" ||
+        record.status === "Paused" ||
+        record.status === "Completed")
+    ) {
+      opGroup.push({
+        key: "play",
+        icon: <VideoCameraOutlined />,
+        label: "播放",
+        disabled: !canOpenInProgressPlayback(record),
+      });
+    }
+    if (showActions.includes("pause") && record.status === "Downloading") {
+      opGroup.push({
+        key: "pause",
+        icon: <PauseCircleOutlined />,
+        label: "暂停",
+      });
+    }
+    if (showActions.includes("resume") && record.status === "Paused") {
+      opGroup.push({
+        key: "resume",
+        icon: <CaretRightOutlined />,
+        label: record.is_live ? "继续录制" : "继续下载",
+      });
+    }
+    if (
+      showActions.includes("stop") &&
+      onStop &&
+      (record.status === "Downloading" || record.status === "Paused")
+    ) {
+      opGroup.push({
+        key: "stop",
+        icon: <CheckCircleOutlined />,
+        label: "停止录制",
+      });
+    }
+    if (record.failed_segment_count > 0 && !record.is_live) {
+      opGroup.push({
+        key: "retry",
+        icon: <ReloadOutlined />,
+        label: "重试失败分片",
+      });
+    }
+
+    if (
+      showActions.includes("cancel") &&
+      (record.status === "Downloading" || record.status === "Paused")
+    ) {
+      dangerGroup.push({
+        key: "cancel",
+        icon: <CloseCircleOutlined />,
+        label: record.is_live ? "取消录制" : "取消下载",
+        danger: true,
+      });
+    }
+    if (showActions.includes("remove")) {
+      dangerGroup.push({
+        key: "remove",
+        icon: <DeleteOutlined />,
+        label: "删除",
+        danger: true,
+      });
+    }
+
+    if (
+      showActions.includes("open") &&
+      (record.file_path || record.output_dir)
+    ) {
+      fileGroup.push({
+        key: "open",
+        icon: <FolderOpenOutlined />,
+        label: "打开文件夹",
+      });
+    }
+    fileGroup.push({
+      key: "open-source",
+      icon: <GlobalOutlined />,
+      label: "打开原网站",
+    });
+
+    const items: NonNullable<MenuProps["items"]> = [];
+    for (const g of [opGroup, dangerGroup, fileGroup]) {
+      if (g.length === 0) continue;
+      if (items.length > 0) items.push({ type: "divider" });
+      items.push(...g);
+    }
+    return items;
+  };
+
+  const handleMenuClick: NonNullable<MenuProps["onClick"]> = (info) => {
+    const target = ctxMenu;
+    if (!target) return;
+    const { record } = target;
+    setCtxMenu(null);
+
+    switch (info.key) {
+      case "play":
+        onPlay?.(record);
+        return;
+      case "pause":
+        onPause(record.id);
+        return;
+      case "resume":
+        onResume(record.id);
+        return;
+      case "stop":
+        onStop?.(record.id);
+        return;
+      case "retry":
+        onRetryFailed(record.id);
+        return;
+      case "cancel":
+        setCancelConfirmId(record.id);
+        return;
+      case "remove":
+        setRemoveConfirmId(record.id);
+        return;
+      case "open": {
+        const path = record.file_path ?? record.output_dir;
+        if (path) void openFileLocation(path);
+        return;
+      }
+      case "open-source": {
+        void (async () => {
+          try {
+            const referer = (await getTaskReferer(record.id))?.trim();
+            if (!referer) {
+              void message.warning("该任务没有 Referer，无法打开原网站");
+              return;
+            }
+            await openUrl(referer);
+          } catch (error) {
+            console.error("Failed to open referer:", error);
+            void message.error(`打开原网站失败: ${error}`);
+          }
+        })();
+        return;
+      }
+    }
+  };
 
   const handleSegmentPopoverOpen = async (
     open: boolean,
@@ -529,7 +690,15 @@ export function DownloadList({
               <Popconfirm
                 title={cancelLabels?.title ?? "确认取消下载?"}
                 description={cancelLabels?.description ?? "已下载的临时切片会被清理。"}
-                onConfirm={() => onCancel(record.id)}
+                open={cancelConfirmId === record.id}
+                onOpenChange={(open) =>
+                  setCancelConfirmId(open ? record.id : null)
+                }
+                onConfirm={() => {
+                  onCancel(record.id);
+                  setCancelConfirmId(null);
+                }}
+                onCancel={() => setCancelConfirmId(null)}
                 okText={cancelLabels?.okText ?? "确认取消"}
                 cancelText={cancelLabels?.cancelText ?? "继续下载"}
               >
@@ -547,8 +716,18 @@ export function DownloadList({
             <Popconfirm
               title="确认删除?"
               description="是否同时删除文件?"
-              onConfirm={() => onRemove(record.id, true)}
-              onCancel={() => onRemove(record.id, false)}
+              open={removeConfirmId === record.id}
+              onOpenChange={(open) =>
+                setRemoveConfirmId(open ? record.id : null)
+              }
+              onConfirm={() => {
+                onRemove(record.id, true);
+                setRemoveConfirmId(null);
+              }}
+              onCancel={() => {
+                onRemove(record.id, false);
+                setRemoveConfirmId(null);
+              }}
               okText="删除文件"
               cancelText="仅移除记录"
             >
@@ -580,22 +759,58 @@ export function DownloadList({
     },
   ];
 
+  const menuItems = buildMenuItems(ctxMenu?.record);
+
   return (
-    <Table
-      columns={columns}
-      dataSource={downloads}
-      rowKey="id"
-      loading={loading}
-      pagination={{
-        current: currentPage,
-        pageSize,
-        total,
-        onChange: onPageChange,
-        showSizeChanger: false,
-      }}
-      size="middle"
-      tableLayout="fixed"
-      locale={{ emptyText: "暂无下载任务" }}
-    />
+    <>
+      <Table
+        columns={columns}
+        dataSource={downloads}
+        rowKey="id"
+        loading={loading}
+        pagination={{
+          current: currentPage,
+          pageSize,
+          total,
+          onChange: onPageChange,
+          showSizeChanger: false,
+        }}
+        size="middle"
+        tableLayout="fixed"
+        locale={{ emptyText: "暂无下载任务" }}
+        onRow={(record) => ({
+          onContextMenu: (event) => {
+            if (buildMenuItems(record).length === 0) return;
+            event.preventDefault();
+            setCtxMenu({ record, x: event.clientX, y: event.clientY });
+          },
+        })}
+      />
+      <Dropdown
+        key={
+          ctxMenu
+            ? `${ctxMenu.record.id}-${ctxMenu.x}-${ctxMenu.y}`
+            : "ctx-empty"
+        }
+        open={Boolean(ctxMenu)}
+        onOpenChange={(open) => {
+          if (!open) setCtxMenu(null);
+        }}
+        trigger={["click"]}
+        menu={{ items: menuItems, onClick: handleMenuClick }}
+        destroyOnHidden
+      >
+        <div
+          style={{
+            position: "fixed",
+            left: ctxMenu?.x ?? 0,
+            top: ctxMenu?.y ?? 0,
+            width: 1,
+            height: 1,
+            pointerEvents: "none",
+          }}
+        />
+      </Dropdown>
+    </>
   );
 }

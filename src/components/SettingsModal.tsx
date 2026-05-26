@@ -34,6 +34,7 @@ import {
   getAppSettings,
   getDefaultDownloadDir,
   getFfmpegStatus,
+  setCloseToTray,
   setDefaultDownloadDir,
   setDownloadConcurrency,
   setDownloadOutputSettings,
@@ -159,6 +160,9 @@ export function SettingsModal({
   const [historyPageSizeValue, setHistoryPageSizeValue] =
     useState(historyPageSize);
   const [savingHistoryPageSize, setSavingHistoryPageSize] = useState(false);
+  // 关闭窗口时的行为：true=最小化到系统托盘，false=退出应用
+  const [closeToTray, setCloseToTrayState] = useState(true);
+  const [savingCloseToTray, setSavingCloseToTray] = useState(false);
   // 默认下载目录
   const [defaultDownloadDir, setDefaultDownloadDirState] = useState("");
   // 默认 User-Agent
@@ -230,6 +234,7 @@ export function SettingsModal({
         setLiveRetryFlvMs(settings.live_retry_flv_ms);
         setHistoryPageSizeValue(settings.history_page_size);
         onHistoryPageSizeChange?.(settings.history_page_size);
+        setCloseToTrayState(settings.close_to_tray);
       })
       .catch((error) => {
         message.error(`读取设置失败：${formatSettingsError(error)}`);
@@ -439,6 +444,21 @@ export function SettingsModal({
       onHistoryPageSizeChange?.(settings.history_page_size);
     } finally {
       setSavingHistoryPageSize(false);
+    }
+  };
+
+  const saveCloseToTrayValue = async (next: boolean) => {
+    if (next === closeToTray) return;
+    const previous = closeToTray;
+    setCloseToTrayState(next);
+    setSavingCloseToTray(true);
+    try {
+      await setCloseToTray(next);
+    } catch (error) {
+      message.error(`保存关闭窗口行为失败：${formatSettingsError(error)}`);
+      setCloseToTrayState(previous);
+    } finally {
+      setSavingCloseToTray(false);
     }
   };
 
@@ -666,6 +686,21 @@ export function SettingsModal({
               />
               <Typography.Text>条</Typography.Text>
             </Space>
+          </Space>
+          <Space direction="vertical" size={8}>
+            <Typography.Text strong>关闭窗口时</Typography.Text>
+            <Radio.Group
+              value={closeToTray ? "tray" : "exit"}
+              disabled={loading || savingCloseToTray}
+              onChange={(event) =>
+                void saveCloseToTrayValue(event.target.value === "tray")
+              }
+            >
+              <Space size={20}>
+                <Radio value="tray">最小化到系统托盘</Radio>
+                <Radio value="exit">退出应用</Radio>
+              </Space>
+            </Radio.Group>
           </Space>
         </Space>
       ),
@@ -1380,7 +1415,8 @@ export function SettingsModal({
           savingFfmpegEnabled ||
           savingUserAgent ||
           savingTimeouts ||
-          savingLiveSettings
+          savingLiveSettings ||
+          savingCloseToTray
         }
       >
         <Tabs

@@ -9,7 +9,7 @@ name = "m3u8quicker_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png", "image-ico"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }

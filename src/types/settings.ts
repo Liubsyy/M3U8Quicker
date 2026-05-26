@@ -33,6 +33,7 @@ export interface AppSettings {
   live_retry_hls_ms: number;
   live_retry_flv_ms: number;
   history_page_size: number;
+  close_to_tray: boolean;
 }
 
 export interface FfprobeInfo {

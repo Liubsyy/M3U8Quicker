@@ -447,6 +447,8 @@ pub struct AppSettings {
     pub live_retry_flv_ms: u64,
     #[serde(default = "default_history_page_size")]
     pub history_page_size: usize,
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
 }
 
 impl Default for AppSettings {
@@ -475,12 +477,17 @@ impl Default for AppSettings {
             live_retry_hls_ms: DEFAULT_LIVE_RETRY_HLS_MS,
             live_retry_flv_ms: DEFAULT_LIVE_RETRY_FLV_MS,
             history_page_size: DEFAULT_HISTORY_PAGE_SIZE,
+            close_to_tray: true,
         }
     }
 }
 
 fn default_history_page_size() -> usize {
     DEFAULT_HISTORY_PAGE_SIZE
+}
+
+fn default_close_to_tray() -> bool {
+    true
 }
 
 fn default_ffmpeg_enabled() -> bool {
