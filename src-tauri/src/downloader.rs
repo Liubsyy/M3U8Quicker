@@ -30,9 +30,40 @@ type Aes128CbcDec = cbc::Decryptor<Aes128>;
 type Aes192CbcDec = cbc::Decryptor<Aes192>;
 type Aes256CbcDec = cbc::Decryptor<Aes256>;
 
-const M3U8_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
-const VIDEO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const MP4_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+// 运行时可配置的 HTTP 超时（秒）。由设置加载/变更时通过 `set_timeouts_secs` 更新，
+// 避免把超时参数穿透到每个下载函数的签名里。
+static METADATA_TIMEOUT_SECS: AtomicU64 = AtomicU64::new(DEFAULT_METADATA_TIMEOUT_SECS);
+static SEGMENT_TIMEOUT_SECS: AtomicU64 = AtomicU64::new(DEFAULT_SEGMENT_TIMEOUT_SECS);
+static MP4_TIMEOUT_SECS: AtomicU64 = AtomicU64::new(DEFAULT_MP4_TIMEOUT_SECS);
+
+fn metadata_timeout() -> Duration {
+    Duration::from_secs(METADATA_TIMEOUT_SECS.load(Ordering::Relaxed))
+}
+
+fn segment_timeout() -> Duration {
+    Duration::from_secs(SEGMENT_TIMEOUT_SECS.load(Ordering::Relaxed))
+}
+
+fn mp4_timeout() -> Duration {
+    Duration::from_secs(MP4_TIMEOUT_SECS.load(Ordering::Relaxed))
+}
+
+/// 更新可配置的 HTTP 超时。修改 segment 超时后需重建 HTTP 客户端方可生效
+/// （它作为客户端默认超时），调用方负责重建。
+pub fn set_timeouts_secs(metadata_secs: u64, segment_secs: u64, mp4_secs: u64) {
+    METADATA_TIMEOUT_SECS.store(metadata_secs, Ordering::Relaxed);
+    SEGMENT_TIMEOUT_SECS.store(segment_secs, Ordering::Relaxed);
+    MP4_TIMEOUT_SECS.store(mp4_secs, Ordering::Relaxed);
+}
+
+/// 当前生效的超时（秒），供 get_app_settings 回读。
+pub fn timeouts_secs_snapshot() -> (u64, u64, u64) {
+    (
+        METADATA_TIMEOUT_SECS.load(Ordering::Relaxed),
+        SEGMENT_TIMEOUT_SECS.load(Ordering::Relaxed),
+        MP4_TIMEOUT_SECS.load(Ordering::Relaxed),
+    )
+}
 
 pub enum DownloadRunOutcome {
     Completed(PathBuf),
@@ -281,10 +312,13 @@ fn reserve_rate_limit_delay(
     ready_at.saturating_duration_since(now)
 }
 
-pub fn build_http_client(proxy_url: Option<&str>) -> Result<reqwest::Client, AppError> {
+pub fn build_http_client(
+    proxy_url: Option<&str>,
+    user_agent: &str,
+) -> Result<reqwest::Client, AppError> {
     let mut builder = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) M3U8Quicker/0.1")
-        .timeout(VIDEO_DOWNLOAD_TIMEOUT);
+        .user_agent(user_agent)
+        .timeout(segment_timeout());
 
     if let Some(url) = proxy_url.filter(|value| !value.trim().is_empty()) {
         let proxy = reqwest::Proxy::all(url.trim())
@@ -518,7 +552,7 @@ async fn fetch_dash_manifest(
 ) -> Result<DashManifest, AppError> {
     let base_url = Url::parse(url)?;
     let response = build_request_with_headers(client, url, headers)
-        .timeout(M3U8_METADATA_TIMEOUT)
+        .timeout(metadata_timeout())
         .send()
         .await?
         .error_for_status()?;
@@ -1620,7 +1654,7 @@ async fn fetch_hls_playlist(
 ) -> Result<FetchedPlaylist, AppError> {
     let base_url = Url::parse(url)?;
     let response = build_request_with_headers(client, url, headers)
-        .timeout(M3U8_METADATA_TIMEOUT)
+        .timeout(metadata_timeout())
         .send()
         .await?
         .error_for_status()?;
@@ -2349,7 +2383,7 @@ pub async fn fetch_encryption_keys(
         if let Some(ref mut enc) = seg.encryption {
             if !key_cache.contains_key(&enc.key_uri) {
                 let resp = build_request_with_headers(client, &enc.key_uri, headers)
-                    .timeout(M3U8_METADATA_TIMEOUT)
+                    .timeout(metadata_timeout())
                     .send()
                     .await?
                     .error_for_status()?;
@@ -2402,7 +2436,7 @@ pub async fn fetch_prepared_init_encryption_keys(
         if let Some(ref mut enc) = init.encryption {
             if !key_cache.contains_key(&enc.key_uri) {
                 let resp = build_request_with_headers(client, &enc.key_uri, headers)
-                    .timeout(M3U8_METADATA_TIMEOUT)
+                    .timeout(metadata_timeout())
                     .send()
                     .await?
                     .error_for_status()?;
@@ -2440,7 +2474,7 @@ pub async fn fetch_bundle_encryption_keys(
         if let Some(ref mut enc) = entry.encryption {
             if !key_cache.contains_key(&enc.key_uri) {
                 let resp = build_request_with_headers(client, &enc.key_uri, headers)
-                    .timeout(M3U8_METADATA_TIMEOUT)
+                    .timeout(metadata_timeout())
                     .send()
                     .await?
                     .error_for_status()?;
@@ -4852,7 +4886,7 @@ pub async fn check_mp4_resume(
     }
 
     let response =
-        send_mp4_download_request(client, url, headers, Some(downloaded_bytes), MP4_DOWNLOAD_TIMEOUT)
+        send_mp4_download_request(client, url, headers, Some(downloaded_bytes), mp4_timeout())
             .await?;
     match mp4_resume_response_mode(response.status()) {
         Mp4ResumeResponseMode::Append => Ok(Mp4ResumeCheck::Ready { downloaded_bytes }),
@@ -4880,7 +4914,7 @@ pub async fn run_mp4_download(
     restart_confirmed: bool,
     cancel_token: CancellationToken,
 ) -> Result<DownloadRunOutcome, AppError> {
-    let deadline = Instant::now() + MP4_DOWNLOAD_TIMEOUT;
+    let deadline = Instant::now() + mp4_timeout();
     let (_, partial_path) =
         resolve_mp4_output_paths(&output_dir, &filename, resume_existing_partial);
     let mut attempt = 0u32;

@@ -133,12 +133,29 @@ pub fn run() {
                     *proxy = settings.proxy;
                 }
                 {
+                    let mut user_agent = state.user_agent.lock().await;
+                    *user_agent = settings.user_agent.clone();
+                }
+                downloader::set_timeouts_secs(
+                    settings.metadata_timeout_secs,
+                    settings.segment_timeout_secs,
+                    settings.mp4_timeout_secs,
+                );
+                live_recorder::set_live_settings(
+                    settings.hls_refresh_min_ms,
+                    settings.hls_refresh_max_ms,
+                    settings.hls_playlist_timeout_secs,
+                    settings.live_segment_timeout_secs,
+                    settings.live_retry_hls_ms,
+                    settings.live_retry_flv_ms,
+                );
+                {
                     let proxy = state.proxy_settings.lock().await;
                     let proxy_url = proxy.url.trim();
                     let next_client = if proxy.enabled && !proxy_url.is_empty() {
-                        downloader::build_http_client(Some(proxy_url))
+                        downloader::build_http_client(Some(proxy_url), &settings.user_agent)
                     } else {
-                        downloader::build_http_client(None)
+                        downloader::build_http_client(None, &settings.user_agent)
                     };
                     match next_client {
                         Ok(client) => {
@@ -256,6 +273,9 @@ pub fn run() {
             commands::set_default_download_dir,
             commands::get_app_settings,
             commands::set_proxy_settings,
+            commands::set_user_agent,
+            commands::set_timeout_settings,
+            commands::set_live_record_settings,
             commands::set_download_concurrency,
             commands::set_download_speed_limit,
             commands::set_preview_columns,

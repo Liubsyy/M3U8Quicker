@@ -20,6 +20,16 @@ export interface AppSettings {
   convert_to_mp4: boolean;
   ffmpeg_enabled: boolean;
   ffmpeg_path: string | null;
+  user_agent: string;
+  metadata_timeout_secs: number;
+  segment_timeout_secs: number;
+  mp4_timeout_secs: number;
+  hls_refresh_min_ms: number;
+  hls_refresh_max_ms: number;
+  hls_playlist_timeout_secs: number;
+  live_segment_timeout_secs: number;
+  live_retry_hls_ms: number;
+  live_retry_flv_ms: number;
 }
 
 export interface FfprobeInfo {

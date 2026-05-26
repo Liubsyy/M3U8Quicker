@@ -282,6 +282,39 @@ pub const DEFAULT_PREVIEW_JPEG_QUALITY: u8 = 4;
 pub const MIN_PREVIEW_JPEG_QUALITY: u8 = 2;
 pub const MAX_PREVIEW_JPEG_QUALITY: u8 = 10;
 
+/// 默认 User-Agent，按操作系统给出更贴近真实浏览器的标识。
+pub fn default_user_agent() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) M3U8Quicker/0.1"
+    } else if cfg!(target_os = "macos") {
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) M3U8Quicker/0.1"
+    } else {
+        "Mozilla/5.0 (X11; Linux x86_64) M3U8Quicker/0.1"
+    }
+}
+
+// HTTP 超时（秒），下载与录播共用同一 HTTP 客户端。仅约束下限，无上限。
+pub const DEFAULT_METADATA_TIMEOUT_SECS: u64 = 5;
+pub const MIN_METADATA_TIMEOUT_SECS: u64 = 1;
+pub const DEFAULT_SEGMENT_TIMEOUT_SECS: u64 = 5 * 60;
+pub const MIN_SEGMENT_TIMEOUT_SECS: u64 = 1;
+pub const DEFAULT_MP4_TIMEOUT_SECS: u64 = 60 * 60;
+pub const MIN_MP4_TIMEOUT_SECS: u64 = 1;
+
+// 录播节奏参数。仅约束下限，无上限。
+pub const DEFAULT_HLS_REFRESH_MIN_MS: u64 = 800;
+pub const MIN_HLS_REFRESH_MIN_MS: u64 = 1;
+pub const DEFAULT_HLS_REFRESH_MAX_MS: u64 = 6_000;
+pub const MIN_HLS_REFRESH_MAX_MS: u64 = 1;
+pub const DEFAULT_HLS_PLAYLIST_TIMEOUT_SECS: u64 = 15;
+pub const MIN_HLS_PLAYLIST_TIMEOUT_SECS: u64 = 1;
+pub const DEFAULT_LIVE_SEGMENT_TIMEOUT_SECS: u64 = 60;
+pub const MIN_LIVE_SEGMENT_TIMEOUT_SECS: u64 = 1;
+pub const DEFAULT_LIVE_RETRY_HLS_MS: u64 = 1_000;
+pub const MIN_LIVE_RETRY_HLS_MS: u64 = 1;
+pub const DEFAULT_LIVE_RETRY_FLV_MS: u64 = 300;
+pub const MIN_LIVE_RETRY_FLV_MS: u64 = 1;
+
 pub fn normalize_download_concurrency(value: usize) -> usize {
     value.clamp(MIN_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY)
 }
@@ -304,6 +337,51 @@ pub fn normalize_preview_thumbnail_width(value: u32) -> u32 {
 
 pub fn normalize_preview_jpeg_quality(value: u8) -> u8 {
     value.clamp(MIN_PREVIEW_JPEG_QUALITY, MAX_PREVIEW_JPEG_QUALITY)
+}
+
+pub fn normalize_user_agent(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        default_user_agent().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub fn normalize_metadata_timeout_secs(value: u64) -> u64 {
+    value.max(MIN_METADATA_TIMEOUT_SECS)
+}
+
+pub fn normalize_segment_timeout_secs(value: u64) -> u64 {
+    value.max(MIN_SEGMENT_TIMEOUT_SECS)
+}
+
+pub fn normalize_mp4_timeout_secs(value: u64) -> u64 {
+    value.max(MIN_MP4_TIMEOUT_SECS)
+}
+
+pub fn normalize_hls_refresh_min_ms(value: u64) -> u64 {
+    value.max(MIN_HLS_REFRESH_MIN_MS)
+}
+
+pub fn normalize_hls_refresh_max_ms(value: u64) -> u64 {
+    value.max(MIN_HLS_REFRESH_MAX_MS)
+}
+
+pub fn normalize_hls_playlist_timeout_secs(value: u64) -> u64 {
+    value.max(MIN_HLS_PLAYLIST_TIMEOUT_SECS)
+}
+
+pub fn normalize_live_segment_timeout_secs(value: u64) -> u64 {
+    value.max(MIN_LIVE_SEGMENT_TIMEOUT_SECS)
+}
+
+pub fn normalize_live_retry_hls_ms(value: u64) -> u64 {
+    value.max(MIN_LIVE_RETRY_HLS_MS)
+}
+
+pub fn normalize_live_retry_flv_ms(value: u64) -> u64 {
+    value.max(MIN_LIVE_RETRY_FLV_MS)
 }
 
 impl Default for ProxySettings {
@@ -337,6 +415,26 @@ pub struct AppSettings {
     #[serde(default = "default_ffmpeg_enabled")]
     pub ffmpeg_enabled: bool,
     pub ffmpeg_path: Option<String>,
+    #[serde(default = "default_user_agent_owned")]
+    pub user_agent: String,
+    #[serde(default = "default_metadata_timeout_secs")]
+    pub metadata_timeout_secs: u64,
+    #[serde(default = "default_segment_timeout_secs")]
+    pub segment_timeout_secs: u64,
+    #[serde(default = "default_mp4_timeout_secs")]
+    pub mp4_timeout_secs: u64,
+    #[serde(default = "default_hls_refresh_min_ms")]
+    pub hls_refresh_min_ms: u64,
+    #[serde(default = "default_hls_refresh_max_ms")]
+    pub hls_refresh_max_ms: u64,
+    #[serde(default = "default_hls_playlist_timeout_secs")]
+    pub hls_playlist_timeout_secs: u64,
+    #[serde(default = "default_live_segment_timeout_secs")]
+    pub live_segment_timeout_secs: u64,
+    #[serde(default = "default_live_retry_hls_ms")]
+    pub live_retry_hls_ms: u64,
+    #[serde(default = "default_live_retry_flv_ms")]
+    pub live_retry_flv_ms: u64,
 }
 
 impl Default for AppSettings {
@@ -354,12 +452,62 @@ impl Default for AppSettings {
             convert_to_mp4: true,
             ffmpeg_enabled: true,
             ffmpeg_path: None,
+            user_agent: default_user_agent().to_string(),
+            metadata_timeout_secs: DEFAULT_METADATA_TIMEOUT_SECS,
+            segment_timeout_secs: DEFAULT_SEGMENT_TIMEOUT_SECS,
+            mp4_timeout_secs: DEFAULT_MP4_TIMEOUT_SECS,
+            hls_refresh_min_ms: DEFAULT_HLS_REFRESH_MIN_MS,
+            hls_refresh_max_ms: DEFAULT_HLS_REFRESH_MAX_MS,
+            hls_playlist_timeout_secs: DEFAULT_HLS_PLAYLIST_TIMEOUT_SECS,
+            live_segment_timeout_secs: DEFAULT_LIVE_SEGMENT_TIMEOUT_SECS,
+            live_retry_hls_ms: DEFAULT_LIVE_RETRY_HLS_MS,
+            live_retry_flv_ms: DEFAULT_LIVE_RETRY_FLV_MS,
         }
     }
 }
 
 fn default_ffmpeg_enabled() -> bool {
     true
+}
+
+fn default_user_agent_owned() -> String {
+    default_user_agent().to_string()
+}
+
+fn default_metadata_timeout_secs() -> u64 {
+    DEFAULT_METADATA_TIMEOUT_SECS
+}
+
+fn default_segment_timeout_secs() -> u64 {
+    DEFAULT_SEGMENT_TIMEOUT_SECS
+}
+
+fn default_mp4_timeout_secs() -> u64 {
+    DEFAULT_MP4_TIMEOUT_SECS
+}
+
+fn default_hls_refresh_min_ms() -> u64 {
+    DEFAULT_HLS_REFRESH_MIN_MS
+}
+
+fn default_hls_refresh_max_ms() -> u64 {
+    DEFAULT_HLS_REFRESH_MAX_MS
+}
+
+fn default_hls_playlist_timeout_secs() -> u64 {
+    DEFAULT_HLS_PLAYLIST_TIMEOUT_SECS
+}
+
+fn default_live_segment_timeout_secs() -> u64 {
+    DEFAULT_LIVE_SEGMENT_TIMEOUT_SECS
+}
+
+fn default_live_retry_hls_ms() -> u64 {
+    DEFAULT_LIVE_RETRY_HLS_MS
+}
+
+fn default_live_retry_flv_ms() -> u64 {
+    DEFAULT_LIVE_RETRY_FLV_MS
 }
 
 impl AppSettings {
@@ -372,6 +520,21 @@ impl AppSettings {
         self.preview_thumbnail_width =
             normalize_preview_thumbnail_width(self.preview_thumbnail_width);
         self.preview_jpeg_quality = normalize_preview_jpeg_quality(self.preview_jpeg_quality);
+        self.user_agent = normalize_user_agent(&self.user_agent);
+        self.metadata_timeout_secs = normalize_metadata_timeout_secs(self.metadata_timeout_secs);
+        self.segment_timeout_secs = normalize_segment_timeout_secs(self.segment_timeout_secs);
+        self.mp4_timeout_secs = normalize_mp4_timeout_secs(self.mp4_timeout_secs);
+        self.hls_refresh_min_ms = normalize_hls_refresh_min_ms(self.hls_refresh_min_ms);
+        self.hls_refresh_max_ms = normalize_hls_refresh_max_ms(self.hls_refresh_max_ms);
+        if self.hls_refresh_max_ms < self.hls_refresh_min_ms {
+            self.hls_refresh_max_ms = self.hls_refresh_min_ms;
+        }
+        self.hls_playlist_timeout_secs =
+            normalize_hls_playlist_timeout_secs(self.hls_playlist_timeout_secs);
+        self.live_segment_timeout_secs =
+            normalize_live_segment_timeout_secs(self.live_segment_timeout_secs);
+        self.live_retry_hls_ms = normalize_live_retry_hls_ms(self.live_retry_hls_ms);
+        self.live_retry_flv_ms = normalize_live_retry_flv_ms(self.live_retry_flv_ms);
     }
 }
 

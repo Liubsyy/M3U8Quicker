@@ -150,6 +150,40 @@ export async function setProxySettings(proxy: ProxySettings): Promise<void> {
   return invoke("set_proxy_settings", { proxy });
 }
 
+export async function setUserAgent(userAgent: string): Promise<void> {
+  return invoke("set_user_agent", { userAgent });
+}
+
+export async function setTimeoutSettings(
+  metadataTimeoutSecs: number,
+  segmentTimeoutSecs: number,
+  mp4TimeoutSecs: number
+): Promise<void> {
+  return invoke("set_timeout_settings", {
+    metadataTimeoutSecs,
+    segmentTimeoutSecs,
+    mp4TimeoutSecs,
+  });
+}
+
+export async function setLiveRecordSettings(
+  hlsRefreshMinMs: number,
+  hlsRefreshMaxMs: number,
+  hlsPlaylistTimeoutSecs: number,
+  liveSegmentTimeoutSecs: number,
+  liveRetryHlsMs: number,
+  liveRetryFlvMs: number
+): Promise<void> {
+  return invoke("set_live_record_settings", {
+    hlsRefreshMinMs,
+    hlsRefreshMaxMs,
+    hlsPlaylistTimeoutSecs,
+    liveSegmentTimeoutSecs,
+    liveRetryHlsMs,
+    liveRetryFlvMs,
+  });
+}
+
 export async function setDownloadConcurrency(
   downloadConcurrency: number
 ): Promise<void> {

@@ -74,25 +74,56 @@ body,
 }
 
 .settings-modal-tabs .ant-tabs-nav {
-  margin-bottom: 20px;
+  min-width: 140px;
+  margin: 0;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--app-scrollbar-track);
 }
 
 .settings-modal-tabs .ant-tabs-nav::before {
-  border-bottom-color: var(--app-table-border);
+  display: none;
 }
 
 .settings-modal-tabs .ant-tabs-tab {
-  padding: 8px 4px 10px;
+  margin: 0 0 4px 0 !important;
+  padding: 9px 14px;
   font-size: 14px;
+  border-radius: 8px;
+  justify-content: flex-start;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-.settings-modal-tabs .ant-tabs-ink-bar {
-  height: 3px;
-  border-radius: 3px 3px 0 0;
+.settings-modal-tabs .ant-tabs-tab:last-child {
+  margin-bottom: 0 !important;
+}
+
+.settings-modal-tabs .ant-tabs-tab:hover {
+  color: var(--app-primary);
+  background: var(--app-table-border);
+}
+
+.settings-modal-tabs .ant-tabs-tab-active,
+.settings-modal-tabs .ant-tabs-tab-active:hover {
+  background: var(--app-primary);
 }
 
 .settings-modal-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: #fff !important;
+  text-shadow: none;
   font-weight: 600;
+}
+
+.settings-modal-tabs .ant-tabs-ink-bar {
+  display: none;
+}
+
+.settings-modal-tabs .ant-tabs-content-holder {
+  height: 400px;
+  overflow-y: auto;
+  margin-left: 20px;
+  padding-left: 20px;
+  border-left: 1px solid var(--app-table-border);
 }
 
 .toolbar-download-actions .ant-btn {

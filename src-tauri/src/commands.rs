@@ -1161,6 +1161,17 @@ pub async fn set_default_download_dir(
 
 #[tauri::command]
 pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings, AppError> {
+    let (metadata_timeout_secs, segment_timeout_secs, mp4_timeout_secs) =
+        downloader::timeouts_secs_snapshot();
+    let (
+        hls_refresh_min_ms,
+        hls_refresh_max_ms,
+        hls_playlist_timeout_secs,
+        live_segment_timeout_secs,
+        live_retry_hls_ms,
+        live_retry_flv_ms,
+    ) = live_recorder::live_settings_snapshot();
+
     Ok(AppSettings {
         default_download_dir: Some(state.default_download_dir.lock().await.clone()),
         proxy: state.proxy_settings.lock().await.clone(),
@@ -1174,7 +1185,33 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         convert_to_mp4: *state.convert_to_mp4.lock().await,
         ffmpeg_enabled: *state.ffmpeg_enabled.lock().await,
         ffmpeg_path: state.ffmpeg_path.lock().await.clone(),
+        user_agent: state.user_agent.lock().await.clone(),
+        metadata_timeout_secs,
+        segment_timeout_secs,
+        mp4_timeout_secs,
+        hls_refresh_min_ms,
+        hls_refresh_max_ms,
+        hls_playlist_timeout_secs,
+        live_segment_timeout_secs,
+        live_retry_hls_ms,
+        live_retry_flv_ms,
     })
+}
+
+/// 按当前 state 中的代理与 User-Agent 重建共享 HTTP 客户端。
+/// 代理、UA、分片超时任一变更后都应调用它，确保新客户端配置一致。
+async fn rebuild_http_client(state: &AppState) -> Result<(), AppError> {
+    let proxy = state.proxy_settings.lock().await.clone();
+    let user_agent = state.user_agent.lock().await.clone();
+    let proxy_url = proxy.url.trim();
+    let client = if proxy.enabled && !proxy_url.is_empty() {
+        downloader::build_http_client(Some(proxy_url), &user_agent)?
+    } else {
+        downloader::build_http_client(None, &user_agent)?
+    };
+    let mut current_client = state.http_client.write().await;
+    *current_client = client;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1188,15 +1225,11 @@ pub async fn set_proxy_settings(
         return Err(AppError::InvalidInput("代理地址不能为空".to_string()));
     }
 
+    // 在写入 state 前先校验代理地址，避免把无效代理持久化进去。
     if proxy.enabled {
-        let _ = downloader::build_http_client(Some(proxy_url))?;
+        let user_agent = state.user_agent.lock().await.clone();
+        let _ = downloader::build_http_client(Some(proxy_url), &user_agent)?;
     }
-
-    let next_client = if proxy.enabled {
-        downloader::build_http_client(Some(proxy_url))?
-    } else {
-        downloader::build_http_client(None)?
-    };
 
     {
         let mut current_proxy = state.proxy_settings.lock().await;
@@ -1209,14 +1242,102 @@ pub async fn set_proxy_settings(
             },
         };
     }
-    {
-        let mut current_client = state.http_client.write().await;
-        *current_client = next_client;
-    }
+    rebuild_http_client(&state).await?;
 
     let saved_proxy = state.proxy_settings.lock().await.clone();
     persistence::update_settings(&app_handle, |settings| {
         settings.proxy = saved_proxy;
+    })
+    .await;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_user_agent(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    user_agent: String,
+) -> Result<(), AppError> {
+    let normalized = normalize_user_agent(&user_agent);
+
+    {
+        let mut current = state.user_agent.lock().await;
+        *current = normalized.clone();
+    }
+    rebuild_http_client(&state).await?;
+
+    persistence::update_settings(&app_handle, |settings| {
+        settings.user_agent = normalized;
+    })
+    .await;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_timeout_settings(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    metadata_timeout_secs: u64,
+    segment_timeout_secs: u64,
+    mp4_timeout_secs: u64,
+) -> Result<(), AppError> {
+    let metadata = normalize_metadata_timeout_secs(metadata_timeout_secs);
+    let segment = normalize_segment_timeout_secs(segment_timeout_secs);
+    let mp4 = normalize_mp4_timeout_secs(mp4_timeout_secs);
+
+    downloader::set_timeouts_secs(metadata, segment, mp4);
+    // 分片超时是 HTTP 客户端的默认超时，需重建后才生效。
+    rebuild_http_client(&state).await?;
+
+    persistence::update_settings(&app_handle, |settings| {
+        settings.metadata_timeout_secs = metadata;
+        settings.segment_timeout_secs = segment;
+        settings.mp4_timeout_secs = mp4;
+    })
+    .await;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_live_record_settings(
+    app_handle: AppHandle,
+    _state: State<'_, AppState>,
+    hls_refresh_min_ms: u64,
+    hls_refresh_max_ms: u64,
+    hls_playlist_timeout_secs: u64,
+    live_segment_timeout_secs: u64,
+    live_retry_hls_ms: u64,
+    live_retry_flv_ms: u64,
+) -> Result<(), AppError> {
+    let refresh_min = normalize_hls_refresh_min_ms(hls_refresh_min_ms);
+    let mut refresh_max = normalize_hls_refresh_max_ms(hls_refresh_max_ms);
+    if refresh_max < refresh_min {
+        refresh_max = refresh_min;
+    }
+    let playlist_timeout = normalize_hls_playlist_timeout_secs(hls_playlist_timeout_secs);
+    let segment_timeout = normalize_live_segment_timeout_secs(live_segment_timeout_secs);
+    let retry_hls = normalize_live_retry_hls_ms(live_retry_hls_ms);
+    let retry_flv = normalize_live_retry_flv_ms(live_retry_flv_ms);
+
+    live_recorder::set_live_settings(
+        refresh_min,
+        refresh_max,
+        playlist_timeout,
+        segment_timeout,
+        retry_hls,
+        retry_flv,
+    );
+
+    persistence::update_settings(&app_handle, |settings| {
+        settings.hls_refresh_min_ms = refresh_min;
+        settings.hls_refresh_max_ms = refresh_max;
+        settings.hls_playlist_timeout_secs = playlist_timeout;
+        settings.live_segment_timeout_secs = segment_timeout;
+        settings.live_retry_hls_ms = retry_hls;
+        settings.live_retry_flv_ms = retry_flv;
     })
     .await;
 

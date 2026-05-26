@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,7 +16,9 @@ use url::Url;
 use crate::error::AppError;
 use crate::models::{
     live_group_for_status, DownloadId, HlsMediaKind, LiveProgressEvent, LiveProtocol,
-    LiveRecordStatus, LiveRecordTask, RequestHeaders,
+    LiveRecordStatus, LiveRecordTask, RequestHeaders, DEFAULT_HLS_PLAYLIST_TIMEOUT_SECS,
+    DEFAULT_HLS_REFRESH_MAX_MS, DEFAULT_HLS_REFRESH_MIN_MS, DEFAULT_LIVE_RETRY_FLV_MS,
+    DEFAULT_LIVE_RETRY_HLS_MS, DEFAULT_LIVE_SEGMENT_TIMEOUT_SECS,
 };
 use crate::persistence;
 
@@ -25,11 +28,68 @@ const FLV_TAG_PREVIOUS_SIZE_LEN: usize = 4;
 const FLV_DEDUPE_MAX_TAGS: usize = 2048;
 const FLV_DEDUPE_MAX_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(500);
-const HLS_MIN_REFRESH_INTERVAL: Duration = Duration::from_millis(800);
-const HLS_MAX_REFRESH_INTERVAL: Duration = Duration::from_secs(6);
-const HLS_PLAYLIST_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
-const LIVE_RECORD_RETRY_INTERVAL: Duration = Duration::from_secs(2);
-const FLV_LIVE_RECORD_RETRY_INTERVAL: Duration = Duration::from_millis(300);
+// 运行时可配置的录播节奏参数。由设置加载/变更时通过 `set_live_settings` 更新，
+// 全部为逐请求/逐循环读取，无需重建 HTTP 客户端。
+static HLS_REFRESH_MIN_MS: AtomicU64 = AtomicU64::new(DEFAULT_HLS_REFRESH_MIN_MS);
+static HLS_REFRESH_MAX_MS: AtomicU64 = AtomicU64::new(DEFAULT_HLS_REFRESH_MAX_MS);
+static HLS_PLAYLIST_TIMEOUT_SECS: AtomicU64 = AtomicU64::new(DEFAULT_HLS_PLAYLIST_TIMEOUT_SECS);
+static LIVE_SEGMENT_TIMEOUT_SECS: AtomicU64 = AtomicU64::new(DEFAULT_LIVE_SEGMENT_TIMEOUT_SECS);
+static LIVE_RETRY_HLS_MS: AtomicU64 = AtomicU64::new(DEFAULT_LIVE_RETRY_HLS_MS);
+static LIVE_RETRY_FLV_MS: AtomicU64 = AtomicU64::new(DEFAULT_LIVE_RETRY_FLV_MS);
+
+fn hls_min_refresh() -> Duration {
+    Duration::from_millis(HLS_REFRESH_MIN_MS.load(Ordering::Relaxed))
+}
+
+fn hls_max_refresh() -> Duration {
+    Duration::from_millis(HLS_REFRESH_MAX_MS.load(Ordering::Relaxed))
+}
+
+fn hls_playlist_timeout() -> Duration {
+    Duration::from_secs(HLS_PLAYLIST_TIMEOUT_SECS.load(Ordering::Relaxed))
+}
+
+fn live_segment_timeout() -> Duration {
+    Duration::from_secs(LIVE_SEGMENT_TIMEOUT_SECS.load(Ordering::Relaxed))
+}
+
+fn live_retry_hls() -> Duration {
+    Duration::from_millis(LIVE_RETRY_HLS_MS.load(Ordering::Relaxed))
+}
+
+fn flv_live_retry() -> Duration {
+    Duration::from_millis(LIVE_RETRY_FLV_MS.load(Ordering::Relaxed))
+}
+
+/// 更新可配置的录播节奏参数。
+pub fn set_live_settings(
+    hls_refresh_min_ms: u64,
+    hls_refresh_max_ms: u64,
+    hls_playlist_timeout_secs: u64,
+    live_segment_timeout_secs: u64,
+    live_retry_hls_ms: u64,
+    live_retry_flv_ms: u64,
+) {
+    HLS_REFRESH_MIN_MS.store(hls_refresh_min_ms, Ordering::Relaxed);
+    HLS_REFRESH_MAX_MS.store(hls_refresh_max_ms, Ordering::Relaxed);
+    HLS_PLAYLIST_TIMEOUT_SECS.store(hls_playlist_timeout_secs, Ordering::Relaxed);
+    LIVE_SEGMENT_TIMEOUT_SECS.store(live_segment_timeout_secs, Ordering::Relaxed);
+    LIVE_RETRY_HLS_MS.store(live_retry_hls_ms, Ordering::Relaxed);
+    LIVE_RETRY_FLV_MS.store(live_retry_flv_ms, Ordering::Relaxed);
+}
+
+/// 当前生效的录播参数 (refresh_min_ms, refresh_max_ms, playlist_timeout_secs,
+/// segment_timeout_secs, retry_hls_ms, retry_flv_ms)，供 get_app_settings 回读。
+pub fn live_settings_snapshot() -> (u64, u64, u64, u64, u64, u64) {
+    (
+        HLS_REFRESH_MIN_MS.load(Ordering::Relaxed),
+        HLS_REFRESH_MAX_MS.load(Ordering::Relaxed),
+        HLS_PLAYLIST_TIMEOUT_SECS.load(Ordering::Relaxed),
+        LIVE_SEGMENT_TIMEOUT_SECS.load(Ordering::Relaxed),
+        LIVE_RETRY_HLS_MS.load(Ordering::Relaxed),
+        LIVE_RETRY_FLV_MS.load(Ordering::Relaxed),
+    )
+}
 const FLV_SPEED_WINDOW: Duration = Duration::from_secs(3);
 
 /// Sliding-window throughput tracker. Survives across FLV reconnect attempts so
@@ -772,7 +832,7 @@ async fn run_flv_record(
         None
     };
 
-    let mut request = client.get(&url);
+    let mut request = client.get(&url).timeout(live_segment_timeout());
     for (name, value) in headers.iter() {
         request = request.header(name, value);
     }
@@ -978,7 +1038,7 @@ async fn run_hls_record(
             Ok(value) => value,
             Err(err) => {
                 eprintln!("[live_recorder][hls] playlist fetch error: {err}");
-                if wait_or_cancel(&signal, HLS_MIN_REFRESH_INTERVAL).await {
+                if wait_or_cancel(&signal, hls_min_refresh()).await {
                     return Err(AppError::Cancelled);
                 }
                 continue;
@@ -1146,7 +1206,7 @@ async fn run_hls_record(
 
         // Sleep until next refresh, respect cancel.
         let refresh = Duration::from_millis((target_duration_ms / 2).max(800).min(6000));
-        let refresh = refresh.clamp(HLS_MIN_REFRESH_INTERVAL, HLS_MAX_REFRESH_INTERVAL);
+        let refresh = refresh.clamp(hls_min_refresh(), hls_max_refresh());
         if wait_or_cancel(&signal, refresh).await {
             return Err(AppError::Cancelled);
         }
@@ -1186,7 +1246,7 @@ async fn fetch_media_playlist_inner(
         ));
     }
     let base_url = Url::parse(url).map_err(AppError::from)?;
-    let mut request = client.get(url).timeout(HLS_PLAYLIST_FETCH_TIMEOUT);
+    let mut request = client.get(url).timeout(hls_playlist_timeout());
     for (name, value) in headers.iter() {
         request = request.header(name, value);
     }
@@ -1223,7 +1283,7 @@ async fn fetch_bytes(
     url: &str,
     headers: &RequestHeaders,
 ) -> Result<bytes::Bytes, AppError> {
-    let mut request = client.get(url);
+    let mut request = client.get(url).timeout(live_segment_timeout());
     for (name, value) in headers.iter() {
         request = request.header(name, value);
     }
@@ -1366,8 +1426,8 @@ async fn wait_or_cancel(signal: &LiveStopSignal, duration: Duration) -> bool {
 
 fn live_record_retry_interval(protocol: LiveProtocol) -> Duration {
     match protocol {
-        LiveProtocol::Flv => FLV_LIVE_RECORD_RETRY_INTERVAL,
-        LiveProtocol::Hls => LIVE_RECORD_RETRY_INTERVAL,
+        LiveProtocol::Flv => flv_live_retry(),
+        LiveProtocol::Hls => live_retry_hls(),
     }
 }
 
@@ -1687,11 +1747,11 @@ mod tests {
     fn live_record_retry_interval_is_shorter_for_flv() {
         assert_eq!(
             live_record_retry_interval(LiveProtocol::Flv),
-            FLV_LIVE_RECORD_RETRY_INTERVAL
+            flv_live_retry()
         );
         assert_eq!(
             live_record_retry_interval(LiveProtocol::Hls),
-            LIVE_RECORD_RETRY_INTERVAL
+            live_retry_hls()
         );
     }
 

@@ -31,13 +31,18 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   downloadFfmpeg,
   getAppSettings,
+  getDefaultDownloadDir,
   getFfmpegStatus,
+  setDefaultDownloadDir,
   setDownloadConcurrency,
   setDownloadOutputSettings,
   setDownloadSpeedLimit,
   setFfmpegEnabled,
   setFfmpegPath,
+  setLiveRecordSettings,
   setProxySettings,
+  setTimeoutSettings,
+  setUserAgent,
   openUrl,
 } from "../services/api";
 import type {
@@ -60,6 +65,21 @@ const SPEED_LIMIT_PRESETS: { label: string; value: number }[] = [
   { label: "10 MB/s", value: 10240 },
 ];
 
+// 与后端 models.rs 的取值范围保持一致：仅约束下限（最小 1），无上限。
+const MIN_METADATA_TIMEOUT_SECS = 1;
+const MIN_SEGMENT_TIMEOUT_SECS = 1;
+const MIN_MP4_TIMEOUT_SECS = 1;
+const MIN_HLS_REFRESH_MIN_MS = 1;
+const MIN_HLS_REFRESH_MAX_MS = 1;
+const MIN_HLS_PLAYLIST_TIMEOUT_SECS = 1;
+const MIN_LIVE_SEGMENT_TIMEOUT_SECS = 1;
+const MIN_LIVE_RETRY_HLS_MS = 1;
+const MIN_LIVE_RETRY_FLV_MS = 1;
+
+function clampInt(value: number, min: number): number {
+  return Math.max(min, Math.trunc(value));
+}
+
 function formatSpeedKbps(kbps: number | null): string {
   if (kbps === null || kbps <= 0) return "未设置";
   if (kbps >= 1024) {
@@ -73,7 +93,7 @@ type SpeedLimitMode = "unlimited" | "limited";
 
 interface SettingsModalProps {
   open: boolean;
-  initialTab?: "general" | "download" | "ffmpeg";
+  initialTab?: "general" | "network" | "download" | "live" | "ffmpeg" | "about";
   themeMode: ThemeMode;
   updateAvailable?: boolean;
   onClose: () => void;
@@ -90,9 +110,9 @@ export function SettingsModal({
   onThemeModeChange,
   onUpdateAvailabilityChange,
 }: SettingsModalProps) {
-  const [activeTab, setActiveTab] = useState<"general" | "download" | "ffmpeg">(
-    initialTab
-  );
+  const [activeTab, setActiveTab] = useState<
+    "general" | "network" | "download" | "live" | "ffmpeg" | "about"
+  >(initialTab);
   const [proxySettings, setProxySettingsState] = useState<ProxySettings | null>(
     null
   );
@@ -124,6 +144,33 @@ export function SettingsModal({
   const [savingFfmpegEnabled, setSavingFfmpegEnabled] = useState(false);
   const [appVersion, setAppVersion] = useState("");
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  // 默认下载目录
+  const [defaultDownloadDir, setDefaultDownloadDirState] = useState("");
+  // 默认 User-Agent
+  const [userAgent, setUserAgentState] = useState("");
+  const [savedUserAgent, setSavedUserAgent] = useState("");
+  const [savingUserAgent, setSavingUserAgent] = useState(false);
+  // HTTP 超时（秒）
+  const [metadataTimeoutSecs, setMetadataTimeoutSecs] = useState<number | null>(
+    null
+  );
+  const [segmentTimeoutSecs, setSegmentTimeoutSecs] = useState<number | null>(
+    null
+  );
+  const [mp4TimeoutSecs, setMp4TimeoutSecs] = useState<number | null>(null);
+  const [savingTimeouts, setSavingTimeouts] = useState(false);
+  // 录播设置
+  const [hlsRefreshMinMs, setHlsRefreshMinMs] = useState<number | null>(null);
+  const [hlsRefreshMaxMs, setHlsRefreshMaxMs] = useState<number | null>(null);
+  const [hlsPlaylistTimeoutSecs, setHlsPlaylistTimeoutSecs] = useState<
+    number | null
+  >(null);
+  const [liveSegmentTimeoutSecs, setLiveSegmentTimeoutSecs] = useState<
+    number | null
+  >(null);
+  const [liveRetryHlsMs, setLiveRetryHlsMs] = useState<number | null>(null);
+  const [liveRetryFlvMs, setLiveRetryFlvMs] = useState<number | null>(null);
+  const [savingLiveSettings, setSavingLiveSettings] = useState(false);
   const ffmpegUnlistenRef = useRef<UnlistenFn | null>(null);
   const { token } = theme.useToken();
 
@@ -155,12 +202,24 @@ export function SettingsModal({
         setConvertToMp4(settings.convert_to_mp4);
         setFfmpegEnabledState(settings.ffmpeg_enabled);
         setFfmpegCustomPath(settings.ffmpeg_path ?? "");
+        setUserAgentState(settings.user_agent);
+        setSavedUserAgent(settings.user_agent);
+        setMetadataTimeoutSecs(settings.metadata_timeout_secs);
+        setSegmentTimeoutSecs(settings.segment_timeout_secs);
+        setMp4TimeoutSecs(settings.mp4_timeout_secs);
+        setHlsRefreshMinMs(settings.hls_refresh_min_ms);
+        setHlsRefreshMaxMs(settings.hls_refresh_max_ms);
+        setHlsPlaylistTimeoutSecs(settings.hls_playlist_timeout_secs);
+        setLiveSegmentTimeoutSecs(settings.live_segment_timeout_secs);
+        setLiveRetryHlsMs(settings.live_retry_hls_ms);
+        setLiveRetryFlvMs(settings.live_retry_flv_ms);
       })
       .catch((error) => {
         message.error(`读取设置失败：${formatSettingsError(error)}`);
       })
       .finally(() => setLoading(false));
 
+    getDefaultDownloadDir().then(setDefaultDownloadDirState).catch(() => {});
     getFfmpegStatus().then(setFfmpegStatus).catch(() => {});
   }, [initialTab, open]);
 
@@ -314,6 +373,127 @@ export function SettingsModal({
     }
   };
 
+  const handleSelectDefaultDownloadDir = async () => {
+    const selected = await openDialog({ multiple: false, directory: true });
+    if (!selected) return;
+    const selectedPath = selected as string;
+    try {
+      await setDefaultDownloadDir(selectedPath);
+      setDefaultDownloadDirState(selectedPath);
+      message.success("默认下载目录已保存");
+    } catch (error) {
+      message.error(`保存默认下载目录失败：${formatSettingsError(error)}`);
+    }
+  };
+
+  const saveUserAgentValue = async () => {
+    const normalized = userAgent.trim();
+    if (normalized === savedUserAgent) return;
+    setSavingUserAgent(true);
+    try {
+      await setUserAgent(normalized);
+      const settings = await getAppSettings();
+      setUserAgentState(settings.user_agent);
+      setSavedUserAgent(settings.user_agent);
+      message.success("User-Agent 已保存");
+    } catch (error) {
+      message.error(`保存 User-Agent 失败：${formatSettingsError(error)}`);
+      setUserAgentState(savedUserAgent);
+    } finally {
+      setSavingUserAgent(false);
+    }
+  };
+
+  const saveTimeoutSettingsValues = async () => {
+    const metadata = clampInt(
+      metadataTimeoutSecs ?? MIN_METADATA_TIMEOUT_SECS,
+      MIN_METADATA_TIMEOUT_SECS
+    );
+    const segment = clampInt(
+      segmentTimeoutSecs ?? MIN_SEGMENT_TIMEOUT_SECS,
+      MIN_SEGMENT_TIMEOUT_SECS
+    );
+    const mp4 = clampInt(
+      mp4TimeoutSecs ?? MIN_MP4_TIMEOUT_SECS,
+      MIN_MP4_TIMEOUT_SECS
+    );
+
+    setMetadataTimeoutSecs(metadata);
+    setSegmentTimeoutSecs(segment);
+    setMp4TimeoutSecs(mp4);
+    setSavingTimeouts(true);
+    try {
+      await setTimeoutSettings(metadata, segment, mp4);
+      message.success("网络超时已保存");
+    } catch (error) {
+      message.error(`保存网络超时失败：${formatSettingsError(error)}`);
+      const settings = await getAppSettings();
+      setMetadataTimeoutSecs(settings.metadata_timeout_secs);
+      setSegmentTimeoutSecs(settings.segment_timeout_secs);
+      setMp4TimeoutSecs(settings.mp4_timeout_secs);
+    } finally {
+      setSavingTimeouts(false);
+    }
+  };
+
+  const saveLiveRecordSettingsValues = async () => {
+    const refreshMin = clampInt(
+      hlsRefreshMinMs ?? MIN_HLS_REFRESH_MIN_MS,
+      MIN_HLS_REFRESH_MIN_MS
+    );
+    let refreshMax = clampInt(
+      hlsRefreshMaxMs ?? MIN_HLS_REFRESH_MAX_MS,
+      MIN_HLS_REFRESH_MAX_MS
+    );
+    if (refreshMax < refreshMin) refreshMax = refreshMin;
+    const playlistTimeout = clampInt(
+      hlsPlaylistTimeoutSecs ?? MIN_HLS_PLAYLIST_TIMEOUT_SECS,
+      MIN_HLS_PLAYLIST_TIMEOUT_SECS
+    );
+    const segmentTimeout = clampInt(
+      liveSegmentTimeoutSecs ?? MIN_LIVE_SEGMENT_TIMEOUT_SECS,
+      MIN_LIVE_SEGMENT_TIMEOUT_SECS
+    );
+    const retryHls = clampInt(
+      liveRetryHlsMs ?? MIN_LIVE_RETRY_HLS_MS,
+      MIN_LIVE_RETRY_HLS_MS
+    );
+    const retryFlv = clampInt(
+      liveRetryFlvMs ?? MIN_LIVE_RETRY_FLV_MS,
+      MIN_LIVE_RETRY_FLV_MS
+    );
+
+    setHlsRefreshMinMs(refreshMin);
+    setHlsRefreshMaxMs(refreshMax);
+    setHlsPlaylistTimeoutSecs(playlistTimeout);
+    setLiveSegmentTimeoutSecs(segmentTimeout);
+    setLiveRetryHlsMs(retryHls);
+    setLiveRetryFlvMs(retryFlv);
+    setSavingLiveSettings(true);
+    try {
+      await setLiveRecordSettings(
+        refreshMin,
+        refreshMax,
+        playlistTimeout,
+        segmentTimeout,
+        retryHls,
+        retryFlv
+      );
+      message.success("录播设置已保存");
+    } catch (error) {
+      message.error(`保存录播设置失败：${formatSettingsError(error)}`);
+      const settings = await getAppSettings();
+      setHlsRefreshMinMs(settings.hls_refresh_min_ms);
+      setHlsRefreshMaxMs(settings.hls_refresh_max_ms);
+      setHlsPlaylistTimeoutSecs(settings.hls_playlist_timeout_secs);
+      setLiveSegmentTimeoutSecs(settings.live_segment_timeout_secs);
+      setLiveRetryHlsMs(settings.live_retry_hls_ms);
+      setLiveRetryFlvMs(settings.live_retry_flv_ms);
+    } finally {
+      setSavingLiveSettings(false);
+    }
+  };
+
   const handleDownloadFfmpeg = async () => {
     setFfmpegDownloading(true);
     setFfmpegDownloadProgress(0);
@@ -435,7 +615,14 @@ export function SettingsModal({
               </Radio>
             </Space>
           </Radio.Group>
-
+        </Space>
+      ),
+    },
+    {
+      key: "network",
+      label: "网络",
+      children: (
+        <Space direction="vertical" size={18} style={{ width: "100%" }}>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
             <Typography.Text strong>代理设置</Typography.Text>
             <Space style={{ width: "100%", justifyContent: "space-between" }}>
@@ -470,75 +657,17 @@ export function SettingsModal({
           </Space>
 
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>关于</Typography.Text>
-            <div
-              style={{
-                padding: "16px 18px",
-                borderRadius: 14,
-                border: `1px solid ${token.colorBorderSecondary}`,
-                background: `linear-gradient(135deg, ${token.colorInfoBg} 0%, ${token.colorBgContainer} 100%)`,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  flexWrap: "wrap",
-                }}
-              >
-                <Space size={12} align="center">
-                  <div
-                    style={{
-                      width: 40,
-                      height: 40,
-                      borderRadius: 12,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      background: token.colorPrimary,
-                      color: token.colorWhite,
-                      flex: "0 0 auto",
-                    }}
-                  >
-                    <ThunderboltOutlined style={{ fontSize: 20 }} />
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                    <Typography.Text strong style={{ fontSize: 15 }}>
-                      M3U8 Quicker
-                    </Typography.Text>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        v{appVersion || "-"}
-                      </Typography.Text>
-                      <a
-                        href="#"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          openUrl("https://github.com/Liubsyy/M3U8Quicker");
-                        }}
-                        style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}
-                      >
-                        <GithubOutlined />
-                        Liubsyy
-                      </a>
-                    </div>
-                  </div>
-                </Space>
-                <Button
-                  size="small"
-                  icon={
-                    <Badge dot={updateAvailable} offset={[2, 0]}>
-                      <ReloadOutlined />
-                    </Badge>
-                  }
-                  onClick={() => setUpdateModalOpen(true)}
-                >
-                  检查更新
-                </Button>
-              </div>
-            </div>
+            <Typography.Text strong>默认 User-Agent</Typography.Text>
+            <Input
+              value={userAgent}
+              placeholder="留空则使用默认 User-Agent"
+              disabled={loading || savingUserAgent}
+              onChange={(event) => setUserAgentState(event.target.value)}
+              onBlur={() => void saveUserAgentValue()}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              下载与录播共用此 UA；单个任务可在“附加 Header”中单独覆盖。
+            </Typography.Text>
           </Space>
         </Space>
       ),
@@ -548,6 +677,15 @@ export function SettingsModal({
       label: "下载设置",
       children: (
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <Typography.Text strong>默认下载目录</Typography.Text>
+            <Space.Compact style={{ width: "100%" }}>
+              <Input value={defaultDownloadDir} readOnly placeholder="尚未设置" />
+              <Button onClick={() => void handleSelectDefaultDownloadDir()}>
+                选择
+              </Button>
+            </Space.Compact>
+          </Space>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
             <Typography.Text strong>下载并发数量</Typography.Text>
             <InputNumber
@@ -713,6 +851,229 @@ export function SettingsModal({
               </Space>
             </Space>
           </Space>
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <Typography.Text strong>网络超时</Typography.Text>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <Typography.Text>解析超时</Typography.Text>
+              <InputNumber
+                min={MIN_METADATA_TIMEOUT_SECS}                precision={0}
+                addonAfter="秒"
+                style={{ width: 160 }}
+                value={metadataTimeoutSecs ?? undefined}
+                disabled={loading || savingTimeouts}
+                onChange={(value) =>
+                  setMetadataTimeoutSecs(
+                    typeof value === "number" ? value : null
+                  )
+                }
+                onBlur={() => void saveTimeoutSettingsValues()}
+              />
+            </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <Typography.Text>分片下载超时</Typography.Text>
+              <InputNumber
+                min={MIN_SEGMENT_TIMEOUT_SECS}                precision={0}
+                addonAfter="秒"
+                style={{ width: 160 }}
+                value={segmentTimeoutSecs ?? undefined}
+                disabled={loading || savingTimeouts}
+                onChange={(value) =>
+                  setSegmentTimeoutSecs(typeof value === "number" ? value : null)
+                }
+                onBlur={() => void saveTimeoutSettingsValues()}
+              />
+            </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <Typography.Text>MP4 直链超时</Typography.Text>
+              <InputNumber
+                min={MIN_MP4_TIMEOUT_SECS}                precision={0}
+                addonAfter="秒"
+                style={{ width: 160 }}
+                value={mp4TimeoutSecs ?? undefined}
+                disabled={loading || savingTimeouts}
+                onChange={(value) =>
+                  setMp4TimeoutSecs(typeof value === "number" ? value : null)
+                }
+                onBlur={() => void saveTimeoutSettingsValues()}
+              />
+            </div>
+          </Space>
+        </Space>
+      ),
+    },
+    {
+      key: "live",
+      label: "录播设置",
+      children: (
+        <Space direction="vertical" size={18} style={{ width: "100%" }}>
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <Typography.Text strong>HLS 刷新间隔</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              录制 HLS 直播时轮询新分片的频率范围，越小越实时但请求更频繁。
+            </Typography.Text>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <Typography.Text>最小间隔</Typography.Text>
+              <InputNumber
+                min={MIN_HLS_REFRESH_MIN_MS}                precision={0}
+                addonAfter="毫秒"
+                style={{ width: 170 }}
+                value={hlsRefreshMinMs ?? undefined}
+                disabled={loading || savingLiveSettings}
+                onChange={(value) =>
+                  setHlsRefreshMinMs(typeof value === "number" ? value : null)
+                }
+                onBlur={() => void saveLiveRecordSettingsValues()}
+              />
+            </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <Typography.Text>最大间隔</Typography.Text>
+              <InputNumber
+                min={MIN_HLS_REFRESH_MAX_MS}                precision={0}
+                addonAfter="毫秒"
+                style={{ width: 170 }}
+                value={hlsRefreshMaxMs ?? undefined}
+                disabled={loading || savingLiveSettings}
+                onChange={(value) =>
+                  setHlsRefreshMaxMs(typeof value === "number" ? value : null)
+                }
+                onBlur={() => void saveLiveRecordSettingsValues()}
+              />
+            </div>
+          </Space>
+
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <Typography.Text strong>请求超时</Typography.Text>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <Typography.Text>拉取 playlist 超时</Typography.Text>
+              <InputNumber
+                min={MIN_HLS_PLAYLIST_TIMEOUT_SECS}                precision={0}
+                addonAfter="秒"
+                style={{ width: 170 }}
+                value={hlsPlaylistTimeoutSecs ?? undefined}
+                disabled={loading || savingLiveSettings}
+                onChange={(value) =>
+                  setHlsPlaylistTimeoutSecs(
+                    typeof value === "number" ? value : null
+                  )
+                }
+                onBlur={() => void saveLiveRecordSettingsValues()}
+              />
+            </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <Typography.Text>分片 / 流下载超时</Typography.Text>
+              <InputNumber
+                min={MIN_LIVE_SEGMENT_TIMEOUT_SECS}                precision={0}
+                addonAfter="秒"
+                style={{ width: 170 }}
+                value={liveSegmentTimeoutSecs ?? undefined}
+                disabled={loading || savingLiveSettings}
+                onChange={(value) =>
+                  setLiveSegmentTimeoutSecs(
+                    typeof value === "number" ? value : null
+                  )
+                }
+                onBlur={() => void saveLiveRecordSettingsValues()}
+              />
+            </div>
+          </Space>
+
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <Typography.Text strong>断线重连间隔</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              录制中断流后等待多久再重连。
+            </Typography.Text>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <Typography.Text>HLS 重连</Typography.Text>
+              <InputNumber
+                min={MIN_LIVE_RETRY_HLS_MS}                precision={0}
+                addonAfter="毫秒"
+                style={{ width: 170 }}
+                value={liveRetryHlsMs ?? undefined}
+                disabled={loading || savingLiveSettings}
+                onChange={(value) =>
+                  setLiveRetryHlsMs(typeof value === "number" ? value : null)
+                }
+                onBlur={() => void saveLiveRecordSettingsValues()}
+              />
+            </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <Typography.Text>FLV 重连</Typography.Text>
+              <InputNumber
+                min={MIN_LIVE_RETRY_FLV_MS}                precision={0}
+                addonAfter="毫秒"
+                style={{ width: 170 }}
+                value={liveRetryFlvMs ?? undefined}
+                disabled={loading || savingLiveSettings}
+                onChange={(value) =>
+                  setLiveRetryFlvMs(typeof value === "number" ? value : null)
+                }
+                onBlur={() => void saveLiveRecordSettingsValues()}
+              />
+            </div>
+          </Space>
         </Space>
       ),
     },
@@ -871,6 +1232,84 @@ export function SettingsModal({
         </Space>
       ),
     },
+    {
+      key: "about",
+      label: (
+        <Badge dot={updateAvailable} offset={[6, 2]}>
+          关于
+        </Badge>
+      ),
+      children: (
+        <div
+          style={{
+            padding: "16px 18px",
+            borderRadius: 14,
+            border: `1px solid ${token.colorBorderSecondary}`,
+            background: `linear-gradient(135deg, ${token.colorInfoBg} 0%, ${token.colorBgContainer} 100%)`,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <Space size={12} align="center">
+              <div
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 12,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: token.colorPrimary,
+                  color: token.colorWhite,
+                  flex: "0 0 auto",
+                }}
+              >
+                <ThunderboltOutlined style={{ fontSize: 20 }} />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <Typography.Text strong style={{ fontSize: 15 }}>
+                  M3U8 Quicker
+                </Typography.Text>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    v{appVersion || "-"}
+                  </Typography.Text>
+                  <a
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      openUrl("https://github.com/Liubsyy/M3U8Quicker");
+                    }}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}
+                  >
+                    <GithubOutlined />
+                    Liubsyy
+                  </a>
+                </div>
+              </div>
+            </Space>
+            <Button
+              size="small"
+              icon={
+                <Badge dot={updateAvailable} offset={[2, 0]}>
+                  <ReloadOutlined />
+                </Badge>
+              }
+              onClick={() => setUpdateModalOpen(true)}
+            >
+              检查更新
+            </Button>
+          </div>
+        </div>
+      ),
+    },
   ];
 
   return (
@@ -882,20 +1321,34 @@ export function SettingsModal({
         onOk={() => void handleConfirm()}
         okText="确定"
         cancelButtonProps={{ style: { display: "none" } }}
-        width={500}
+        width={680}
         confirmLoading={
           loading ||
           savingProxy ||
           savingConcurrency ||
           savingSpeedLimit ||
           savingDownloadOutput ||
-          savingFfmpegEnabled
+          savingFfmpegEnabled ||
+          savingUserAgent ||
+          savingTimeouts ||
+          savingLiveSettings
         }
       >
         <Tabs
           className="settings-modal-tabs"
+          tabPosition="left"
           activeKey={activeTab}
-          onChange={(key) => setActiveTab(key as "general" | "download" | "ffmpeg")}
+          onChange={(key) =>
+            setActiveTab(
+              key as
+                | "general"
+                | "network"
+                | "download"
+                | "live"
+                | "ffmpeg"
+                | "about"
+            )
+          }
           items={settingsTabItems}
         />
       </Modal>

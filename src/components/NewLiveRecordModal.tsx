@@ -170,7 +170,7 @@ export function NewLiveRecordModal({
             </Button>
           </Space.Compact>
         </Form.Item>
-        <Form.Item label="附加请求头" name="extra_headers">
+        <Form.Item label="附加 Header" name="extra_headers">
           <Input.TextArea
             rows={3}
             placeholder={"每行一个，格式 name:value\n例如\nReferer:https://example.com\nUser-Agent:Mozilla/5.0"}

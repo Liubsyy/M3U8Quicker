@@ -10,6 +10,7 @@ use crate::models::{
     DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS, DEFAULT_PREVIEW_COLUMNS, DEFAULT_PREVIEW_COUNT,
     DEFAULT_PREVIEW_JPEG_QUALITY, DEFAULT_PREVIEW_THUMBNAIL_WIDTH,
 };
+use crate::models::default_user_agent;
 use crate::playback::{
     DownloadPriorityState, LivePlaybackSession, PlaybackServerState, PlaybackSession,
 };
@@ -23,6 +24,7 @@ pub struct AppState {
     pub live_store_lock: Arc<Mutex<()>>,
     pub live_stop_signals: Arc<Mutex<HashMap<DownloadId, Arc<LiveStopSignal>>>>,
     pub http_client: Arc<RwLock<reqwest::Client>>,
+    pub user_agent: Arc<Mutex<String>>,
     pub default_download_dir: Arc<Mutex<String>>,
     pub proxy_settings: Arc<Mutex<ProxySettings>>,
     pub max_concurrent_segments: Arc<Mutex<usize>>,
@@ -44,7 +46,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(download_dir: String) -> Self {
-        let client = downloader::build_http_client(None).expect("Failed to create HTTP client");
+        let client = downloader::build_http_client(None, default_user_agent())
+            .expect("Failed to create HTTP client");
 
         Self {
             downloads: Arc::new(Mutex::new(HashMap::new())),
@@ -54,6 +57,7 @@ impl AppState {
             live_store_lock: Arc::new(Mutex::new(())),
             live_stop_signals: Arc::new(Mutex::new(HashMap::new())),
             http_client: Arc::new(RwLock::new(client)),
+            user_agent: Arc::new(Mutex::new(default_user_agent().to_string())),
             default_download_dir: Arc::new(Mutex::new(download_dir)),
             proxy_settings: Arc::new(Mutex::new(ProxySettings::default())),
             max_concurrent_segments: Arc::new(Mutex::new(DEFAULT_DOWNLOAD_CONCURRENCY)),
