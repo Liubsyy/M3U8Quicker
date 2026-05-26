@@ -902,10 +902,10 @@
       actions.appendChild(previewButton);
       actions.appendChild(downloadButton);
 
-      if (item.isLive) {
+      if (item.isLive || item.fileType === "hls") {
         const recordButton = document.createElement("button");
         recordButton.type = "button";
-        recordButton.textContent = "录制";
+        recordButton.textContent = "录播";
         recordButton.style.border = "none";
         recordButton.style.background = "transparent";
         recordButton.style.color = "#1155cc";

@@ -837,6 +837,12 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         onSubmit={async (params) => {
           await addLiveRecord(params);
         }}
+        onSwitchToDownload={(draft) => {
+          setLiveRecordModalOpen(false);
+          setLiveRecordDraft(null);
+          setDownloadDraft({ ...draft, nonce: Date.now() });
+          setModalOpen(true);
+        }}
         initialUrl={liveRecordDraft?.url}
         initialExtraHeaders={liveRecordDraft?.extraHeaders}
         initialFilename={liveRecordDraft?.filename}

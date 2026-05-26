@@ -4,10 +4,12 @@ import { FolderOpenOutlined } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   getDefaultDownloadDir,
+  inspectHlsTracks,
   setDefaultDownloadDir,
 } from "../services/api";
 import {
   deriveFilenameFromUrl,
+  type FileType,
   type CreateLiveRecordParams,
   type LiveProtocol,
 } from "../types";
@@ -16,6 +18,11 @@ interface NewLiveRecordModalProps {
   open: boolean;
   onClose: () => void;
   onSubmit: (params: CreateLiveRecordParams) => Promise<void>;
+  onSwitchToDownload: (draft: {
+    url: string;
+    extraHeaders?: string;
+    fileType?: FileType;
+  }) => void;
   initialUrl?: string;
   initialExtraHeaders?: string;
   initialFilename?: string;
@@ -34,6 +41,7 @@ export function NewLiveRecordModal({
   open: isOpen,
   onClose,
   onSubmit,
+  onSwitchToDownload,
   initialUrl,
   initialExtraHeaders,
   initialFilename,
@@ -112,6 +120,18 @@ export function NewLiveRecordModal({
         extra_headers: values.extra_headers?.trim() || undefined,
         protocol: values.protocol ?? "flv",
       };
+
+      if (params.protocol === "hls") {
+        const inspection = await inspectHlsTracks({
+          url,
+          extra_headers: params.extra_headers,
+        });
+
+        if (!inspection.is_live && (await confirmSwitchToDownload(params))) {
+          return;
+        }
+      }
+
       await onSubmit(params);
       message.success("直播录制已开始");
       onClose();
@@ -123,19 +143,41 @@ export function NewLiveRecordModal({
     }
   };
 
+  const confirmSwitchToDownload = async (params: CreateLiveRecordParams) => {
+    return await new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title: "检测到非直播 HLS",
+        content: "当前地址看起来不是直播流，更适合普通下载。是否转到新建下载界面？",
+        okText: "转到下载",
+        cancelText: "继续录制",
+        onOk: () => {
+          onSwitchToDownload({
+            url: params.url,
+            extraHeaders: params.extra_headers,
+            fileType: "hls",
+          });
+          resolve(true);
+        },
+        onCancel: () => resolve(false),
+      });
+    });
+  };
+
   return (
     <Modal
       title="新建直播录制"
       open={isOpen}
       onCancel={onClose}
-      onOk={() => void handleSubmit()}
-      okText="开始录制"
-      cancelText="取消"
-      confirmLoading={submitting}
+      footer={null}
       width={560}
       destroyOnClose
     >
-      <Form layout="vertical" form={form} initialValues={{ protocol: "flv" }}>
+      <Form
+        layout="vertical"
+        form={form}
+        initialValues={{ protocol: "flv" }}
+        onFinish={() => void handleSubmit()}
+      >
         <Form.Item
           label="直播地址"
           name="url"
@@ -175,6 +217,14 @@ export function NewLiveRecordModal({
             rows={3}
             placeholder={"每行一个，格式 name:value\n例如\nReferer:https://example.com\nUser-Agent:Mozilla/5.0"}
           />
+        </Form.Item>
+        <Form.Item style={{ marginBottom: 0 }}>
+          <Space style={{ width: "100%", justifyContent: "flex-end" }}>
+            <Button onClick={onClose}>取消</Button>
+            <Button type="primary" htmlType="submit" loading={submitting}>
+              开始录制
+            </Button>
+          </Space>
         </Form.Item>
       </Form>
     </Modal>

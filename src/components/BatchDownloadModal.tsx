@@ -18,6 +18,7 @@ import {
   deriveFilenameFromUrl,
   inferDirectFileTypeFromUrl,
   type CreateDownloadParams,
+  type DownloadMode,
   type DownloadSourceKind,
 } from "../types";
 
@@ -44,7 +45,7 @@ interface ParsedBatchItem {
   url: string;
   filename?: string;
   filenameEdited?: boolean;
-  mode: "hls" | "direct" | "dash";
+  mode: DownloadMode;
   fileType: CreateDownloadParams["file_type"];
   valid: boolean;
   error?: string;
@@ -203,7 +204,7 @@ export function BatchDownloadModal({
             placeholder={[
               "https://example.com/a.m3u8",
               "https://example.com/b.mp4",
-              "https://example.com/c.m3u8",
+              "https://example.com/c.mpd",
             ].join("\n")}
           />
         </div>
@@ -251,11 +252,12 @@ export function BatchDownloadModal({
                           value={record.mode}
                           options={[
                             { value: "hls", label: "HLS" },
+                            { value: "dash", label: "DASH" },
                             { value: "direct", label: "Direct" },
                           ]}
                           style={{ width: "100%" }}
                           onChange={(value) => {
-                            const nextMode = value as "hls" | "direct";
+                            const nextMode = value as DownloadMode;
                             updateParsedItem(record.key, {
                               mode: nextMode,
                             });
@@ -408,6 +410,11 @@ function parseBatchLine(rawLine: string, lineNumber: number): ParsedBatchItem {
 
   const url = trimmed;
   const directFileType = inferDirectFileTypeFromUrl(url);
+  const mode: DownloadMode = looksLikeDashUrl(url)
+    ? "dash"
+    : directFileType
+      ? "direct"
+      : "hls";
   const filename = deriveFilenameFromUrl(url) || undefined;
 
   return normalizeParsedItem({
@@ -417,10 +424,25 @@ function parseBatchLine(rawLine: string, lineNumber: number): ParsedBatchItem {
     url,
     filename,
     filenameEdited: false,
-    mode: directFileType ? "direct" : "hls",
-    fileType: directFileType ?? "hls",
+    mode,
+    fileType: mode === "dash" ? "dash" : directFileType ?? "hls",
     valid: true,
   });
+}
+
+function looksLikeDashUrl(url: string): boolean {
+  const trimmed = url.trim();
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.pathname.toLowerCase().endsWith(".mpd")) {
+      return true;
+    }
+  } catch {
+    // fall through to raw string checks
+  }
+
+  const lower = trimmed.toLowerCase();
+  return lower.endsWith(".mpd") || lower.includes(".mpd?") || lower.includes(".mpd#");
 }
 
 function deriveFilenameFromInlineDashJson(raw: string): string | undefined {
@@ -493,8 +515,18 @@ function normalizeParsedItem(item: ParsedBatchItem): ParsedBatchItem {
     };
   }
 
+  if (item.mode === "dash") {
+    return {
+      ...item,
+      url,
+      fileType: "dash",
+      valid: true,
+      error: undefined,
+    };
+  }
+
   const nextFileType =
-    item.fileType && item.fileType !== "hls"
+    item.fileType && item.fileType !== "hls" && item.fileType !== "dash"
       ? item.fileType
       : inferDirectFileTypeFromUrl(url) ?? "mp4";
 

@@ -3223,14 +3223,9 @@ fn resolve_create_download_file_type(params: &CreateDownloadParams) -> Result<Fi
         return match download_mode {
             DownloadMode::Hls => Ok(FileType::Hls),
             DownloadMode::Dash => Ok(FileType::Dash),
-            DownloadMode::Direct => infer_direct_file_type_from_url(&params.url)
+            DownloadMode::Direct => Ok(infer_direct_file_type_from_url(&params.url)
                 .or_else(|| params.file_type.filter(|file_type| file_type.is_direct_download()))
-                .ok_or_else(|| {
-                    AppError::InvalidInput(
-                        "无法从地址推断 Direct 文件类型，请使用包含 mp4/mkv/avi/wmv/flv/webm/mov/rmvb 后缀的链接"
-                            .to_string(),
-                    )
-                }),
+                .unwrap_or(FileType::Mp4)),
         };
     }
 
@@ -4595,7 +4590,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_create_download_file_type_rejects_unknown_direct_url_extension() {
+    fn resolve_create_download_file_type_defaults_unknown_direct_url_to_mp4() {
         let params = CreateDownloadParams {
             url: "https://example.com/media/download".to_string(),
             source_kind: DownloadSourceKind::Url,
@@ -4608,7 +4603,10 @@ mod tests {
             hls_selection: None,
         };
 
-        assert!(resolve_create_download_file_type(&params).is_err());
+        assert_eq!(
+            resolve_create_download_file_type(&params).expect("file type"),
+            FileType::Mp4
+        );
     }
 
     #[test]
