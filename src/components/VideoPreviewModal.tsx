@@ -151,7 +151,7 @@ export function VideoPreviewModal({
           label="视频地址"
           name="url"
           rules={[{ required: true, message: "请输入视频地址" }]}
-          extra="支持 m3u8、mpd 直链或 m3u8quicker-dash-v1 JSON"
+          extra="支持 m3u8、mpd、直链或 m3u8quicker-dash-v1 JSON"
         >
           <Input.TextArea
             placeholder={

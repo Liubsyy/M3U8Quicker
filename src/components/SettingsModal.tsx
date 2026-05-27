@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Badge,
   Button,
@@ -110,6 +110,17 @@ interface SettingsModalProps {
   onThemeModeChange: (mode: ThemeMode) => void;
   onHistoryPageSizeChange?: (pageSize: number) => void;
   onUpdateAvailabilityChange?: (available: boolean) => void;
+}
+
+function SectionTitle({ children }: { children: ReactNode }) {
+  return (
+    <Typography.Text
+      strong
+      style={{ fontSize: 15, lineHeight: 1.5, letterSpacing: 0.2 }}
+    >
+      {children}
+    </Typography.Text>
+  );
 }
 
 export function SettingsModal({
@@ -659,7 +670,7 @@ export function SettingsModal({
       label: "常规",
       children: (
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
-          <Typography.Text strong>主题</Typography.Text>
+          <SectionTitle>主题</SectionTitle>
           <Radio.Group
             value={themeMode}
             onChange={(event) => onThemeModeChange(event.target.value)}
@@ -674,7 +685,7 @@ export function SettingsModal({
             </Space>
           </Radio.Group>
           <Space direction="vertical" size={8}>
-            <Typography.Text strong>列表展示</Typography.Text>
+            <SectionTitle>列表展示</SectionTitle>
             <Space size={8} align="center">
               <Typography.Text>每页展示</Typography.Text>
               <Select
@@ -688,7 +699,7 @@ export function SettingsModal({
             </Space>
           </Space>
           <Space direction="vertical" size={8}>
-            <Typography.Text strong>关闭窗口时</Typography.Text>
+            <SectionTitle>关闭窗口时</SectionTitle>
             <Radio.Group
               value={closeToTray ? "tray" : "exit"}
               disabled={loading || savingCloseToTray}
@@ -711,7 +722,7 @@ export function SettingsModal({
       children: (
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>代理设置</Typography.Text>
+            <SectionTitle>代理设置</SectionTitle>
             <Space style={{ width: "100%", justifyContent: "space-between" }}>
               <Typography.Text>启用代理</Typography.Text>
               <Switch
@@ -744,7 +755,7 @@ export function SettingsModal({
           </Space>
 
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>默认 User-Agent</Typography.Text>
+            <SectionTitle>默认 User-Agent</SectionTitle>
             <Input
               value={userAgent}
               placeholder="留空则使用默认 User-Agent"
@@ -752,6 +763,9 @@ export function SettingsModal({
               onChange={(event) => setUserAgentState(event.target.value)}
               onBlur={() => void saveUserAgentValue()}
             />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              新建任务时若在「附加 Header」中填写 User-Agent，将优先生效并覆盖此默认值。
+            </Typography.Text>
           </Space>
         </Space>
       ),
@@ -762,7 +776,7 @@ export function SettingsModal({
       children: (
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>默认下载目录</Typography.Text>
+            <SectionTitle>默认下载目录</SectionTitle>
             <Space.Compact style={{ width: "calc(100% - 24px)" }}>
               <Input value={defaultDownloadDir} readOnly placeholder="尚未设置" />
               <Button onClick={() => void handleSelectDefaultDownloadDir()}>
@@ -771,7 +785,7 @@ export function SettingsModal({
             </Space.Compact>
           </Space>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>下载并发数量</Typography.Text>
+            <SectionTitle>下载并发数量</SectionTitle>
             <InputNumber
               min={MIN_DOWNLOAD_CONCURRENCY}
               max={MAX_DOWNLOAD_CONCURRENCY}
@@ -802,7 +816,7 @@ export function SettingsModal({
                 justifyContent: "space-between",
               }}
             >
-              <Typography.Text strong>下载限速</Typography.Text>
+              <SectionTitle>下载限速</SectionTitle>
               <Tag
                 bordered={false}
                 color={speedLimitMode === "unlimited" ? "success" : "processing"}
@@ -908,7 +922,7 @@ export function SettingsModal({
             </div>
           </Space>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>下载完成后</Typography.Text>
+            <SectionTitle>下载完成后</SectionTitle>
             <Space size={24}>
               <Space size={12}>
                 <Typography.Text>删除临时文件夹</Typography.Text>
@@ -936,7 +950,7 @@ export function SettingsModal({
             </Space>
           </Space>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>请求超时</Typography.Text>
+            <SectionTitle>请求超时</SectionTitle>
             <div
               style={{
                 display: "flex",
@@ -1012,7 +1026,7 @@ export function SettingsModal({
       children: (
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>HLS 刷新间隔</Typography.Text>
+            <SectionTitle>HLS 刷新间隔</SectionTitle>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               录制 HLS 直播时轮询新分片的频率范围，越小越实时但请求更频繁。
             </Typography.Text>
@@ -1061,7 +1075,7 @@ export function SettingsModal({
           </Space>
 
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>请求超时</Typography.Text>
+            <SectionTitle>请求超时</SectionTitle>
             <div
               style={{
                 display: "flex",
@@ -1111,7 +1125,7 @@ export function SettingsModal({
           </Space>
 
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>断线重连间隔</Typography.Text>
+            <SectionTitle>断线重连间隔</SectionTitle>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               录制中断流后等待多久再重连。
             </Typography.Text>
@@ -1167,12 +1181,12 @@ export function SettingsModal({
       children: (
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            FFmpeg 是一个专业的音视频处理工具，部分转码和合成功能会依赖它。
-            如果你想获得更佳的体验，请无脑下载 FFmpeg
+            FFmpeg 是一个专业的音视频处理工具，部分转码和合成功能会依赖它，
+            如果你想获得更佳的体验，请无脑下载 FFmpeg。
           </Typography.Paragraph>
 
           <Space style={{ width: "100%", justifyContent: "space-between" }}>
-            <Typography.Text strong>开启 FFmpeg</Typography.Text>
+            <SectionTitle>开启 FFmpeg</SectionTitle>
             <Switch
               checked={ffmpegEnabled}
               loading={loading || savingFfmpegEnabled}
@@ -1272,7 +1286,7 @@ export function SettingsModal({
 
           {ffmpegEnabled && ffmpegStatus?.kind !== "installed" && (
             <Space direction="vertical" size={8} style={{ width: "100%" }}>
-              <Typography.Text strong>自动下载</Typography.Text>
+              <SectionTitle>自动下载</SectionTitle>
               {ffmpegDownloading && (
                 <Progress percent={ffmpegDownloadProgress} size="small" />
               )}
@@ -1287,7 +1301,10 @@ export function SettingsModal({
           )}
 
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Typography.Text strong>自定义路径</Typography.Text>
+            <SectionTitle>自定义路径</SectionTitle>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              请选择 ffmpeg 可执行文件本身（非所在目录），同目录下需存在 ffprobe。
+            </Typography.Text>
             <Space size={8}>
               <Button
                 disabled={!ffmpegEnabled}

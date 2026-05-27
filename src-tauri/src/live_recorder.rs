@@ -1205,8 +1205,8 @@ async fn run_hls_record(
         }
 
         // Sleep until next refresh, respect cancel.
-        let refresh = Duration::from_millis((target_duration_ms / 2).max(800).min(6000));
-        let refresh = refresh.clamp(hls_min_refresh(), hls_max_refresh());
+        let refresh = Duration::from_millis(target_duration_ms / 2)
+            .clamp(hls_min_refresh(), hls_max_refresh());
         if wait_or_cancel(&signal, refresh).await {
             return Err(AppError::Cancelled);
         }

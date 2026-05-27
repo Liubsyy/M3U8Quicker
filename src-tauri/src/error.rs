@@ -20,7 +20,7 @@ pub enum AppError {
     #[error("URL parse error: {0}")]
     UrlParse(#[from] url::ParseError),
 
-    #[error("Invalid input: {0}")]
+    #[error("{0}")]
     InvalidInput(String),
 
     #[error("Decryption error: {0}")]

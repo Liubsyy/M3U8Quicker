@@ -432,8 +432,22 @@ pub fn run() {
             update::download_update_installer,
             update::open_update_installer,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, _event| {
+            // macOS: 当 Dock 图标被点击且没有可见窗口时,系统会触发 Reopen 事件,
+            // 应用需要自己把隐藏到托盘的主窗口重新显示出来。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = _event
+            {
+                if !has_visible_windows {
+                    show_main_window(_app_handle);
+                }
+            }
+        });
 }
 
 fn show_main_window(app: &AppHandle) {
