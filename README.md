@@ -19,7 +19,7 @@
 
 **M3U8 Quicker** 是一个基于 `Tauri + Rust + React + TypeScript` 构建的桌面应用，可用于下载HLS/DASH/MP4类视频和直播视频录制，支持 Windows、MacOS 和 Linux。
 
-项目同时包含一个可选的 浏览器扩展：自动检测网页中的视频，一键快速新建下载任务并预填下载信息。
+项目同时包含一个可选的 浏览器扩展：自动检测网页中的视频，一键快速新建下载/直播任务并预填信息。
 
 ![下载主界面](./doc/img/download_main.png)
 
