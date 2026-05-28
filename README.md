@@ -66,7 +66,8 @@ xattr -rd com.apple.quarantine /Applications/M3U8\ Quicker.app
 ```
 
 **浏览器扩展(可选)：**
-打开`M3U8 Quicker`-> `工具` -> `安装浏览器扩展`，按引导可安装`Chrome扩展`/`Firefox扩展`/`Microsoft Edge扩展`。
+
+打开`M3U8 Quicker`-> `工具` -> `安装浏览器扩展`，按引导可安装Chrome扩展/Firefox扩展/Microsoft Edge扩展。
 
 
 ### 新建下载
