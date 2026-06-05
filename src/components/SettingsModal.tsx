@@ -60,7 +60,6 @@ import {
 } from "../services/api";
 import {
   DEFAULT_HISTORY_PAGE_SIZE,
-  DEFAULT_ZOOM,
   HISTORY_PAGE_SIZE_OPTIONS,
   MAX_ZOOM,
   MIN_ZOOM,
@@ -142,6 +141,42 @@ function SectionTitle({ children }: { children: ReactNode }) {
     </Typography.Text>
   );
 }
+
+// 修饰键在 macOS 显示 ⌘，其它平台显示 Ctrl
+const MOD_KEY =
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent)
+    ? "⌘"
+    : "Ctrl";
+
+// 键盘按键样式的「键帽」
+function Kbd({ children }: { children: ReactNode }) {
+  const { token } = theme.useToken();
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        height: 22,
+        padding: "0 7px",
+        fontSize: 13,
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        color: token.colorTextSecondary,
+        background: token.colorFillTertiary,
+        border: `1px solid ${token.colorBorderSecondary}`,
+        borderRadius: 6,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+const ZOOM_SHORTCUTS: { combo: string; label: string }[] = [
+  { combo: `${MOD_KEY} +`, label: "放大" },
+  { combo: `${MOD_KEY} −`, label: "缩小" },
+];
 
 export function SettingsModal({
   open,
@@ -706,14 +741,15 @@ export function SettingsModal({
               </Radio>
             </Space>
           </Radio.Group>
-          <Space direction="vertical" size={8}>
+          <Space direction="vertical" size={10}>
             <SectionTitle>界面缩放</SectionTitle>
-            <Space size={12} align="center">
+            <Space size={20} align="center" wrap>
               <div
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
                   height: 36,
+                  width: "fit-content",
                   borderRadius: token.borderRadiusLG,
                   border: `1px solid ${token.colorBorder}`,
                   background: token.colorFillTertiary,
@@ -758,15 +794,14 @@ export function SettingsModal({
                   />
                 </Tooltip>
               </div>
-              <Button
-                type="text"
-                icon={<ReloadOutlined />}
-                disabled={zoomFactor === DEFAULT_ZOOM}
-                onClick={() => onZoomChange(DEFAULT_ZOOM)}
-                style={{ color: token.colorTextSecondary }}
-              >
-                恢复默认
-              </Button>
+              {ZOOM_SHORTCUTS.map(({ combo, label }) => (
+                <Space size={6} align="center" key={label}>
+                  <Kbd>{combo}</Kbd>
+                  <Typography.Text type="secondary" style={{ fontSize: 14 }}>
+                    {label}
+                  </Typography.Text>
+                </Space>
+              ))}
             </Space>
           </Space>
           <Space direction="vertical" size={8}>
