@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import {
   Button,
   Layout,
@@ -62,7 +62,12 @@ import {
   parseFileType,
 } from "./types";
 import type { ThemeMode } from "./types/settings";
-import { DEFAULT_HISTORY_PAGE_SIZE } from "./types/settings";
+import {
+  DEFAULT_HISTORY_PAGE_SIZE,
+  DEFAULT_ZOOM,
+  normalizeZoom,
+  ZOOM_STEP,
+} from "./types/settings";
 
 const { Header, Content } = Layout;
 
@@ -82,6 +87,8 @@ interface BatchDownloadDraft {
 interface AppProps {
   themeMode: ThemeMode;
   onThemeModeChange: (mode: ThemeMode) => void;
+  zoomFactor: number;
+  onZoomChange: Dispatch<SetStateAction<number>>;
 }
 
 interface ChromiumInstallGuideState {
@@ -115,7 +122,12 @@ const CHROMIUM_BROWSER_META: Record<
   },
 };
 
-function App({ themeMode, onThemeModeChange }: AppProps) {
+function App({
+  themeMode,
+  onThemeModeChange,
+  zoomFactor,
+  onZoomChange,
+}: AppProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [liveRecordModalOpen, setLiveRecordModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -194,6 +206,24 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
     loadingHistory: loadingLiveHistory,
   } = useLiveRecords(historyPageSize);
   const { token } = theme.useToken();
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        onZoomChange((z) => normalizeZoom(z + ZOOM_STEP));
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        onZoomChange((z) => normalizeZoom(z - ZOOM_STEP));
+      } else if (e.key === "0") {
+        e.preventDefault();
+        onZoomChange(DEFAULT_ZOOM);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onZoomChange]);
 
   useEffect(() => {
     let cancelled = false;
@@ -840,6 +870,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
         open={settingsOpen}
         initialTab={settingsInitialTab}
         themeMode={themeMode}
+        zoomFactor={zoomFactor}
         updateAvailable={updateAvailable}
         historyPageSize={historyPageSize}
         onClose={() => {
@@ -847,6 +878,7 @@ function App({ themeMode, onThemeModeChange }: AppProps) {
           setSettingsInitialTab("general");
         }}
         onThemeModeChange={onThemeModeChange}
+        onZoomChange={onZoomChange}
         onHistoryPageSizeChange={setHistoryPageSize}
         onUpdateAvailabilityChange={setUpdateAvailable}
       />

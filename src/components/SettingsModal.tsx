@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import {
   Badge,
   Button,
@@ -14,6 +21,7 @@ import {
   Switch,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
   message,
   theme,
@@ -25,6 +33,8 @@ import {
   GithubOutlined,
   ReloadOutlined,
   ThunderboltOutlined,
+  ZoomInOutlined,
+  ZoomOutOutlined,
 } from "@ant-design/icons";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -48,7 +58,15 @@ import {
   setUserAgent,
   openUrl,
 } from "../services/api";
-import { DEFAULT_HISTORY_PAGE_SIZE, HISTORY_PAGE_SIZE_OPTIONS } from "../types/settings";
+import {
+  DEFAULT_HISTORY_PAGE_SIZE,
+  DEFAULT_ZOOM,
+  HISTORY_PAGE_SIZE_OPTIONS,
+  MAX_ZOOM,
+  MIN_ZOOM,
+  normalizeZoom,
+  ZOOM_STEP,
+} from "../types/settings";
 import type {
   FfmpegDownloadProgress,
   FfmpegStatus,
@@ -104,10 +122,12 @@ interface SettingsModalProps {
   open: boolean;
   initialTab?: "general" | "network" | "download" | "live" | "ffmpeg" | "about";
   themeMode: ThemeMode;
+  zoomFactor: number;
   updateAvailable?: boolean;
   historyPageSize?: number;
   onClose: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
+  onZoomChange: Dispatch<SetStateAction<number>>;
   onHistoryPageSizeChange?: (pageSize: number) => void;
   onUpdateAvailabilityChange?: (available: boolean) => void;
 }
@@ -127,10 +147,12 @@ export function SettingsModal({
   open,
   initialTab = "general",
   themeMode,
+  zoomFactor,
   updateAvailable = false,
   historyPageSize = DEFAULT_HISTORY_PAGE_SIZE,
   onClose,
   onThemeModeChange,
+  onZoomChange,
   onHistoryPageSizeChange,
   onUpdateAvailabilityChange,
 }: SettingsModalProps) {
@@ -684,6 +706,69 @@ export function SettingsModal({
               </Radio>
             </Space>
           </Radio.Group>
+          <Space direction="vertical" size={8}>
+            <SectionTitle>界面缩放</SectionTitle>
+            <Space size={12} align="center">
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  height: 36,
+                  borderRadius: token.borderRadiusLG,
+                  border: `1px solid ${token.colorBorder}`,
+                  background: token.colorFillTertiary,
+                  overflow: "hidden",
+                }}
+              >
+                <Tooltip title="缩小">
+                  <Button
+                    type="text"
+                    icon={<ZoomOutOutlined />}
+                    disabled={zoomFactor <= MIN_ZOOM}
+                    onClick={() =>
+                      onZoomChange((z) => normalizeZoom(z - ZOOM_STEP))
+                    }
+                    style={{ height: 36, width: 40, borderRadius: 0 }}
+                  />
+                </Tooltip>
+                <Typography.Text
+                  style={{
+                    minWidth: 56,
+                    textAlign: "center",
+                    fontWeight: 600,
+                    fontVariantNumeric: "tabular-nums",
+                    userSelect: "none",
+                    borderLeft: `1px solid ${token.colorBorderSecondary}`,
+                    borderRight: `1px solid ${token.colorBorderSecondary}`,
+                    lineHeight: "36px",
+                    padding: "0 4px",
+                  }}
+                >
+                  {Math.round(zoomFactor * 100)}%
+                </Typography.Text>
+                <Tooltip title="放大">
+                  <Button
+                    type="text"
+                    icon={<ZoomInOutlined />}
+                    disabled={zoomFactor >= MAX_ZOOM}
+                    onClick={() =>
+                      onZoomChange((z) => normalizeZoom(z + ZOOM_STEP))
+                    }
+                    style={{ height: 36, width: 40, borderRadius: 0 }}
+                  />
+                </Tooltip>
+              </div>
+              <Button
+                type="text"
+                icon={<ReloadOutlined />}
+                disabled={zoomFactor === DEFAULT_ZOOM}
+                onClick={() => onZoomChange(DEFAULT_ZOOM)}
+                style={{ color: token.colorTextSecondary }}
+              >
+                恢复默认
+              </Button>
+            </Space>
+          </Space>
           <Space direction="vertical" size={8}>
             <SectionTitle>列表展示</SectionTitle>
             <Space size={8} align="center">

@@ -4,6 +4,18 @@ export const THEME_MODE_STORAGE_KEY = "m3u8quicker.themeMode";
 export const DEFAULT_HISTORY_PAGE_SIZE = 50;
 export const HISTORY_PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200] as const;
 
+export const ZOOM_STORAGE_KEY = "m3u8quicker.zoom";
+export const DEFAULT_ZOOM = 1;
+export const MIN_ZOOM = 0.5; // 50%
+export const MAX_ZOOM = 2; // 200%
+export const ZOOM_STEP = 0.1;
+
+export function normalizeZoom(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_ZOOM;
+  const rounded = Math.round(value * 100) / 100; // 消除浮点累积误差
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, rounded));
+}
+
 export interface ProxySettings {
   enabled: boolean;
   url: string;
