@@ -43,8 +43,7 @@ import {
   getAppSettings,
   getFfmpegStatus,
   checkForUpdate,
-  convertMediaFile,
-  convertLiveHlsToMp4,
+  convertLiveRecordToMp4,
 } from "./services/api";
 import type {
   ChromiumBrowser,
@@ -158,6 +157,7 @@ function App({
     filename: string;
     filePath: string | null;
     protocol: LiveProtocol;
+    isSplit: boolean;
   } | null>(null);
   const {
     counts,
@@ -437,12 +437,13 @@ function App({
       filename: record.filename,
       filePath: record.file_path,
       protocol: record.protocol,
+      isSplit: Boolean(record.split) || (record.part_paths?.length ?? 0) > 0,
     });
   };
 
   const performStopLive = async (convertToMp4Flag: boolean) => {
     if (!liveStopTarget) return;
-    const { id, filename, filePath, protocol } = liveStopTarget;
+    const { id, filename } = liveStopTarget;
     setLiveStopTarget(null);
 
     const recordedPromise = convertToMp4Flag ? waitForLiveRecorded(id) : null;
@@ -464,23 +465,14 @@ function App({
         duration: 0,
       });
       await recordedPromise;
-      let finalPath: string;
-      if (protocol === "hls") {
-        finalPath = await convertLiveHlsToMp4(id);
-      } else {
-        if (!filePath) {
-          message.warning({
-            key: messageKey,
-            content: "未找到已录制文件，无法转换为 MP4",
-          });
-          return;
-        }
-        const outputPath = deriveMp4PathFromFlv(filePath);
-        finalPath = await convertMediaFile(filePath, outputPath, "mp4", "quick");
-      }
+      // 分段任务由后端逐段转换（FLV 输出到任务目录的 mp4/ 子目录）。
+      const finalPaths = await convertLiveRecordToMp4(id);
       message.success({
         key: messageKey,
-        content: `已转换为 MP4：${finalPath}`,
+        content:
+          finalPaths.length === 1
+            ? `已转换为 MP4：${finalPaths[0]}`
+            : `已转换 ${finalPaths.length} 个分段为 MP4：${finalPaths[0]?.replace(/[^\\/]+$/, "")}`,
       });
     } catch (err) {
       message.error({
@@ -949,17 +941,26 @@ function App({
       >
         <Typography.Paragraph style={{ marginBottom: 0 }}>
           {liveStopTarget?.protocol === "hls"
-            ? "是否将录制好的 HLS 分片合并为 MP4？保留的分片 + 本地 m3u8 会留在录制目录里，可以直接重新合并。"
-            : "是否将录制好的 FLV 转成 MP4？转换后浏览器、微信等场景都能直接播放，原 FLV 文件保留。"}
+            ? "是否将录制好的 HLS 分片合并为 MP4？分片 + 本地 m3u8 保留在任务目录的 m3u8 子目录中，MP4 输出到 mp4 子目录，可以随时重新合并。"
+            : "是否将录制好的 FLV 转成 MP4？转换后浏览器、微信等场景都能直接播放，原 FLV 文件保留在任务目录的 flv 子目录中，MP4 输出到 mp4 子目录。"}
         </Typography.Paragraph>
+        {liveStopTarget?.isSplit ? (
+          <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0 }}>
+            该任务启用了分段录制，转 MP4 时将逐段转换，每段各生成一个 MP4 文件。
+          </Typography.Paragraph>
+        ) : null}
         {liveStopTarget?.filename ? (
           <Typography.Paragraph
             type="secondary"
             style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}
           >
             {liveStopTarget.protocol === "hls"
-              ? `录制目录：${liveStopTarget.filename}/`
-              : `文件：${liveStopTarget.filename}.flv`}
+              ? `录制目录：${liveStopTarget.filename}/（m3u8 分片 + mp4 输出）`
+              : `录制目录：${liveStopTarget.filename}/（flv/${
+                  liveStopTarget.isSplit
+                    ? `${liveStopTarget.filename}_part001.flv 等分段`
+                    : `${liveStopTarget.filename}.flv`
+                }）`}
           </Typography.Paragraph>
         ) : null}
       </Modal>
@@ -1666,13 +1667,6 @@ function waitForLiveRecorded(id: string, timeoutMs = 60000): Promise<void> {
         finish(() => reject(error));
       });
   });
-}
-
-function deriveMp4PathFromFlv(flvPath: string): string {
-  if (/\.flv$/i.test(flvPath)) {
-    return flvPath.replace(/\.flv$/i, ".mp4");
-  }
-  return `${flvPath}.mp4`;
 }
 
 function formatLiveStopError(error: unknown): string {

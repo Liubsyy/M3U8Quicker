@@ -499,8 +499,10 @@ export async function getLiveRecordsPage(
   });
 }
 
-export async function convertLiveHlsToMp4(id: string): Promise<string> {
-  return invoke<string>("convert_live_hls_to_mp4", { id });
+
+/** 转换已录制的直播（FLV/HLS）为 MP4：非分段返回单元素，分段任务逐段转换后返回全部产物路径。 */
+export async function convertLiveRecordToMp4(id: string): Promise<string[]> {
+  return invoke<string[]>("convert_live_record_to_mp4", { id });
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo> {

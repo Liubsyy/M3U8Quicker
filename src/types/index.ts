@@ -361,6 +361,9 @@ export interface LiveRecordSummary {
   temp_dir?: string | null;
   hls_media_kind?: LiveHlsMediaKind | null;
   segment_count?: number;
+  split?: LiveSplitConfig | null;
+  part_paths?: string[];
+  record_dir?: string | null;
 }
 
 export interface LiveRecordCounts {
@@ -385,12 +388,19 @@ export interface LiveProgressEvent {
   updated_at: string;
 }
 
+/** 直播录制分段阈值：任一先达到即切分；两项均为空视为不分段。 */
+export interface LiveSplitConfig {
+  size_mb?: number | null;
+  duration_min?: number | null;
+}
+
 export interface CreateLiveRecordParams {
   url: string;
   filename?: string;
   output_dir?: string;
   extra_headers?: string;
   protocol?: LiveProtocol;
+  split?: LiveSplitConfig | null;
 }
 
 export function isLiveRecordActive(status: LiveRecordStatus): boolean {

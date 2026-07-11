@@ -44,6 +44,9 @@ export interface AppSettings {
   live_segment_timeout_secs: number;
   live_retry_hls_ms: number;
   live_retry_flv_ms: number;
+  live_split_enabled: boolean;
+  live_split_size_mb: number;
+  live_split_duration_min: number;
   history_page_size: number;
   close_to_tray: boolean;
 }

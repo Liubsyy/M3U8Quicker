@@ -1229,6 +1229,9 @@ pub async fn get_app_settings(
         live_segment_timeout_secs,
         live_retry_hls_ms,
         live_retry_flv_ms,
+        live_split_enabled: saved_settings.live_split_enabled,
+        live_split_size_mb: saved_settings.live_split_size_mb,
+        live_split_duration_min: saved_settings.live_split_duration_min,
         history_page_size: saved_settings.history_page_size,
         close_to_tray: state
             .close_to_tray
@@ -3908,6 +3911,23 @@ fn normalize_live_filename(name: String) -> String {
     }
 }
 
+/// 目录是否已被进行中的录制任务占用（避免两个活动任务落到同一目录）。
+fn live_record_dir_reserved(
+    live_records: &HashMap<DownloadId, LiveRecordTask>,
+    candidate: &Path,
+) -> bool {
+    live_records.values().any(|record| {
+        matches!(
+            record.status,
+            LiveRecordStatus::Recording | LiveRecordStatus::Paused
+        ) && record
+            .record_dir
+            .as_deref()
+            .map(|dir| Path::new(dir) == candidate)
+            .unwrap_or(false)
+    })
+}
+
 async fn spawn_live_worker(
     app_handle: &AppHandle,
     state: &AppState,
@@ -3987,6 +4007,24 @@ pub async fn create_live_record(
             .unwrap_or_else(|| derive_filename_from_url(&url)),
     );
 
+    // 归一化分段配置，并把本次选择回写为下次的默认值。
+    let split = params.split.and_then(|config| config.sanitized());
+    {
+        let split_for_settings = split;
+        persistence::update_settings(&app_handle, move |settings| {
+            settings.live_split_enabled = split_for_settings.is_some();
+            if let Some(split) = split_for_settings {
+                if let Some(size_mb) = split.size_mb {
+                    settings.live_split_size_mb = size_mb;
+                }
+                if let Some(duration_min) = split.duration_min {
+                    settings.live_split_duration_min = duration_min;
+                }
+            }
+        })
+        .await;
+    }
+
     tokio::fs::create_dir_all(&output_dir).await?;
 
     let created_at = Utc::now();
@@ -4008,50 +4046,75 @@ pub async fn create_live_record(
         temp_dir: None,
         hls_media_kind: None,
         segment_count: 0,
+        split,
+        part_paths: Vec::new(),
+        part_started_duration_ms: 0,
+        record_dir: None,
     };
 
     let task = match protocol {
         LiveProtocol::Flv => {
+            // 每个 FLV 录制任务独占一个目录 {output_dir}/{filename}/，
+            // 录制文件写入 flv/ 子目录，转 MP4 结果写入 mp4/ 子目录。
             let output_root = Path::new(&output_dir);
-            let mut live_records = state.live_records.lock().await;
-            let filename = live_recorder::pick_available_file_stem(
-                output_root,
-                &filename,
-                protocol.default_extension(),
-                |candidate| {
-                    live_records.values().any(|record| {
-                        matches!(
-                            record.status,
-                            LiveRecordStatus::Recording | LiveRecordStatus::Paused
-                        ) && record.protocol == LiveProtocol::Flv
-                            && record
-                                .file_path
-                                .as_deref()
-                                .map(|path| Path::new(path) == candidate)
-                                .unwrap_or(false)
-                    })
-                },
-            );
-            let output_path =
-                output_root.join(format!("{}.{}", filename, protocol.default_extension()));
-            let task = LiveRecordTask {
-                filename,
-                file_path: Some(output_path.to_string_lossy().to_string()),
-                ..task
-            };
-            live_records.insert(id.clone(), task.clone());
-            task
+            let extension = protocol.default_extension();
+            {
+                let mut live_records = state.live_records.lock().await;
+                let record_dir =
+                    live_recorder::pick_available_record_dir(output_root, &filename, |candidate| {
+                        live_record_dir_reserved(&live_records, candidate)
+                    });
+                let dir_name = record_dir
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| filename.clone());
+                let flv_dir = record_dir.join("flv");
+                let (output_path, part_paths) = if split.is_some() {
+                    let part_path =
+                        live_recorder::live_part_file_path(&flv_dir, &dir_name, 1, extension);
+                    let part_paths = vec![part_path.to_string_lossy().to_string()];
+                    (part_path, part_paths)
+                } else {
+                    (flv_dir.join(format!("{}.{}", dir_name, extension)), Vec::new())
+                };
+                // 先建目录再登记任务，目录创建失败不留下孤儿任务。
+                tokio::fs::create_dir_all(record_dir.join("flv")).await?;
+                tokio::fs::create_dir_all(record_dir.join("mp4")).await?;
+                let task = LiveRecordTask {
+                    filename: dir_name,
+                    file_path: Some(output_path.to_string_lossy().to_string()),
+                    part_paths,
+                    record_dir: Some(record_dir.to_string_lossy().to_string()),
+                    ..task
+                };
+                live_records.insert(id.clone(), task.clone());
+                task
+            }
         }
         LiveProtocol::Hls => {
-            let temp_dir = live_recorder::live_hls_temp_dir(&task);
-            // Pre-create the working directory so listing UIs can find it immediately.
-            tokio::fs::create_dir_all(&temp_dir).await?;
+            // 与 FLV 一致：任务独占目录，分片直接录到 m3u8/ 子目录（完成时无需搬移），
+            // 转 MP4 结果输出到 mp4/ 子目录。
+            let output_root = Path::new(&output_dir);
+            let mut live_records = state.live_records.lock().await;
+            let record_dir =
+                live_recorder::pick_available_record_dir(output_root, &filename, |candidate| {
+                    live_record_dir_reserved(&live_records, candidate)
+                });
+            let dir_name = record_dir
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| filename.clone());
+            let m3u8_dir = record_dir.join("m3u8");
+            // 先建目录再登记任务，目录创建失败不留下孤儿任务。
+            tokio::fs::create_dir_all(&m3u8_dir).await?;
+            tokio::fs::create_dir_all(record_dir.join("mp4")).await?;
             let task = LiveRecordTask {
+                filename: dir_name,
                 file_path: None,
-                temp_dir: Some(temp_dir.to_string_lossy().to_string()),
+                temp_dir: Some(m3u8_dir.to_string_lossy().to_string()),
+                record_dir: Some(record_dir.to_string_lossy().to_string()),
                 ..task
             };
-            let mut live_records = state.live_records.lock().await;
             live_records.insert(id.clone(), task.clone());
             task
         }
@@ -4139,7 +4202,7 @@ pub async fn cancel_live_record(
 
     // No worker running (e.g. Paused) — flip state directly.
     let mut snapshot = None;
-    let (file_to_delete, dir_to_delete) = {
+    let (file_to_delete, dir_to_delete, parts_to_delete, record_dir_to_delete) = {
         let mut map = state.live_records.lock().await;
         if let Some(task) = map.get_mut(&id) {
             task.status = LiveRecordStatus::Cancelled;
@@ -4148,17 +4211,28 @@ pub async fn cancel_live_record(
             task.completed_at = Some(now);
             let path = task.file_path.clone();
             let dir = task.temp_dir.clone();
+            let parts = std::mem::take(&mut task.part_paths);
+            let record_dir = task.record_dir.take();
             task.file_path = None;
             task.temp_dir = None;
             snapshot = Some(task.clone());
-            (path, dir)
+            (path, dir, parts, record_dir)
         } else {
-            (None, None)
+            (None, None, Vec::new(), None)
         }
     };
 
-    if let Some(path) = file_to_delete {
-        let _ = tokio::fs::remove_file(&path).await;
+    if let Some(record_dir) = record_dir_to_delete {
+        // FLV 新布局：任务独占目录，整体删除。
+        let _ = tokio::fs::remove_dir_all(&record_dir).await;
+    } else {
+        if let Some(path) = file_to_delete {
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+        // FLV 旧布局分段为绝对路径；HLS 分段播放列表随 temp_dir 一并删除。
+        for part in parts_to_delete {
+            let _ = tokio::fs::remove_file(&part).await;
+        }
     }
     if let Some(dir) = dir_to_delete {
         let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -4187,20 +4261,25 @@ pub async fn remove_live_record(
         signal.trigger(LiveStopReason::Cancel).await;
     }
 
-    let (file_path, temp_dir, protocol) = {
+    let (file_path, temp_dir, protocol, part_paths, record_dir) = {
         let mut map = state.live_records.lock().await;
         match map.remove(&id) {
             Some(task) => (
                 task.file_path.clone(),
                 task.temp_dir.clone(),
                 Some(task.protocol),
+                task.part_paths.clone(),
+                task.record_dir.clone(),
             ),
-            None => (None, None, None),
+            None => (None, None, None, Vec::new(), None),
         }
     };
 
     if delete_file {
-        if let Some(path) = file_path.as_ref() {
+        if let Some(record_dir) = record_dir.as_ref() {
+            // FLV 新布局：任务独占目录（含 flv/ 与 mp4/），整体删除。
+            let _ = tokio::fs::remove_dir_all(record_dir).await;
+        } else if let Some(path) = file_path.as_ref() {
             match protocol {
                 Some(LiveProtocol::Hls) => {
                     // file_path for HLS is index.m3u8 inside the recorded directory.
@@ -4214,6 +4293,12 @@ pub async fn remove_live_record(
                 _ => {
                     let _ = tokio::fs::remove_file(path).await;
                 }
+            }
+        }
+        // FLV 旧布局分段为绝对路径；HLS 分段播放列表位于录制目录内，随目录删除。
+        if record_dir.is_none() && !matches!(protocol, Some(LiveProtocol::Hls)) {
+            for part in &part_paths {
+                let _ = tokio::fs::remove_file(part).await;
             }
         }
         if let Some(dir) = temp_dir {
@@ -4265,15 +4350,16 @@ pub async fn get_live_records_page(
     persistence::get_live_records_page(&app_handle, group, page, page_size).await
 }
 
-/// Convert a finished HLS live recording's local m3u8 (with TS or fMP4 segments)
-/// into a single MP4 file in the task's output directory. This is independent of
+/// Convert a finished live recording into MP4 file(s). This is independent of
 /// the global "ts -> mp4" toggle (the user explicitly confirms after stop).
+/// 分段任务逐段转换，返回全部产物路径；非分段返回单元素。
+/// HLS 输出到任务的保存目录；FLV 新布局输出到 {record_dir}/mp4，旧布局输出到源文件同目录。
 #[tauri::command]
-pub async fn convert_live_hls_to_mp4(
+pub async fn convert_live_record_to_mp4(
     app_handle: AppHandle,
     state: State<'_, AppState>,
     id: String,
-) -> Result<String, AppError> {
+) -> Result<Vec<String>, AppError> {
     let task = {
         let map = state.live_records.lock().await;
         map.get(&id).cloned()
@@ -4281,12 +4367,20 @@ pub async fn convert_live_hls_to_mp4(
     let Some(task) = task else {
         return Err(AppError::InvalidInput("直播任务不存在".into()));
     };
-    if !matches!(task.protocol, LiveProtocol::Hls) {
-        return Err(AppError::InvalidInput("仅 HLS 录制支持此转换".into()));
-    }
     if !matches!(task.status, LiveRecordStatus::Recorded) {
         return Err(AppError::InvalidInput("录制尚未完成，无法转换".into()));
     }
+    match task.protocol {
+        LiveProtocol::Hls => convert_live_hls_task_to_mp4(&app_handle, &state, &task).await,
+        LiveProtocol::Flv => convert_live_flv_task_to_mp4(&app_handle, &state, &task).await,
+    }
+}
+
+async fn convert_live_hls_task_to_mp4(
+    app_handle: &AppHandle,
+    state: &State<'_, AppState>,
+    task: &LiveRecordTask,
+) -> Result<Vec<String>, AppError> {
     let playlist_path = task
         .file_path
         .clone()
@@ -4299,22 +4393,128 @@ pub async fn convert_live_hls_to_mp4(
         )));
     }
 
-    let output_dir = PathBuf::from(&task.output_dir);
+    // 新布局输出到 {record_dir}/mp4；旧布局输出到任务保存目录。
+    let output_dir = match task.record_dir.as_deref() {
+        Some(record_dir) => Path::new(record_dir).join("mp4"),
+        None => PathBuf::from(&task.output_dir),
+    };
     tokio::fs::create_dir_all(&output_dir).await?;
-    let preferred_output = output_dir.join(format!("{}.mp4", task.filename));
-    let final_output = downloader::resolve_available_file_path(&preferred_output);
 
-    let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle).await;
+    // 非分段：转完整 index.m3u8；分段：逐个 part 播放列表转换。
+    let sources: Vec<(PathBuf, String)> = if task.part_paths.is_empty() {
+        vec![(playlist_path.clone(), task.filename.clone())]
+    } else {
+        let playlist_dir = playlist_path.parent().ok_or_else(|| {
+            AppError::InvalidInput("找不到直播录制目录".into())
+        })?;
+        task.part_paths
+            .iter()
+            .enumerate()
+            .map(|(index, part_name)| {
+                (
+                    playlist_dir.join(part_name),
+                    format!("{}_part{:03}", task.filename, index + 1),
+                )
+            })
+            .collect()
+    };
+
+    let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(app_handle).await;
     let ffmpeg_enabled = *state.ffmpeg_enabled.lock().await;
-    downloader::convert_local_m3u8_to_mp4_file(
-        &playlist_path,
-        &final_output,
-        ffmpeg_enabled,
-        ffmpeg_path.as_deref(),
-    )
-    .await?;
 
-    Ok(final_output.to_string_lossy().to_string())
+    let mut outputs = Vec::with_capacity(sources.len());
+    for (source_playlist, output_stem) in sources {
+        if !source_playlist.is_file() {
+            return Err(AppError::InvalidInput(format!(
+                "找不到分段播放列表：{}",
+                source_playlist.display()
+            )));
+        }
+        let preferred_output = output_dir.join(format!("{}.mp4", output_stem));
+        let final_output = downloader::resolve_available_file_path(&preferred_output);
+        downloader::convert_local_m3u8_to_mp4_file(
+            &source_playlist,
+            &final_output,
+            ffmpeg_enabled,
+            ffmpeg_path.as_deref(),
+        )
+        .await?;
+        outputs.push(final_output.to_string_lossy().to_string());
+    }
+
+    Ok(outputs)
+}
+
+async fn convert_live_flv_task_to_mp4(
+    app_handle: &AppHandle,
+    state: &State<'_, AppState>,
+    task: &LiveRecordTask,
+) -> Result<Vec<String>, AppError> {
+    // 非分段：转单个 FLV；分段：逐个 part 转换。
+    let sources: Vec<(PathBuf, String)> = if task.part_paths.is_empty() {
+        let file_path = task
+            .file_path
+            .clone()
+            .map(PathBuf::from)
+            .ok_or_else(|| AppError::InvalidInput("找不到录制文件".into()))?;
+        vec![(file_path, task.filename.clone())]
+    } else {
+        task.part_paths
+            .iter()
+            .enumerate()
+            .map(|(index, part_path)| {
+                (
+                    PathBuf::from(part_path),
+                    format!("{}_part{:03}", task.filename, index + 1),
+                )
+            })
+            .collect()
+    };
+
+    let ffmpeg_enabled = *state.ffmpeg_enabled.lock().await;
+    if !ffmpeg_enabled {
+        return Err(AppError::InvalidInput(
+            "FFmpeg 开关未开启，请先在设置 -> FFmpeg 中开启".to_string(),
+        ));
+    }
+    let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(app_handle)
+        .await
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "未检测到可用的 FFmpeg，请先在设置 -> FFmpeg 中配置或下载 FFmpeg".to_string(),
+            )
+        })?;
+
+    // 新布局输出到 {record_dir}/mp4；旧布局输出到源文件所在目录。
+    let mp4_dir = task
+        .record_dir
+        .as_deref()
+        .map(|dir| Path::new(dir).join("mp4"));
+
+    let mut outputs = Vec::with_capacity(sources.len());
+    for (source, output_stem) in sources {
+        if !source.is_file() {
+            return Err(AppError::InvalidInput(format!(
+                "找不到录制文件：{}",
+                source.display()
+            )));
+        }
+        let output_dir = match mp4_dir.clone() {
+            Some(dir) => dir,
+            None => source
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(&task.output_dir)),
+        };
+        tokio::fs::create_dir_all(&output_dir).await?;
+        let preferred_output = output_dir.join(format!("{}.mp4", output_stem));
+        let final_output = downloader::resolve_available_file_path(&preferred_output);
+        crate::ffmpeg::convert_media_file(&ffmpeg_path, &source, &final_output, "mp4", "quick")
+            .await?;
+        outputs.push(final_output.to_string_lossy().to_string());
+    }
+
+    Ok(outputs)
 }
 
 fn live_status_to_download_status(status: &LiveRecordStatus) -> DownloadStatus {

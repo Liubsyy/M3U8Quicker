@@ -1,8 +1,19 @@
 import { useEffect, useState } from "react";
-import { Button, Form, Input, message, Modal, Select, Space } from "antd";
+import {
+  Button,
+  Form,
+  Input,
+  InputNumber,
+  message,
+  Modal,
+  Select,
+  Space,
+  Switch,
+} from "antd";
 import { FolderOpenOutlined } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  getAppSettings,
   getDefaultDownloadDir,
   inspectHlsTracks,
   setDefaultDownloadDir,
@@ -35,7 +46,13 @@ interface FormValues {
   filename?: string;
   extra_headers?: string;
   protocol: LiveProtocol;
+  split_enabled: boolean;
+  split_size_mb?: number | null;
+  split_duration_min?: number | null;
 }
+
+const MIN_SPLIT_SIZE_MB = 10;
+const MIN_SPLIT_DURATION_MIN = 1;
 
 export function NewLiveRecordModal({
   open: isOpen,
@@ -52,6 +69,7 @@ export function NewLiveRecordModal({
   const [submitting, setSubmitting] = useState(false);
   const [outputDir, setOutputDir] = useState("");
   const [filenameTouched, setFilenameTouched] = useState(false);
+  const splitEnabled = Form.useWatch("split_enabled", form) ?? false;
 
   useEffect(() => {
     if (isOpen) {
@@ -71,6 +89,16 @@ export function NewLiveRecordModal({
         extra_headers: initialExtraHeaders ?? "",
         filename: filename || undefined,
       });
+      // 分段设置默认取上次录制的选择（保存在全局设置里）。
+      getAppSettings()
+        .then((settings) => {
+          form.setFieldsValue({
+            split_enabled: settings.live_split_enabled,
+            split_size_mb: settings.live_split_size_mb,
+            split_duration_min: settings.live_split_duration_min,
+          });
+        })
+        .catch(() => undefined);
     }
   }, [
     form,
@@ -112,6 +140,17 @@ export function NewLiveRecordModal({
         return;
       }
 
+      let split: CreateLiveRecordParams["split"];
+      if (values.split_enabled) {
+        const sizeMb = values.split_size_mb ?? null;
+        const durationMin = values.split_duration_min ?? null;
+        if (!sizeMb && !durationMin) {
+          message.error("启用分段录制时，请至少设置按大小或按时长其中一项");
+          return;
+        }
+        split = { size_mb: sizeMb, duration_min: durationMin };
+      }
+
       setSubmitting(true);
       const params: CreateLiveRecordParams = {
         url,
@@ -119,6 +158,7 @@ export function NewLiveRecordModal({
         output_dir: outputDir || undefined,
         extra_headers: values.extra_headers?.trim() || undefined,
         protocol: values.protocol ?? "flv",
+        split,
       };
 
       if (params.protocol === "hls") {
@@ -175,7 +215,7 @@ export function NewLiveRecordModal({
       <Form
         layout="vertical"
         form={form}
-        initialValues={{ protocol: "flv" }}
+        initialValues={{ protocol: "flv", split_enabled: false }}
         onFinish={() => void handleSubmit()}
       >
         <Form.Item
@@ -211,6 +251,35 @@ export function NewLiveRecordModal({
               选择
             </Button>
           </Space.Compact>
+        </Form.Item>
+        <Form.Item label="分段录制（任一阈值先达到即切分，留空表示该维度不限制）">
+          <Space align="center" wrap>
+            <Form.Item name="split_enabled" valuePropName="checked" noStyle>
+              <Switch checkedChildren="开" unCheckedChildren="关" />
+            </Form.Item>
+            <Form.Item name="split_size_mb" noStyle>
+              <InputNumber
+                min={MIN_SPLIT_SIZE_MB}
+                step={100}
+                precision={0}
+                disabled={!splitEnabled}
+                placeholder="按大小"
+                addonAfter="MB"
+                style={{ width: 160 }}
+              />
+            </Form.Item>
+            <Form.Item name="split_duration_min" noStyle>
+              <InputNumber
+                min={MIN_SPLIT_DURATION_MIN}
+                step={10}
+                precision={0}
+                disabled={!splitEnabled}
+                placeholder="按时长"
+                addonAfter="分钟"
+                style={{ width: 160 }}
+              />
+            </Form.Item>
+          </Space>
         </Form.Item>
         <Form.Item label="附加 Header" name="extra_headers">
           <Input.TextArea

@@ -317,6 +317,12 @@ pub const MIN_LIVE_RETRY_HLS_MS: u64 = 1;
 pub const DEFAULT_LIVE_RETRY_FLV_MS: u64 = 300;
 pub const MIN_LIVE_RETRY_FLV_MS: u64 = 1;
 
+// 直播录制分段参数。仅约束下限，防止过小阈值导致疯狂切分。
+pub const DEFAULT_LIVE_SPLIT_SIZE_MB: u64 = 1024;
+pub const MIN_LIVE_SPLIT_SIZE_MB: u64 = 10;
+pub const DEFAULT_LIVE_SPLIT_DURATION_MIN: u64 = 60;
+pub const MIN_LIVE_SPLIT_DURATION_MIN: u64 = 1;
+
 pub fn normalize_download_concurrency(value: usize) -> usize {
     value.clamp(MIN_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY)
 }
@@ -394,6 +400,14 @@ pub fn normalize_live_retry_flv_ms(value: u64) -> u64 {
     value.max(MIN_LIVE_RETRY_FLV_MS)
 }
 
+pub fn normalize_live_split_size_mb(value: u64) -> u64 {
+    value.max(MIN_LIVE_SPLIT_SIZE_MB)
+}
+
+pub fn normalize_live_split_duration_min(value: u64) -> u64 {
+    value.max(MIN_LIVE_SPLIT_DURATION_MIN)
+}
+
 impl Default for ProxySettings {
     fn default() -> Self {
         let default_url = if cfg!(target_os = "macos") {
@@ -445,6 +459,12 @@ pub struct AppSettings {
     pub live_retry_hls_ms: u64,
     #[serde(default = "default_live_retry_flv_ms")]
     pub live_retry_flv_ms: u64,
+    #[serde(default)]
+    pub live_split_enabled: bool,
+    #[serde(default = "default_live_split_size_mb")]
+    pub live_split_size_mb: u64,
+    #[serde(default = "default_live_split_duration_min")]
+    pub live_split_duration_min: u64,
     #[serde(default = "default_history_page_size")]
     pub history_page_size: usize,
     #[serde(default = "default_close_to_tray")]
@@ -476,6 +496,9 @@ impl Default for AppSettings {
             live_segment_timeout_secs: DEFAULT_LIVE_SEGMENT_TIMEOUT_SECS,
             live_retry_hls_ms: DEFAULT_LIVE_RETRY_HLS_MS,
             live_retry_flv_ms: DEFAULT_LIVE_RETRY_FLV_MS,
+            live_split_enabled: false,
+            live_split_size_mb: DEFAULT_LIVE_SPLIT_SIZE_MB,
+            live_split_duration_min: DEFAULT_LIVE_SPLIT_DURATION_MIN,
             history_page_size: DEFAULT_HISTORY_PAGE_SIZE,
             close_to_tray: true,
         }
@@ -530,6 +553,14 @@ fn default_live_retry_hls_ms() -> u64 {
     DEFAULT_LIVE_RETRY_HLS_MS
 }
 
+fn default_live_split_size_mb() -> u64 {
+    DEFAULT_LIVE_SPLIT_SIZE_MB
+}
+
+fn default_live_split_duration_min() -> u64 {
+    DEFAULT_LIVE_SPLIT_DURATION_MIN
+}
+
 fn default_live_retry_flv_ms() -> u64 {
     DEFAULT_LIVE_RETRY_FLV_MS
 }
@@ -559,6 +590,9 @@ impl AppSettings {
             normalize_live_segment_timeout_secs(self.live_segment_timeout_secs);
         self.live_retry_hls_ms = normalize_live_retry_hls_ms(self.live_retry_hls_ms);
         self.live_retry_flv_ms = normalize_live_retry_flv_ms(self.live_retry_flv_ms);
+        self.live_split_size_mb = normalize_live_split_size_mb(self.live_split_size_mb);
+        self.live_split_duration_min =
+            normalize_live_split_duration_min(self.live_split_duration_min);
         self.history_page_size = normalize_history_page_size(self.history_page_size);
     }
 }
@@ -770,6 +804,39 @@ pub fn live_group_for_status(status: &LiveRecordStatus) -> LiveGroup {
     }
 }
 
+/// 直播录制分段阈值。两个维度均为可选，任一先达到即切分；均为 None 视为不分段。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LiveSplitConfig {
+    #[serde(default)]
+    pub size_mb: Option<u64>,
+    #[serde(default)]
+    pub duration_min: Option<u64>,
+}
+
+impl LiveSplitConfig {
+    /// 归一化阈值下限；两个维度都为空则返回 None（视为不分段）。
+    pub fn sanitized(self) -> Option<Self> {
+        let size_mb = self.size_mb.map(normalize_live_split_size_mb);
+        let duration_min = self.duration_min.map(normalize_live_split_duration_min);
+        if size_mb.is_none() && duration_min.is_none() {
+            None
+        } else {
+            Some(Self {
+                size_mb,
+                duration_min,
+            })
+        }
+    }
+
+    pub fn size_bytes(&self) -> Option<u64> {
+        self.size_mb.map(|mb| mb.saturating_mul(1024 * 1024))
+    }
+
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.duration_min.map(|min| min.saturating_mul(60 * 1000))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveRecordTask {
     pub id: DownloadId,
@@ -803,6 +870,19 @@ pub struct LiveRecordTask {
     /// HLS only: number of segments captured so far.
     #[serde(default)]
     pub segment_count: u64,
+    /// 分段录制配置；None 表示不分段（与旧任务兼容）。
+    #[serde(default)]
+    pub split: Option<LiveSplitConfig>,
+    /// 分段产物列表。FLV 为各 part 文件绝对路径；HLS 为各 part 播放列表文件名（相对录制目录）。
+    #[serde(default)]
+    pub part_paths: Vec<String>,
+    /// 分段录制：当前分段开始时的任务累计时长（毫秒），跨断线重连/暂停恢复保持分段时长准确。
+    #[serde(default)]
+    pub part_started_duration_ms: u64,
+    /// 任务独占的录制目录 `{output_dir}/{filename}`：FLV 内含 flv/ 与 mp4/ 子目录，
+    /// HLS 内含 m3u8/ 与 mp4/ 子目录。None 表示旧版布局（文件直接位于 output_dir 下）。
+    #[serde(default)]
+    pub record_dir: Option<String>,
 }
 
 impl LiveRecordTask {
@@ -828,6 +908,8 @@ pub struct CreateLiveRecordParams {
     pub extra_headers: Option<String>,
     #[serde(default)]
     pub protocol: Option<LiveProtocol>,
+    #[serde(default)]
+    pub split: Option<LiveSplitConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -852,6 +934,12 @@ pub struct LiveRecordSummary {
     pub hls_media_kind: Option<HlsMediaKind>,
     #[serde(default)]
     pub segment_count: u64,
+    #[serde(default)]
+    pub split: Option<LiveSplitConfig>,
+    #[serde(default)]
+    pub part_paths: Vec<String>,
+    #[serde(default)]
+    pub record_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -16,7 +16,8 @@ use url::Url;
 use crate::error::AppError;
 use crate::models::{
     live_group_for_status, DownloadId, HlsMediaKind, LiveProgressEvent, LiveProtocol,
-    LiveRecordStatus, LiveRecordTask, RequestHeaders, DEFAULT_HLS_PLAYLIST_TIMEOUT_SECS,
+    LiveRecordStatus, LiveRecordTask, LiveSplitConfig, RequestHeaders,
+    DEFAULT_HLS_PLAYLIST_TIMEOUT_SECS,
     DEFAULT_HLS_REFRESH_MAX_MS, DEFAULT_HLS_REFRESH_MIN_MS, DEFAULT_LIVE_RETRY_FLV_MS,
     DEFAULT_LIVE_RETRY_HLS_MS, DEFAULT_LIVE_SEGMENT_TIMEOUT_SECS,
 };
@@ -301,6 +302,147 @@ impl FlvBoundaryDedupe {
     }
 }
 
+// 分段阈值达到后等待关键帧的宽限比例：超出阈值 20% 仍无关键帧则强制切分，
+// 防止纯音频等无关键帧的流永远不切。
+const FLV_SPLIT_FORCE_MARGIN_DIVISOR: u64 = 5;
+
+/// 默认 FLV 文件头（音频 + 视频）+ PreviousTagSize0，用于新分段文件开头。
+/// 仅在未捕获到原始流文件头时（例如恢复录制的连接）作为兜底。
+const FLV_DEFAULT_FILE_HEADER: [u8; FLV_HEADER_SKIP_LEN] = [
+    b'F', b'L', b'V', 0x01, 0x05, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// Cache of the latest FLV preamble tags (onMetaData script tag + AVC/AAC
+/// sequence headers) so a new split part can start as a standalone playable
+/// FLV file. Observed at parse time (before boundary dedupe) so reconnect
+/// preambles that get deduped away still refresh the cache.
+#[derive(Default)]
+struct FlvPreambleCache {
+    file_header: Option<[u8; FLV_HEADER_SKIP_LEN]>,
+    script_tag: Option<Vec<u8>>,
+    video_seq_header: Option<Vec<u8>>,
+    audio_seq_header: Option<Vec<u8>>,
+}
+
+impl FlvPreambleCache {
+    fn observe(&mut self, tag: &FlvTag) {
+        match tag.fingerprint.tag_type {
+            18 => self.script_tag = Some(tag.bytes.clone()),
+            9 => {
+                if flv_tag_payload(&tag.bytes)
+                    .map(is_video_sequence_header)
+                    .unwrap_or(false)
+                {
+                    self.video_seq_header = Some(tag.bytes.clone());
+                }
+            }
+            8 => {
+                if flv_tag_payload(&tag.bytes)
+                    .map(is_aac_sequence_header)
+                    .unwrap_or(false)
+                {
+                    self.audio_seq_header = Some(tag.bytes.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn part_header_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(
+            self.file_header
+                .as_ref()
+                .unwrap_or(&FLV_DEFAULT_FILE_HEADER),
+        );
+        for tag in [&self.script_tag, &self.video_seq_header, &self.audio_seq_header]
+            .into_iter()
+            .flatten()
+        {
+            bytes.extend_from_slice(tag);
+        }
+        bytes
+    }
+}
+
+/// 视频关键帧（帧类型 1）且不是 sequence header 才作为分段切换点。
+fn is_flv_video_keyframe(tag: &FlvTag) -> bool {
+    if tag.fingerprint.tag_type != 9 {
+        return false;
+    }
+    let Some(payload) = flv_tag_payload(&tag.bytes) else {
+        return false;
+    };
+    let Some(&first) = payload.first() else {
+        return false;
+    };
+    if is_video_sequence_header(payload) {
+        return false;
+    }
+    if first & 0x80 != 0 {
+        // enhanced RTMP：帧类型是去掉 IsExHeader 位后的低 3 位。
+        return (first >> 4) & 0x07 == 1;
+    }
+    first >> 4 == 1
+}
+
+/// FLV 分段录制的跨连接运行时状态。由 `run_live_record` 持有，
+/// 断线重连（重新进入 `run_flv_record`）时不丢失前导 tag 缓存和分段序号。
+struct FlvSplitRuntime {
+    config: LiveSplitConfig,
+    output_dir: PathBuf,
+    base_name: String,
+    part_index: u64,
+    preamble: FlvPreambleCache,
+}
+
+impl FlvSplitRuntime {
+    fn should_rotate(&self, part_bytes: u64, part_duration_ms: u64, tag: &FlvTag) -> bool {
+        let size_limit = self.config.size_bytes();
+        let duration_limit = self.config.duration_ms();
+        let over = size_limit.map(|limit| part_bytes >= limit).unwrap_or(false)
+            || duration_limit
+                .map(|limit| part_duration_ms >= limit)
+                .unwrap_or(false);
+        if !over {
+            return false;
+        }
+        if is_flv_video_keyframe(tag) {
+            return true;
+        }
+        size_limit
+            .map(|limit| part_bytes >= limit + limit / FLV_SPLIT_FORCE_MARGIN_DIVISOR)
+            .unwrap_or(false)
+            || duration_limit
+                .map(|limit| part_duration_ms >= limit + limit / FLV_SPLIT_FORCE_MARGIN_DIVISOR)
+                .unwrap_or(false)
+    }
+
+    /// 选出下一个分段路径；跳过磁盘上已存在的同名文件（残留文件不覆盖）。
+    fn next_part_path(&mut self) -> PathBuf {
+        loop {
+            self.part_index += 1;
+            let candidate = live_part_file_path(
+                &self.output_dir,
+                &self.base_name,
+                self.part_index,
+                LiveProtocol::Flv.default_extension(),
+            );
+            if !candidate.exists() {
+                return candidate;
+            }
+            if self.part_index > 99_999 {
+                return self.output_dir.join(format!(
+                    "{}_part_{}.{}",
+                    self.base_name,
+                    Utc::now().timestamp_millis(),
+                    LiveProtocol::Flv.default_extension()
+                ));
+            }
+        }
+    }
+}
+
 /// Outcome of one recording session when it ended cleanly without cancel.
 /// Cancellation paths surface as `AppError::Cancelled` and are interpreted via
 /// the stop reason stored in `LiveStopSignal`.
@@ -315,31 +457,36 @@ pub fn live_output_file_path(task: &LiveRecordTask) -> PathBuf {
     Path::new(&task.output_dir).join(format!("{}.{}", task.filename, extension))
 }
 
-/// Pick an available file stem under `output_dir`; otherwise append `_N`.
-pub fn pick_available_file_stem(
+/// Build the absolute path of split part `index` (1-based): `{base}_partNNN.{ext}`.
+pub fn live_part_file_path(
+    output_dir: &Path,
+    base_name: &str,
+    index: u64,
+    extension: &str,
+) -> PathBuf {
+    output_dir.join(format!("{}_part{:03}.{}", base_name, index, extension))
+}
+
+/// 为 FLV 录制任务挑选可用的独占录制目录 `{output_dir}/{filename}`；
+/// 已存在或被其他进行中任务占用时追加 `_N`。
+pub fn pick_available_record_dir(
     output_dir: &Path,
     filename: &str,
-    extension: &str,
     is_reserved: impl Fn(&Path) -> bool,
-) -> String {
-    let candidate_path =
-        |candidate_name: &str| output_dir.join(format!("{}.{}", candidate_name, extension));
-
-    let initial = candidate_path(filename);
+) -> PathBuf {
+    let initial = output_dir.join(filename);
     if !initial.exists() && !is_reserved(&initial) {
-        return filename.to_string();
+        return initial;
     }
-
     let mut counter: u32 = 1;
     loop {
-        let candidate_name = format!("{}_{}", filename, counter);
-        let candidate = candidate_path(&candidate_name);
+        let candidate = output_dir.join(format!("{}_{}", filename, counter));
         if !candidate.exists() && !is_reserved(&candidate) {
-            return candidate_name;
+            return candidate;
         }
         counter += 1;
         if counter > 9999 {
-            return format!("{}_{}", filename, Utc::now().timestamp_millis());
+            return output_dir.join(format!("{}_{}", filename, Utc::now().timestamp_millis()));
         }
     }
 }
@@ -409,6 +556,27 @@ pub async fn run_live_record(
     if protocol == LiveProtocol::Flv {
         speed_tracker.record(initial_bytes);
     }
+    // FLV 分段状态跨断线重连保持（前导 tag 缓存、分段序号）。
+    // 分段文件写在当前 file_path 所在目录（新布局为 {record_dir}/flv，旧布局为 output_dir）。
+    let mut flv_split_runtime = if protocol == LiveProtocol::Flv {
+        let parts_dir = task
+            .file_path
+            .as_ref()
+            .map(PathBuf::from)
+            .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from(&task.output_dir));
+        task.split
+            .and_then(|config| config.sanitized())
+            .map(|config| FlvSplitRuntime {
+                config,
+                output_dir: parts_dir,
+                base_name: task.filename.clone(),
+                part_index: task.part_paths.len().max(1) as u64,
+                preamble: FlvPreambleCache::default(),
+            })
+    } else {
+        None
+    };
     let final_status = loop {
         let (current_bytes, current_duration_ms) = current_live_record_counters(
             &live_records,
@@ -420,7 +588,14 @@ pub async fn run_live_record(
 
         let result = match protocol {
             LiveProtocol::Flv => {
-                let output_path = live_output_file_path(&task);
+                // 分段时 file_path 会随分段轮换更新，每次连接都取最新值。
+                let output_path = {
+                    let map = live_records.lock().await;
+                    map.get(&task_id)
+                        .and_then(|task| task.file_path.clone())
+                        .map(PathBuf::from)
+                }
+                .unwrap_or_else(|| live_output_file_path(&task));
                 run_flv_record(
                     app_handle.clone(),
                     live_records.clone(),
@@ -434,6 +609,7 @@ pub async fn run_live_record(
                     current_duration_ms,
                     append_next,
                     &mut speed_tracker,
+                    flv_split_runtime.as_mut(),
                 )
                 .await
             }
@@ -523,13 +699,31 @@ pub async fn run_live_record(
     if let (Some(status), Some(mut task)) = (final_status.clone(), task_snapshot_for_finalize) {
         // Protocol-specific finalization on disk.
         match task.protocol {
-            LiveProtocol::Flv => {
-                if matches!(status, LiveRecordStatus::Cancelled) {
-                    if let Some(path) = task.file_path.as_ref() {
-                        let _ = tokio::fs::remove_file(path).await;
+            LiveProtocol::Flv => match status {
+                LiveRecordStatus::Cancelled => {
+                    if let Some(record_dir) = task.record_dir.as_ref() {
+                        // 新布局：任务独占目录，整体删除。
+                        let _ = tokio::fs::remove_dir_all(record_dir).await;
+                    } else {
+                        if let Some(path) = task.file_path.as_ref() {
+                            let _ = tokio::fs::remove_file(path).await;
+                        }
+                        for part in &task.part_paths {
+                            let _ = tokio::fs::remove_file(part).await;
+                        }
+                    }
+                    task.file_path = None;
+                    task.part_paths.clear();
+                    task.record_dir = None;
+                }
+                LiveRecordStatus::Recorded => {
+                    // 分段任务完成后 file_path 指回第一段，双击播放默认播第一段。
+                    if let Some(first_part) = task.part_paths.first() {
+                        task.file_path = Some(first_part.clone());
                     }
                 }
-            }
+                _ => {}
+            },
             LiveProtocol::Hls => {
                 let temp_dir = task
                     .temp_dir
@@ -548,38 +742,65 @@ pub async fn run_live_record(
                                     err
                                 );
                             }
-                            let final_dir = pick_available_dir(
-                                &PathBuf::from(&task.output_dir),
-                                &task.filename,
-                            );
-                            match tokio::fs::rename(&temp_dir, &final_dir).await {
-                                Ok(()) => {
-                                    let final_playlist = final_dir.join("index.m3u8");
-                                    task.file_path =
-                                        Some(final_playlist.to_string_lossy().to_string());
-                                    task.temp_dir = None;
-                                }
-                                Err(err) => {
+                            for part_name in &task.part_paths {
+                                let part_playlist = temp_dir.join(part_name);
+                                if let Err(err) =
+                                    finalize_local_hls_playlist(&part_playlist).await
+                                {
                                     eprintln!(
-                                        "[live_recorder] rename {} -> {} failed: {}",
-                                        temp_dir.display(),
-                                        final_dir.display(),
+                                        "[live_recorder] finalize part playlist {} failed: {}",
+                                        part_playlist.display(),
                                         err
                                     );
-                                    // Fall back to keeping the temp dir; expose the playlist path inside it.
-                                    let playlist = temp_dir.join("index.m3u8");
-                                    if playlist.exists() {
+                                }
+                            }
+                            if task.record_dir.is_some() {
+                                // 新布局：分片已直接录在 {record_dir}/m3u8，无需搬移。
+                                let playlist = temp_dir.join("index.m3u8");
+                                task.file_path = Some(playlist.to_string_lossy().to_string());
+                                task.temp_dir = None;
+                            } else {
+                                // 旧布局：working dir 改名为正式目录。
+                                let final_dir = pick_available_dir(
+                                    &PathBuf::from(&task.output_dir),
+                                    &task.filename,
+                                );
+                                match tokio::fs::rename(&temp_dir, &final_dir).await {
+                                    Ok(()) => {
+                                        let final_playlist = final_dir.join("index.m3u8");
                                         task.file_path =
-                                            Some(playlist.to_string_lossy().to_string());
+                                            Some(final_playlist.to_string_lossy().to_string());
+                                        task.temp_dir = None;
+                                    }
+                                    Err(err) => {
+                                        eprintln!(
+                                            "[live_recorder] rename {} -> {} failed: {}",
+                                            temp_dir.display(),
+                                            final_dir.display(),
+                                            err
+                                        );
+                                        // Fall back to keeping the temp dir; expose the playlist path inside it.
+                                        let playlist = temp_dir.join("index.m3u8");
+                                        if playlist.exists() {
+                                            task.file_path =
+                                                Some(playlist.to_string_lossy().to_string());
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                     LiveRecordStatus::Cancelled | LiveRecordStatus::Failed(_) => {
-                        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+                        if let Some(record_dir) = task.record_dir.as_ref() {
+                            // 新布局：任务独占目录，整体删除。
+                            let _ = tokio::fs::remove_dir_all(record_dir).await;
+                        } else {
+                            let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+                        }
                         task.file_path = None;
                         task.temp_dir = None;
+                        task.part_paths.clear();
+                        task.record_dir = None;
                     }
                     _ => {}
                 }
@@ -597,6 +818,8 @@ pub async fn run_live_record(
                 entry.temp_dir = task.temp_dir.clone();
                 entry.hls_media_kind = task.hls_media_kind;
                 entry.segment_count = task.segment_count;
+                entry.part_paths = task.part_paths.clone();
+                entry.record_dir = task.record_dir.clone();
                 let now = entry.touch();
                 if matches!(
                     status,
@@ -642,7 +865,7 @@ fn is_flv_reconnect_preamble_tag(tag: &FlvTag) -> bool {
             .map(is_aac_sequence_header)
             .unwrap_or(false),
         9 => flv_tag_payload(&tag.bytes)
-            .map(is_avc_sequence_header)
+            .map(is_video_sequence_header)
             .unwrap_or(false),
         _ => false,
     }
@@ -662,8 +885,19 @@ fn is_aac_sequence_header(payload: &[u8]) -> bool {
     payload.len() >= 2 && (payload[0] >> 4) == 10 && payload[1] == 0
 }
 
-fn is_avc_sequence_header(payload: &[u8]) -> bool {
-    payload.len() >= 2 && (payload[0] & 0x0f) == 7 && payload[1] == 0
+/// 视频 sequence header（解码器初始化数据，SPS/PPS 等）。
+/// 除官方 AVC (codec id 7) 外，还要识别国内直播平台常用的非官方
+/// HEVC (12) / AV1 (13)，以及 enhanced-RTMP 扩展头
+/// （IsExHeader 位 + PacketTypeSequenceStart）。
+fn is_video_sequence_header(payload: &[u8]) -> bool {
+    if payload.len() < 2 {
+        return false;
+    }
+    if payload[0] & 0x80 != 0 {
+        // enhanced RTMP：低 4 位是 packet type，0 = PacketTypeSequenceStart。
+        return payload[0] & 0x0f == 0;
+    }
+    matches!(payload[0] & 0x0f, 7 | 12 | 13) && payload[1] == 0
 }
 
 fn flv_tag_fingerprint(tag: &[u8]) -> Option<FlvTagFingerprint> {
@@ -794,10 +1028,11 @@ async fn run_flv_record(
     headers: Arc<RequestHeaders>,
     output_path: PathBuf,
     signal: Arc<LiveStopSignal>,
-    _initial_bytes: u64,
+    initial_bytes: u64,
     initial_duration_ms: u64,
     append: bool,
     speed_tracker: &mut SpeedTracker,
+    mut split_runtime: Option<&mut FlvSplitRuntime>,
 ) -> Result<LiveRecordOutcome, AppError> {
     if let Some(parent) = output_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -810,19 +1045,62 @@ async fn run_flv_record(
         .map(|metadata| metadata.len())
         .unwrap_or(0);
     let append_to_existing = append && existing_len >= FLV_HEADER_SKIP_LEN as u64;
-    let mut total_bytes = if append_to_existing { existing_len } else { 0 };
+    // 非分段：任务总字节数即当前文件大小；分段：总字节数跨分段累计，
+    // 由任务计数器提供，当前文件大小只用于分段大小阈值。
+    let mut total_bytes = if split_runtime.is_some() {
+        if append_to_existing {
+            initial_bytes.max(existing_len)
+        } else {
+            initial_bytes
+        }
+    } else if append_to_existing {
+        existing_len
+    } else {
+        0
+    };
+    let mut part_bytes = if append_to_existing { existing_len } else { 0 };
+    // 当前分段起始时的任务累计时长；跨断线/暂停恢复保持分段时长准确。
+    let mut part_started_duration_ms = if split_runtime.is_some() {
+        let map = live_records.lock().await;
+        map.get(&task_id)
+            .map(|task| task.part_started_duration_ms)
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let mut dedupe_window = if append_to_existing {
-        match load_flv_dedupe_window_from_file(&output_path).await {
-            Ok(window) => window,
-            Err(err) => {
-                eprintln!(
-                    "[live_recorder][flv] failed to bootstrap dedupe window from {}: {}",
-                    output_path.display(),
-                    err
-                );
-                FlvDedupeWindow::default()
+        // 分段任务在分段轮换后不久断线时，当前文件太短不足以覆盖服务器重发的
+        // 重叠区间，把上一分段的尾部也纳入去重窗口。
+        let mut bootstrap_paths: Vec<PathBuf> = Vec::new();
+        if split_runtime.is_some() {
+            let map = live_records.lock().await;
+            if let Some(task) = map.get(&task_id) {
+                if task.part_paths.len() >= 2 {
+                    bootstrap_paths
+                        .push(PathBuf::from(&task.part_paths[task.part_paths.len() - 2]));
+                }
             }
         }
+        bootstrap_paths.push(output_path.clone());
+
+        let mut window = FlvDedupeWindow::default();
+        for path in &bootstrap_paths {
+            match load_flv_dedupe_window_from_file(path).await {
+                Ok(part_window) => {
+                    for fingerprint in part_window.fingerprints() {
+                        window.push(fingerprint);
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "[live_recorder][flv] failed to bootstrap dedupe window from {}: {}",
+                        path.display(),
+                        err
+                    );
+                }
+            }
+        }
+        window
     } else {
         FlvDedupeWindow::default()
     };
@@ -917,13 +1195,19 @@ async fn run_flv_record(
         if header_remaining > 0 {
             let (header_part, rest) =
                 take_flv_connection_header_prefix(payload, &mut header_remaining);
-            if !append_to_existing {
-                pending_header.extend_from_slice(header_part);
-                if pending_header.len() == FLV_HEADER_SKIP_LEN {
+            pending_header.extend_from_slice(header_part);
+            if pending_header.len() == FLV_HEADER_SKIP_LEN {
+                if let Some(runtime) = split_runtime.as_deref_mut() {
+                    let mut header = [0u8; FLV_HEADER_SKIP_LEN];
+                    header.copy_from_slice(&pending_header);
+                    runtime.preamble.file_header = Some(header);
+                }
+                if !append_to_existing {
                     file.write_all(&pending_header).await?;
                     total_bytes += pending_header.len() as u64;
-                    pending_header.clear();
+                    part_bytes += pending_header.len() as u64;
                 }
+                pending_header.clear();
             }
             payload = rest;
             if payload.is_empty() {
@@ -932,6 +1216,11 @@ async fn run_flv_record(
         }
 
         for tag in parser.push(payload) {
+            // 在去重之前观察前导 tag：重连时被去重丢弃的 metadata / sequence
+            // header 也要刷新缓存，保证新分段开头可独立解码。
+            if let Some(runtime) = split_runtime.as_deref_mut() {
+                runtime.preamble.observe(&tag);
+            }
             let writable_tags = if let Some(dedupe) = boundary_dedupe.as_mut() {
                 dedupe.process_tag(tag)
             } else {
@@ -939,8 +1228,39 @@ async fn run_flv_record(
             };
 
             for tag in writable_tags {
+                if let Some(runtime) = split_runtime.as_deref_mut() {
+                    let current_duration_ms =
+                        initial_duration_ms + start_instant.elapsed().as_millis() as u64;
+                    let part_duration_ms =
+                        current_duration_ms.saturating_sub(part_started_duration_ms);
+                    if runtime.should_rotate(part_bytes, part_duration_ms, &tag) {
+                        file.flush().await?;
+                        let part_path = runtime.next_part_path();
+                        let mut next_file = tokio::fs::OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .truncate(true)
+                            .open(&part_path)
+                            .await?;
+                        let part_header = runtime.preamble.part_header_bytes();
+                        next_file.write_all(&part_header).await?;
+                        file = next_file;
+                        total_bytes += part_header.len() as u64;
+                        part_bytes = part_header.len() as u64;
+                        part_started_duration_ms = current_duration_ms;
+                        register_new_flv_part(
+                            &app_handle,
+                            &live_records,
+                            &task_id,
+                            &part_path,
+                            part_started_duration_ms,
+                        )
+                        .await;
+                    }
+                }
                 file.write_all(&tag.bytes).await?;
                 total_bytes += tag.bytes.len() as u64;
+                part_bytes += tag.bytes.len() as u64;
                 dedupe_window.push(tag.fingerprint);
             }
         }
@@ -998,6 +1318,22 @@ async fn run_hls_record(
     let mut target_duration_ms: u64 = 4000; // overwritten from playlist on first iteration
     let mut segment_count: u64 = 0;
 
+    // 分段配置与已有分段列表（part_paths 存播放列表文件名，相对 temp_dir）。
+    let (split_config, mut part_names) = {
+        let map = live_records.lock().await;
+        map.get(&task_id)
+            .map(|task| {
+                (
+                    task.split.and_then(|config| config.sanitized()),
+                    task.part_paths.clone(),
+                )
+            })
+            .unwrap_or((None, Vec::new()))
+    };
+    let mut part_open = false;
+    let mut part_bytes: u64 = 0;
+    let mut part_duration_ms: u64 = 0;
+
     // If resuming an existing temp dir, recover progress from the existing index.m3u8.
     let playlist_path = temp_dir.join("index.m3u8");
     if append && playlist_path.exists() {
@@ -1006,6 +1342,20 @@ async fn run_hls_record(
             next_local_index = recovered_count;
             segment_count = recovered_count;
             media_kind = recovered_kind;
+        }
+        // 恢复当前分段进度：最后一个未封口（无 ENDLIST）的 part 播放列表即当前分段。
+        if split_config.is_some() {
+            if let Some(last_name) = part_names.last() {
+                if let Ok(text) = tokio::fs::read_to_string(temp_dir.join(last_name)).await {
+                    if !playlist_has_endlist(&text) {
+                        let (recovered_bytes, recovered_duration_ms) =
+                            inspect_part_playlist_progress(&temp_dir, &text).await;
+                        part_open = true;
+                        part_bytes = recovered_bytes;
+                        part_duration_ms = recovered_duration_ms;
+                    }
+                }
+            }
         }
     }
 
@@ -1170,6 +1520,50 @@ async fn run_hls_record(
                 },
             )
             .await?;
+
+            // 分段：把分片同时登记到当前 part 播放列表，超阈值即封口并开新分段。
+            if let Some(split) = split_config.as_ref() {
+                if !part_open {
+                    let part_name = next_part_playlist_name(&temp_dir, part_names.len() as u64);
+                    part_names.push(part_name);
+                    register_new_hls_part(
+                        &app_handle,
+                        &live_records,
+                        &task_id,
+                        part_names.clone(),
+                    )
+                    .await;
+                    part_open = true;
+                    part_bytes = 0;
+                    part_duration_ms = 0;
+                }
+                let part_playlist_path = temp_dir
+                    .join(part_names.last().expect("current part playlist name"));
+                append_local_playlist_entry(
+                    &part_playlist_path,
+                    kind,
+                    target_duration_ms,
+                    &local_name,
+                    segment.duration,
+                    current_init_local_name.as_deref(),
+                )
+                .await?;
+                part_bytes += bytes.len() as u64;
+                part_duration_ms += (segment.duration * 1000.0) as u64;
+
+                let size_hit = split
+                    .size_bytes()
+                    .map(|limit| part_bytes >= limit)
+                    .unwrap_or(false);
+                let duration_hit = split
+                    .duration_ms()
+                    .map(|limit| part_duration_ms >= limit)
+                    .unwrap_or(false);
+                if size_hit || duration_hit {
+                    finalize_local_hls_playlist(&part_playlist_path).await?;
+                    part_open = false;
+                }
+            }
 
             // Throttled progress emit.
             if last_emit.elapsed() >= PROGRESS_EMIT_INTERVAL {
@@ -1375,6 +1769,68 @@ async fn append_local_playlist_entry(
     Ok(())
 }
 
+fn playlist_has_endlist(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("#EXT-X-ENDLIST"))
+}
+
+/// 分段 part 播放列表文件名：`part_NNN.m3u8`（NNN 为 1 起的分段序号），
+/// 跳过磁盘上已存在的同名残留文件。
+fn next_part_playlist_name(temp_dir: &Path, existing_count: u64) -> String {
+    let mut index = existing_count + 1;
+    loop {
+        let name = format!("part_{:03}.m3u8", index);
+        if !temp_dir.join(&name).exists() {
+            return name;
+        }
+        index += 1;
+        if index > 99_999 {
+            return format!("part_{}.m3u8", Utc::now().timestamp_millis());
+        }
+    }
+}
+
+/// 从 part 播放列表恢复分段进度：时长按 EXTINF 求和，字节数按引用分片的文件大小求和。
+async fn inspect_part_playlist_progress(temp_dir: &Path, text: &str) -> (u64, u64) {
+    let mut bytes = 0u64;
+    let mut duration_ms = 0u64;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("#EXTINF:") {
+            let value = rest.split(',').next().unwrap_or("");
+            if let Ok(secs) = value.trim().parse::<f64>() {
+                duration_ms += (secs * 1000.0) as u64;
+            }
+        } else if !trimmed.starts_with('#') && !trimmed.is_empty() {
+            if let Ok(metadata) = tokio::fs::metadata(temp_dir.join(trimmed)).await {
+                bytes += metadata.len();
+            }
+        }
+    }
+    (bytes, duration_ms)
+}
+
+/// 新分段播放列表创建后同步 part_paths 到任务状态并持久化。
+async fn register_new_hls_part(
+    app_handle: &AppHandle,
+    live_records: &Arc<Mutex<HashMap<DownloadId, LiveRecordTask>>>,
+    task_id: &str,
+    part_paths: Vec<String>,
+) {
+    let mut snapshot = None;
+    {
+        let mut map = live_records.lock().await;
+        if let Some(task) = map.get_mut(task_id) {
+            task.part_paths = part_paths;
+            task.touch();
+            snapshot = Some(task.clone());
+        }
+    }
+    if let Some(task) = snapshot {
+        let _ = persistence::save_live_task(app_handle, &task).await;
+    }
+}
+
 async fn finalize_local_hls_playlist(playlist_path: &Path) -> Result<(), AppError> {
     let mut text = match tokio::fs::read_to_string(playlist_path).await {
         Ok(text) => text,
@@ -1382,10 +1838,7 @@ async fn finalize_local_hls_playlist(playlist_path: &Path) -> Result<(), AppErro
         Err(error) => return Err(error.into()),
     };
 
-    if text
-        .lines()
-        .any(|line| line.trim().eq_ignore_ascii_case("#EXT-X-ENDLIST"))
-    {
+    if playlist_has_endlist(&text) {
         return Ok(());
     }
 
@@ -1428,6 +1881,32 @@ fn live_record_retry_interval(protocol: LiveProtocol) -> Duration {
     match protocol {
         LiveProtocol::Flv => flv_live_retry(),
         LiveProtocol::Hls => live_retry_hls(),
+    }
+}
+
+/// 分段轮换后把新分段登记到任务状态并持久化：file_path 指向正在写入的分段
+/// （录制中播放 tail 跟随最新分段），part_paths 追加，记录分段起始时长。
+async fn register_new_flv_part(
+    app_handle: &AppHandle,
+    live_records: &Arc<Mutex<HashMap<DownloadId, LiveRecordTask>>>,
+    task_id: &str,
+    part_path: &Path,
+    part_started_duration_ms: u64,
+) {
+    let mut snapshot = None;
+    {
+        let mut map = live_records.lock().await;
+        if let Some(task) = map.get_mut(task_id) {
+            let path_string = part_path.to_string_lossy().to_string();
+            task.file_path = Some(path_string.clone());
+            task.part_paths.push(path_string);
+            task.part_started_duration_ms = part_started_duration_ms;
+            task.touch();
+            snapshot = Some(task.clone());
+        }
+    }
+    if let Some(task) = snapshot {
+        let _ = persistence::save_live_task(app_handle, &task).await;
     }
 }
 
@@ -1551,6 +2030,15 @@ mod tests {
 
     fn flv_avc_sequence_header(timestamp: u32) -> Vec<u8> {
         make_flv_tag(9, timestamp, &[0x17, 0x00, 0x00, 0x00, 0x00, 0x64, 0x00])
+    }
+
+    /// 抖音等平台使用的非官方 HEVC-in-FLV（codec id 12）sequence header。
+    fn flv_hevc_sequence_header(timestamp: u32) -> Vec<u8> {
+        make_flv_tag(9, timestamp, &[0x1c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02])
+    }
+
+    fn flv_hevc_keyframe_tag(timestamp: u32) -> Vec<u8> {
+        make_flv_tag(9, timestamp, &[0x1c, 0x01, 0x00, 0x00, 0x00, 0xcc])
     }
 
     fn parsed_flv_tag(bytes: &[u8]) -> FlvTag {
@@ -1801,6 +2289,187 @@ mod tests {
         // tracker should keep returning the same speed, not decay to 0.
         std::thread::sleep(Duration::from_millis(400));
         assert_eq!(tracker.speed_bps(), frozen);
+    }
+
+    fn split_config(size_mb: Option<u64>, duration_min: Option<u64>) -> LiveSplitConfig {
+        LiveSplitConfig {
+            size_mb,
+            duration_min,
+        }
+    }
+
+    fn split_runtime(config: LiveSplitConfig) -> FlvSplitRuntime {
+        FlvSplitRuntime {
+            config,
+            output_dir: std::env::temp_dir(),
+            base_name: "live".to_string(),
+            part_index: 1,
+            preamble: FlvPreambleCache::default(),
+        }
+    }
+
+    fn flv_video_keyframe_tag(timestamp: u32) -> Vec<u8> {
+        // 帧类型 1（关键帧）+ AVC NALU（非 sequence header）。
+        make_flv_tag(9, timestamp, &[0x17, 0x01, 0x00, 0x00, 0x00, 0xaa])
+    }
+
+    fn flv_video_interframe_tag(timestamp: u32) -> Vec<u8> {
+        make_flv_tag(9, timestamp, &[0x27, 0x01, 0x00, 0x00, 0x00, 0xbb])
+    }
+
+    #[test]
+    fn flv_video_keyframe_detection_excludes_sequence_header() {
+        assert!(is_flv_video_keyframe(&parsed_flv_tag(
+            &flv_video_keyframe_tag(40)
+        )));
+        assert!(is_flv_video_keyframe(&parsed_flv_tag(
+            &flv_hevc_keyframe_tag(40)
+        )));
+        assert!(!is_flv_video_keyframe(&parsed_flv_tag(
+            &flv_video_interframe_tag(40)
+        )));
+        assert!(!is_flv_video_keyframe(&parsed_flv_tag(
+            &flv_avc_sequence_header(0)
+        )));
+        assert!(!is_flv_video_keyframe(&parsed_flv_tag(
+            &flv_hevc_sequence_header(0)
+        )));
+        assert!(!is_flv_video_keyframe(&parsed_flv_tag(
+            &flv_aac_sequence_header(0)
+        )));
+    }
+
+    #[test]
+    fn video_sequence_header_recognizes_avc_hevc_and_enhanced_rtmp() {
+        // AVC (7) / HEVC (12) / AV1 (13) 的 sequence header。
+        assert!(is_video_sequence_header(&[0x17, 0x00]));
+        assert!(is_video_sequence_header(&[0x1c, 0x00]));
+        assert!(is_video_sequence_header(&[0x1d, 0x00]));
+        // 普通媒体包不是 sequence header。
+        assert!(!is_video_sequence_header(&[0x17, 0x01]));
+        assert!(!is_video_sequence_header(&[0x1c, 0x01]));
+        assert!(!is_video_sequence_header(&[0x27, 0x01]));
+        // enhanced RTMP：IsExHeader + PacketTypeSequenceStart(0)。
+        assert!(is_video_sequence_header(&[0x90, b'h', b'v', b'c', b'1']));
+        assert!(!is_video_sequence_header(&[0x91, b'h', b'v', b'c', b'1']));
+    }
+
+    #[test]
+    fn flv_preamble_cache_caches_hevc_video_sequence_header() {
+        let mut cache = FlvPreambleCache::default();
+        let video_seq = flv_hevc_sequence_header(0);
+        cache.observe(&parsed_flv_tag(&video_seq));
+        cache.observe(&parsed_flv_tag(&flv_hevc_keyframe_tag(80)));
+
+        let mut expected = FLV_DEFAULT_FILE_HEADER.to_vec();
+        expected.extend_from_slice(&video_seq);
+        assert_eq!(cache.part_header_bytes(), expected);
+    }
+
+    #[test]
+    fn flv_preamble_cache_builds_standalone_part_header() {
+        let mut cache = FlvPreambleCache::default();
+        let metadata = flv_metadata_tag();
+        let video_seq = flv_avc_sequence_header(0);
+        let audio_seq = flv_aac_sequence_header(0);
+        cache.observe(&parsed_flv_tag(&metadata));
+        cache.observe(&parsed_flv_tag(&video_seq));
+        cache.observe(&parsed_flv_tag(&audio_seq));
+        // 普通媒体 tag 不应进入缓存。
+        cache.observe(&parsed_flv_tag(&flv_video_keyframe_tag(80)));
+
+        let header = cache.part_header_bytes();
+        let mut expected = FLV_DEFAULT_FILE_HEADER.to_vec();
+        expected.extend_from_slice(&metadata);
+        expected.extend_from_slice(&video_seq);
+        expected.extend_from_slice(&audio_seq);
+        assert_eq!(header, expected);
+    }
+
+    #[test]
+    fn flv_split_rotates_on_keyframe_after_size_threshold() {
+        let runtime = split_runtime(split_config(Some(10), None));
+        let size_limit = 10 * 1024 * 1024;
+        let keyframe = parsed_flv_tag(&flv_video_keyframe_tag(1_000));
+        let interframe = parsed_flv_tag(&flv_video_interframe_tag(1_000));
+
+        // 未达到阈值：不切分。
+        assert!(!runtime.should_rotate(size_limit - 1, 0, &keyframe));
+        // 达到阈值 + 关键帧：切分。
+        assert!(runtime.should_rotate(size_limit, 0, &keyframe));
+        // 达到阈值但不是关键帧：等待。
+        assert!(!runtime.should_rotate(size_limit, 0, &interframe));
+        // 超出宽限（20%）仍无关键帧：强制切分。
+        assert!(runtime.should_rotate(size_limit + size_limit / 5, 0, &interframe));
+    }
+
+    #[test]
+    fn flv_split_rotates_on_duration_threshold() {
+        let runtime = split_runtime(split_config(None, Some(60)));
+        let duration_limit = 60 * 60 * 1000;
+        let keyframe = parsed_flv_tag(&flv_video_keyframe_tag(1_000));
+        let interframe = parsed_flv_tag(&flv_video_interframe_tag(1_000));
+
+        assert!(!runtime.should_rotate(0, duration_limit - 1, &keyframe));
+        assert!(runtime.should_rotate(0, duration_limit, &keyframe));
+        assert!(!runtime.should_rotate(0, duration_limit, &interframe));
+        assert!(runtime.should_rotate(
+            0,
+            duration_limit + duration_limit / 5,
+            &interframe
+        ));
+    }
+
+    #[test]
+    fn live_part_paths_use_padded_index() {
+        let path = live_part_file_path(Path::new("/tmp/out"), "live", 12, "flv");
+        assert!(path.to_string_lossy().ends_with("live_part012.flv"));
+    }
+
+    #[test]
+    fn pick_available_record_dir_appends_counter_when_taken() {
+        let temp_root = unique_temp_path("record-dir");
+        fs::create_dir_all(temp_root.join("live")).expect("occupy live dir");
+
+        let picked = pick_available_record_dir(&temp_root, "live", |_| false);
+        assert_eq!(picked, temp_root.join("live_1"));
+
+        // 被进行中任务保留的目录也要跳过。
+        let reserved = temp_root.join("other");
+        let picked =
+            pick_available_record_dir(&temp_root, "other", |candidate| candidate == reserved);
+        assert_eq!(picked, temp_root.join("other_1"));
+
+        let free = pick_available_record_dir(&temp_root, "free", |_| false);
+        assert_eq!(free, temp_root.join("free"));
+        let _ = fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn next_part_playlist_name_skips_existing_files() {
+        let temp_root = unique_temp_path("part-playlist-name");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        assert_eq!(next_part_playlist_name(&temp_root, 0), "part_001.m3u8");
+
+        fs::write(temp_root.join("part_002.m3u8"), b"#EXTM3U\n").expect("occupy part_002");
+        assert_eq!(next_part_playlist_name(&temp_root, 1), "part_003.m3u8");
+        let _ = fs::remove_dir_all(&temp_root);
+    }
+
+    #[tokio::test]
+    async fn inspect_part_playlist_progress_recovers_bytes_and_duration() {
+        let temp_root = unique_temp_path("part-progress");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        fs::write(temp_root.join("seg_00000000.ts"), vec![0u8; 100]).expect("seg 0");
+        fs::write(temp_root.join("seg_00000001.ts"), vec![0u8; 50]).expect("seg 1");
+        let playlist = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:4\n\
+            #EXTINF:4.000,\nseg_00000000.ts\n#EXTINF:3.500,\nseg_00000001.ts\n";
+
+        let (bytes, duration_ms) =
+            inspect_part_playlist_progress(&temp_root, playlist).await;
+        assert_eq!(bytes, 150);
+        assert_eq!(duration_ms, 7_500);
+        let _ = fs::remove_dir_all(&temp_root);
     }
 
     #[tokio::test]
