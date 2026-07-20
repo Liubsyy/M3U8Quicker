@@ -14,13 +14,19 @@ mod update;
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{
+    CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder,
+};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 use crate::models::{DownloadId, DownloadTask};
 use state::AppState;
+
+struct TrayProxyMenuState {
+    enabled_item: CheckMenuItem<tauri::Wry>,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -157,6 +163,16 @@ pub fn run() {
                     &install_firefox_item,
                 ])
                 .build()?;
+            let proxy_enabled_item =
+                CheckMenuItemBuilder::with_id("tray_proxy_enabled", "启用代理").build(app)?;
+            let proxy_settings_item =
+                MenuItemBuilder::with_id("tray_proxy_settings", "设置代理").build(app)?;
+            let proxy_submenu = SubmenuBuilder::new(app, "代理")
+                .items(&[&proxy_enabled_item, &proxy_settings_item])
+                .build()?;
+            app.manage(TrayProxyMenuState {
+                enabled_item: proxy_enabled_item,
+            });
             let settings_item = MenuItemBuilder::with_id("tray_settings", "设置").build(app)?;
             let quit_item = MenuItemBuilder::with_id("tray_quit", "退出").build(app)?;
             let tray_menu = MenuBuilder::new(app)
@@ -165,6 +181,7 @@ pub fn run() {
                     &live_record_item,
                     &video_preview_item,
                     &install_extension_submenu,
+                    &proxy_submenu,
                     &settings_item,
                 ])
                 .separator()
@@ -196,6 +213,29 @@ pub fn run() {
                     }
                     "tray_install_firefox" => {
                         emit_tray_action(app, "install-firefox-extension");
+                    }
+                    "tray_proxy_enabled" => {
+                        let enabled = app
+                            .state::<TrayProxyMenuState>()
+                            .enabled_item
+                            .is_checked()
+                            .unwrap_or(false);
+                        let app_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let state = app_handle.state::<AppState>();
+                            let mut proxy = state.proxy_settings.lock().await.clone();
+                            proxy.enabled = enabled;
+                            if let Err(error) =
+                                commands::apply_proxy_settings(&app_handle, &state, proxy).await
+                            {
+                                set_tray_proxy_enabled(&app_handle, !enabled);
+                                show_main_window(&app_handle);
+                                let _ = app_handle.emit("proxy-settings-error", error.to_string());
+                            }
+                        });
+                    }
+                    "tray_proxy_settings" => {
+                        emit_tray_action(app, "open-proxy-settings");
                     }
                     "tray_settings" => {
                         emit_tray_action(app, "open-settings");
@@ -240,6 +280,7 @@ pub fn run() {
                 }
                 {
                     let mut proxy = state.proxy_settings.lock().await;
+                    set_tray_proxy_enabled(&handle, settings.proxy.enabled);
                     *proxy = settings.proxy;
                 }
                 {
@@ -467,6 +508,12 @@ fn show_main_window(app: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+    }
+}
+
+pub(crate) fn set_tray_proxy_enabled(app: &AppHandle, enabled: bool) {
+    if let Some(menu_state) = app.try_state::<TrayProxyMenuState>() {
+        let _ = menu_state.enabled_item.set_checked(enabled);
     }
 }
 

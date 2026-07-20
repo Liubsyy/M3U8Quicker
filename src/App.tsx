@@ -131,7 +131,7 @@ function App({
   const [liveRecordModalOpen, setLiveRecordModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<
-    "general" | "download" | "ffmpeg"
+    "general" | "network" | "download" | "ffmpeg"
   >("general");
   const [toolModalOpen, setToolModalOpen] = useState(false);
   const [activeTool, setActiveTool] = useState<ToolAction | null>(null);
@@ -554,6 +554,7 @@ function App({
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
+    let unlistenProxyError: UnlistenFn | undefined;
     let cancelled = false;
 
     void listen<string>("tray-action", (event) => {
@@ -583,6 +584,10 @@ function App({
           setSettingsInitialTab("general");
           setSettingsOpen(true);
           break;
+        case "open-proxy-settings":
+          setSettingsInitialTab("network");
+          setSettingsOpen(true);
+          break;
         default:
           break;
       }
@@ -598,9 +603,27 @@ function App({
         console.error("[m3u8quicker] failed to subscribe tray-action", error);
       });
 
+    void listen<string>("proxy-settings-error", (event) => {
+      message.error(`保存代理设置失败：${event.payload}`);
+    })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlistenProxyError = fn;
+      })
+      .catch((error) => {
+        console.error(
+          "[m3u8quicker] failed to subscribe proxy-settings-error",
+          error
+        );
+      });
+
     return () => {
       cancelled = true;
       unlisten?.();
+      unlistenProxyError?.();
     };
   }, []);
 

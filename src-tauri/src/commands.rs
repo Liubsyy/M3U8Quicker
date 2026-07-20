@@ -1261,6 +1261,14 @@ pub async fn set_proxy_settings(
     state: State<'_, AppState>,
     proxy: ProxySettings,
 ) -> Result<(), AppError> {
+    apply_proxy_settings(&app_handle, &state, proxy).await
+}
+
+pub(crate) async fn apply_proxy_settings(
+    app_handle: &AppHandle,
+    state: &AppState,
+    proxy: ProxySettings,
+) -> Result<(), AppError> {
     let proxy_url = proxy.url.trim();
     if proxy.enabled && proxy_url.is_empty() {
         return Err(AppError::InvalidInput("代理地址不能为空".to_string()));
@@ -1286,10 +1294,14 @@ pub async fn set_proxy_settings(
     rebuild_http_client(&state).await?;
 
     let saved_proxy = state.proxy_settings.lock().await.clone();
-    persistence::update_settings(&app_handle, |settings| {
+    persistence::update_settings(app_handle, |settings| {
         settings.proxy = saved_proxy;
     })
     .await;
+
+    let proxy_enabled = state.proxy_settings.lock().await.enabled;
+    crate::set_tray_proxy_enabled(app_handle, proxy_enabled);
+    let _ = app_handle.emit("proxy-settings-changed", proxy_enabled);
 
     Ok(())
 }

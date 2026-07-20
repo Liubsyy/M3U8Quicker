@@ -323,6 +323,33 @@ export function SettingsModal({
     };
   }, []);
 
+  useEffect(() => {
+    if (!open) return;
+
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    void listen<boolean>("proxy-settings-changed", () => {
+      void getAppSettings()
+        .then((settings) => {
+          if (!cancelled) setProxySettingsState(settings.proxy);
+        })
+        .catch(() => {});
+    })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [open]);
+
   const updateProxy = async (nextProxy: ProxySettings) => {
     setProxySettingsState(nextProxy);
     setSavingProxy(true);
