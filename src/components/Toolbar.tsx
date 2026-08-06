@@ -1,4 +1,4 @@
-import { Badge, Button, Dropdown, Space, Typography, theme } from "antd";
+import { Badge, Button, Dropdown, Space, Tooltip, Typography, theme } from "antd";
 import {
   ApartmentOutlined,
   ChromeOutlined,
@@ -31,6 +31,9 @@ interface ToolbarProps {
   onOpenLiveRecord: () => void;
   onOpenTool: (tool: ToolAction) => void;
   onOpenSettings: () => void;
+  proxyEnabled: boolean;
+  onOpenProxySettings: () => void;
+  onProxyEnabledChange: (enabled: boolean) => void;
   updateAvailable?: boolean;
 }
 
@@ -41,6 +44,9 @@ export function Toolbar({
   onOpenLiveRecord,
   onOpenTool,
   onOpenSettings,
+  proxyEnabled,
+  onOpenProxySettings,
+  onProxyEnabledChange,
   updateAvailable = false,
 }: ToolbarProps) {
   const { token } = theme.useToken();
@@ -137,6 +143,18 @@ export function Toolbar({
       ],
     },
   ];
+  const proxyItems: MenuProps["items"] = [
+    {
+      key: "enable-proxy",
+      label: "开启代理",
+      disabled: proxyEnabled,
+    },
+    {
+      key: "disable-proxy",
+      label: "关闭代理",
+      disabled: !proxyEnabled,
+    },
+  ];
 
   return (
     <div
@@ -148,7 +166,36 @@ export function Toolbar({
       }}
     >
       <Space>
-        <ThunderboltOutlined style={{ fontSize: 24, color: token.colorPrimary }} />
+        <Tooltip title={proxyEnabled ? "已开启代理" : "未开启代理"}>
+          <Dropdown
+            menu={{
+              items: proxyItems,
+              onClick: ({ key }) => onProxyEnabledChange(key === "enable-proxy"),
+            }}
+            trigger={["contextMenu"]}
+          >
+            <span
+              role="button"
+              tabIndex={0}
+              aria-label={proxyEnabled ? "代理已开启，打开网络设置" : "代理未开启，打开网络设置"}
+              onClick={onOpenProxySettings}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onOpenProxySettings();
+                }
+              }}
+              style={{ display: "inline-flex", cursor: "pointer" }}
+            >
+              <ThunderboltOutlined
+                style={{
+                  fontSize: 24,
+                  color: proxyEnabled ? token.colorError : token.colorPrimary,
+                }}
+              />
+            </span>
+          </Dropdown>
+        </Tooltip>
         <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
           M3U8 Quicker
         </Typography.Title>

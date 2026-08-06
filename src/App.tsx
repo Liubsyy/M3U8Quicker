@@ -41,6 +41,7 @@ import {
   createPreviewSession,
   closePreviewSession,
   getAppSettings,
+  setProxySettings,
   getFfmpegStatus,
   checkForUpdate,
   convertLiveRecordToMp4,
@@ -148,6 +149,7 @@ function App({
   const [batchDownloadModalOpen, setBatchDownloadModalOpen] = useState(false);
   const [videoPreviewModalOpen, setVideoPreviewModalOpen] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [proxyEnabled, setProxyEnabled] = useState(false);
   const [historyPageSize, setHistoryPageSize] = useState(DEFAULT_HISTORY_PAGE_SIZE);
   const [chromiumInstallGuide, setChromiumInstallGuide] =
     useState<ChromiumInstallGuideState | null>(null);
@@ -253,6 +255,7 @@ function App({
       .then((settings) => {
         if (!cancelled) {
           setHistoryPageSize(settings.history_page_size);
+          setProxyEnabled(settings.proxy.enabled);
         }
       })
       .catch((error) => {
@@ -554,9 +557,26 @@ function App({
     }
   };
 
+  const handleProxyEnabledChange = async (enabled: boolean) => {
+    try {
+      const settings = await getAppSettings();
+      if (settings.proxy.enabled !== enabled) {
+        await setProxySettings({ ...settings.proxy, enabled });
+      }
+      setProxyEnabled(enabled);
+      message.success(enabled ? "代理已开启" : "代理已关闭");
+    } catch (error) {
+      message.error(`切换代理失败：${String(error)}`);
+      void getAppSettings()
+        .then((settings) => setProxyEnabled(settings.proxy.enabled))
+        .catch(() => {});
+    }
+  };
+
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
     let unlistenProxyError: UnlistenFn | undefined;
+    let unlistenProxyChange: UnlistenFn | undefined;
     let cancelled = false;
 
     void listen<string>("tray-action", (event) => {
@@ -622,10 +642,28 @@ function App({
         );
       });
 
+    void listen<boolean>("proxy-settings-changed", (event) => {
+      setProxyEnabled(event.payload);
+    })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlistenProxyChange = fn;
+      })
+      .catch((error) => {
+        console.error(
+          "[m3u8quicker] failed to subscribe proxy-settings-changed",
+          error
+        );
+      });
+
     return () => {
       cancelled = true;
       unlisten?.();
       unlistenProxyError?.();
+      unlistenProxyChange?.();
     };
   }, []);
 
@@ -849,6 +887,14 @@ function App({
           onOpenSettings={() => {
             setSettingsInitialTab("general");
             setSettingsOpen(true);
+          }}
+          proxyEnabled={proxyEnabled}
+          onOpenProxySettings={() => {
+            setSettingsInitialTab("network");
+            setSettingsOpen(true);
+          }}
+          onProxyEnabledChange={(enabled) => {
+            void handleProxyEnabledChange(enabled);
           }}
           updateAvailable={updateAvailable}
         />
