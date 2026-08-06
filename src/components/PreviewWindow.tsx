@@ -21,6 +21,7 @@ import {
 } from "@ant-design/icons";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   cancelPreviewThumbnails,
   extractPreviewThumbnails,
@@ -134,6 +135,10 @@ export function PreviewWindow() {
     () => new URLSearchParams(window.location.search).get("token") ?? "",
     []
   );
+  const previewTitle = useMemo(
+    () => new URLSearchParams(window.location.search).get("title")?.trim() ?? "",
+    []
+  );
   const [count, setCount] = useState(MIN_COUNT);
   const [columns, setColumns] = useState(DEFAULT_COLUMNS);
   const [thumbnailWidth, setThumbnailWidth] = useState(DEFAULT_THUMBNAIL_WIDTH);
@@ -168,6 +173,14 @@ export function PreviewWindow() {
   const loadedCount = previewStatus === "done" ? count : thumbnails.length;
   const progressPercent =
     count > 0 ? Math.min(100, Math.round((loadedCount / count) * 100)) : 0;
+
+  useEffect(() => {
+    const windowTitle = previewTitle ? `视频预览 - ${previewTitle}` : "视频预览";
+    document.title = windowTitle;
+    void getCurrentWebviewWindow().setTitle(windowTitle).catch((error) => {
+      console.error("Failed to set preview window title", error);
+    });
+  }, [previewTitle]);
 
   useEffect(() => {
     if (!token || !settingsLoaded) return;

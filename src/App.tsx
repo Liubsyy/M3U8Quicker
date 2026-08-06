@@ -297,6 +297,7 @@ function App({
         void openPreviewWindowFromDeepLink(
           previewDraft.url,
           previewDraft.extraHeaders,
+          previewDraft.title,
           () => {
             setSettingsInitialTab("ffmpeg");
             setSettingsOpen(true);
@@ -915,6 +916,10 @@ function App({
         onClose={() => {
           setBatchDownloadModalOpen(false);
           setBatchDownloadDraft(null);
+        }}
+        onOpenFfmpegSettings={() => {
+          setSettingsInitialTab("ffmpeg");
+          setSettingsOpen(true);
         }}
         onSubmit={async (paramsList) => {
           return addDownloadsBatch(paramsList);
@@ -1539,7 +1544,7 @@ function parseNewLiveRecordDraft(
 
 function parsePreviewDraft(
   deepLink: string
-): { url: string; extraHeaders?: string } | null {
+): { url: string; extraHeaders?: string; title?: string } | null {
   try {
     const parsed = new URL(deepLink);
     const action = (parsed.hostname || parsed.pathname.replace(/^\/+/, "")).toLowerCase();
@@ -1553,7 +1558,8 @@ function parsePreviewDraft(
     }
 
     const extraHeaders = parsed.searchParams.get("extra_headers")?.trim() || undefined;
-    return { url, extraHeaders };
+    const title = parsed.searchParams.get("title")?.trim() || undefined;
+    return { url, extraHeaders, title };
   } catch (error) {
     console.debug("[m3u8quicker] failed to parse preview deep link", deepLink, error);
     return null;
@@ -1597,6 +1603,7 @@ async function ensureFfmpegReadyForPreview(
 async function openPreviewWindowFromDeepLink(
   url: string,
   extraHeaders: string | undefined,
+  title: string | undefined,
   onOpenFfmpegSettings: () => void
 ): Promise<void> {
   if (!(await ensureFfmpegReadyForPreview(onOpenFfmpegSettings))) {
@@ -1615,14 +1622,18 @@ async function openPreviewWindowFromDeepLink(
       sourceText
     );
     token = session.token;
-    const previewUrl = `/?${new URLSearchParams({
+    const previewParams = new URLSearchParams({
       view: "preview",
       token: session.token,
-    }).toString()}`;
+    });
+    if (title) {
+      previewParams.set("title", title);
+    }
+    const previewUrl = `/?${previewParams.toString()}`;
 
     const previewWindow = new WebviewWindow(session.window_label, {
       url: previewUrl,
-      title: "视频预览",
+      title: title ? `视频预览 - ${title}` : "视频预览",
       width: 960,
       height: 720,
       minWidth: 720,

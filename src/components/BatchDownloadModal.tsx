@@ -11,9 +11,21 @@ import {
   Typography,
   message,
 } from "antd";
-import { FolderOpenOutlined } from "@ant-design/icons";
+import {
+  DeleteOutlined,
+  FolderOpenOutlined,
+  PictureOutlined,
+} from "@ant-design/icons";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { getDefaultDownloadDir, setDefaultDownloadDir } from "../services/api";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import {
+  closePreviewSession,
+  createPreviewSession,
+  getAppSettings,
+  getDefaultDownloadDir,
+  getFfmpegStatus,
+  setDefaultDownloadDir,
+} from "../services/api";
 import {
   deriveFilenameFromUrl,
   inferDirectFileTypeFromUrl,
@@ -35,6 +47,7 @@ interface BatchDownloadModalProps {
   initialFileTypes?: Array<FileType | undefined>;
   resetKey?: number;
   onClose: () => void;
+  onOpenFfmpegSettings: () => void;
   onSubmit: (
     paramsList: CreateDownloadParams[]
   ) => Promise<Array<{ error?: unknown }>>;
@@ -62,12 +75,14 @@ export function BatchDownloadModal({
   initialFileTypes,
   resetKey,
   onClose,
+  onOpenFfmpegSettings,
   onSubmit,
 }: BatchDownloadModalProps) {
   const [rawInput, setRawInput] = useState("");
   const [extraHeaders, setExtraHeaders] = useState("");
   const [outputDir, setOutputDir] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [previewingKey, setPreviewingKey] = useState<string | null>(null);
   const [parsedItems, setParsedItems] = useState<ParsedBatchItem[]>([]);
 
   useEffect(() => {
@@ -123,6 +138,104 @@ export function BatchDownloadModal({
           : item
       )
     );
+  };
+
+  const handleDeleteItem = (item: ParsedBatchItem) => {
+    setRawInput((current) => {
+      const newline = current.includes("\r\n") ? "\r\n" : "\n";
+      const lines = current.split(/\r?\n/);
+      lines.splice(item.lineNumber - 1, 1);
+      return lines.join(newline);
+    });
+  };
+
+  const ensurePreviewFfmpegReady = async () => {
+    try {
+      const [settings, ffmpegStatus] = await Promise.all([
+        getAppSettings(),
+        getFfmpegStatus(),
+      ]);
+      if (settings.ffmpeg_enabled && ffmpegStatus.kind === "installed") {
+        return true;
+      }
+    } catch {
+      // fall through to prompt
+    }
+
+    return await new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title: "预览需要 FFmpeg",
+        content: (
+          <Typography.Paragraph style={{ marginBottom: 0 }}>
+            视频预览需要 FFmpeg 抽帧，请先在设置中开启并配置 FFmpeg。
+          </Typography.Paragraph>
+        ),
+        okText: "前往设置",
+        cancelText: "取消",
+        onOk: () => {
+          onOpenFfmpegSettings();
+          resolve(false);
+        },
+        onCancel: () => resolve(false),
+      });
+    });
+  };
+
+  const handlePreviewItem = async (item: ParsedBatchItem) => {
+    if (!item.valid) {
+      return;
+    }
+
+    try {
+      setPreviewingKey(item.key);
+      if (!(await ensurePreviewFfmpegReady())) {
+        return;
+      }
+
+      const { token, window_label: label } = await createPreviewSession(
+        item.sourceKind === "inline_dash_json"
+          ? INLINE_DASH_JSON_PLACEHOLDER_URL
+          : item.url,
+        extraHeaders.trim() || undefined,
+        item.sourceKind,
+        item.sourceText
+      );
+      const previewTitle =
+        item.filename?.trim() ||
+        (item.sourceKind === "inline_dash_json"
+          ? INLINE_DASH_JSON_DISPLAY
+          : deriveFilenameFromUrl(item.url)) ||
+        "视频预览";
+      const previewUrl = `/?${new URLSearchParams({
+        view: "preview",
+        token,
+        title: previewTitle,
+      }).toString()}`;
+
+      const previewWindow = new WebviewWindow(label, {
+        url: previewUrl,
+        title: `视频预览 - ${previewTitle}`,
+        width: 960,
+        height: 720,
+        minWidth: 720,
+        minHeight: 480,
+        resizable: true,
+        center: true,
+      });
+
+      previewWindow.once("tauri://created", () => {
+        void previewWindow.setFocus();
+      });
+      previewWindow.once("tauri://error", (event) => {
+        console.error("Failed to create batch preview window", event);
+        void closePreviewSession(token);
+        message.error("打开预览窗口失败");
+      });
+    } catch (error) {
+      message.error(`生成预览失败: ${formatBatchCreateError(error)}`);
+    } finally {
+      setPreviewingKey(null);
+    }
   };
 
   const handleSubmit = async () => {
@@ -324,6 +437,35 @@ export function BatchDownloadModal({
                           })
                         }
                       />
+                    ),
+                  },
+                  {
+                    title: "操作",
+                    key: "action",
+                    width: 88,
+                    align: "center",
+                    render: (_, record) => (
+                      <Space size={0}>
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<PictureOutlined />}
+                          title="预览"
+                          aria-label="预览此行视频"
+                          loading={previewingKey === record.key}
+                          disabled={!record.valid}
+                          onClick={() => void handlePreviewItem(record)}
+                        />
+                        <Button
+                          type="text"
+                          danger
+                          size="small"
+                          icon={<DeleteOutlined />}
+                          title="删除"
+                          aria-label="删除此行"
+                          onClick={() => handleDeleteItem(record)}
+                        />
+                      </Space>
                     ),
                   },
                 ]}

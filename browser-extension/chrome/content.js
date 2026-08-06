@@ -858,7 +858,7 @@
       previewButton.style.flex = "0 0 auto";
       previewButton.addEventListener("click", (event) => {
         event.stopPropagation();
-        openPreview(item.url);
+        openPreview(item.url, item.displayName);
         panel.remove();
       });
 
@@ -961,13 +961,16 @@
     return item && item.fileType === "dash" && typeof item.url === "string" && item.url.trim().startsWith("{");
   }
 
-  function openPreview(target) {
+  function openPreview(target, title) {
     if (!target) {
       return;
     }
     const params = new URLSearchParams({
       url: target,
     });
+    if (title && title.trim()) {
+      params.set("title", title.trim());
+    }
     const extraHeaders = buildExtraHeaders();
     if (extraHeaders) {
       params.set("extra_headers", extraHeaders);

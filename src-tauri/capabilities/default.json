@@ -5,6 +5,7 @@
   "permissions": [
     "core:default",
     "core:window:allow-create",
+    "core:window:allow-set-title",
     "core:webview:allow-create-webview-window",
     "core:webview:allow-set-webview-zoom",
     "deep-link:default",
