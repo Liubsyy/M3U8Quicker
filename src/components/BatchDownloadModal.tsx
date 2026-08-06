@@ -20,6 +20,7 @@ import {
   type CreateDownloadParams,
   type DownloadMode,
   type DownloadSourceKind,
+  type FileType,
 } from "../types";
 
 const INLINE_DASH_JSON_PLACEHOLDER_URL = "inline-dash-json";
@@ -31,6 +32,7 @@ interface BatchDownloadModalProps {
   open: boolean;
   initialRawInput?: string;
   initialExtraHeaders?: string;
+  initialFileTypes?: Array<FileType | undefined>;
   resetKey?: number;
   onClose: () => void;
   onSubmit: (
@@ -57,6 +59,7 @@ export function BatchDownloadModal({
   open,
   initialRawInput,
   initialExtraHeaders,
+  initialFileTypes,
   resetKey,
   onClose,
   onSubmit,
@@ -75,12 +78,16 @@ export function BatchDownloadModal({
     void getDefaultDownloadDir().then(setOutputDir);
     setRawInput(initialRawInput || "");
     setExtraHeaders(initialExtraHeaders || "");
-    setParsedItems(parseBatchInput(initialRawInput || ""));
-  }, [initialExtraHeaders, initialRawInput, open, resetKey]);
+    setParsedItems(
+      parseBatchInput(initialRawInput || "", initialFileTypes, initialRawInput)
+    );
+  }, [initialExtraHeaders, initialFileTypes, initialRawInput, open, resetKey]);
 
   useEffect(() => {
-    setParsedItems(parseBatchInput(rawInput));
-  }, [rawInput]);
+    setParsedItems(
+      parseBatchInput(rawInput, initialFileTypes, initialRawInput)
+    );
+  }, [initialFileTypes, initialRawInput, rawInput]);
 
   const validItems = parsedItems.filter((item) => item.valid);
   const invalidItems = parsedItems.filter((item) => !item.valid);
@@ -382,15 +389,32 @@ export function BatchDownloadModal({
   );
 }
 
-function parseBatchInput(rawInput: string): ParsedBatchItem[] {
+function parseBatchInput(
+  rawInput: string,
+  initialFileTypes?: Array<FileType | undefined>,
+  initialRawInput?: string
+): ParsedBatchItem[] {
+  const initialLines = initialRawInput?.split(/\r?\n/);
   return rawInput
     .split(/\r?\n/)
     .map((line, index) => ({ line, lineNumber: index + 1 }))
     .filter(({ line }) => line.trim())
-    .map(({ line, lineNumber }) => parseBatchLine(line, lineNumber));
+    .map(({ line, lineNumber }) => {
+      const initialLine = initialLines?.[lineNumber - 1];
+      const initialFileType =
+        initialLine?.trim() === line.trim()
+          ? initialFileTypes?.[lineNumber - 1]
+          : undefined;
+
+      return parseBatchLine(line, lineNumber, initialFileType);
+    });
 }
 
-function parseBatchLine(rawLine: string, lineNumber: number): ParsedBatchItem {
+function parseBatchLine(
+  rawLine: string,
+  lineNumber: number,
+  initialFileType?: FileType
+): ParsedBatchItem {
   const trimmed = rawLine.trim();
   if (trimmed.startsWith("{")) {
     return normalizeParsedItem({
@@ -410,11 +434,15 @@ function parseBatchLine(rawLine: string, lineNumber: number): ParsedBatchItem {
 
   const url = trimmed;
   const directFileType = inferDirectFileTypeFromUrl(url);
-  const mode: DownloadMode = looksLikeDashUrl(url)
-    ? "dash"
-    : directFileType
-      ? "direct"
-      : "hls";
+  const mode: DownloadMode = initialFileType
+    ? initialFileType === "hls" || initialFileType === "dash"
+      ? initialFileType
+      : "direct"
+    : looksLikeDashUrl(url)
+      ? "dash"
+      : directFileType
+        ? "direct"
+        : "hls";
   const filename = deriveFilenameFromUrl(url) || undefined;
 
   return normalizeParsedItem({
@@ -425,7 +453,11 @@ function parseBatchLine(rawLine: string, lineNumber: number): ParsedBatchItem {
     filename,
     filenameEdited: false,
     mode,
-    fileType: mode === "dash" ? "dash" : directFileType ?? "hls",
+    fileType:
+      initialFileType ??
+      (mode === "dash"
+        ? "dash"
+        : directFileType ?? "hls"),
     valid: true,
   });
 }

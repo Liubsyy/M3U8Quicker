@@ -80,6 +80,7 @@ interface DownloadDraft {
 interface BatchDownloadDraft {
   rawInput: string;
   extraHeaders?: string;
+  fileTypes?: Array<import("./types").FileType | undefined>;
   nonce: number;
 }
 
@@ -909,6 +910,7 @@ function App({
         open={batchDownloadModalOpen}
         initialRawInput={batchDownloadDraft?.rawInput}
         initialExtraHeaders={batchDownloadDraft?.extraHeaders}
+        initialFileTypes={batchDownloadDraft?.fileTypes}
         resetKey={batchDownloadDraft?.nonce ?? 0}
         onClose={() => {
           setBatchDownloadModalOpen(false);
@@ -1722,7 +1724,11 @@ function parseBatchDownloadDraft(
     }
 
     const extraHeaders = parsed.searchParams.get("extra_headers")?.trim() || undefined;
-    return { rawInput, extraHeaders };
+    const rawFileTypes = parsed.searchParams.get("file_types");
+    const fileTypes = rawFileTypes
+      ? rawFileTypes.split(/\r?\n/).map((value) => parseFileType(value))
+      : undefined;
+    return { rawInput, extraHeaders, fileTypes };
   } catch (error) {
     console.debug("[m3u8quicker] failed to parse batch deep link", deepLink, error);
     return null;

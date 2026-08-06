@@ -998,6 +998,10 @@
     const params = new URLSearchParams({
       items: items.map((item) => item.batchUrl || item.url).join("\n")
     });
+    const fileTypes = items.map((item) => item.fileType || "").join("\n");
+    if (fileTypes.trim()) {
+      params.set("file_types", fileTypes);
+    }
     const extraHeaders = buildExtraHeaders();
     if (extraHeaders) {
       params.set("extra_headers", extraHeaders);
