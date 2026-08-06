@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type Key } from "react";
 import {
   Alert,
   Button,
@@ -84,6 +84,7 @@ export function BatchDownloadModal({
   const [submitting, setSubmitting] = useState(false);
   const [previewingKey, setPreviewingKey] = useState<string | null>(null);
   const [parsedItems, setParsedItems] = useState<ParsedBatchItem[]>([]);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
 
   useEffect(() => {
     if (!open) {
@@ -93,19 +94,25 @@ export function BatchDownloadModal({
     void getDefaultDownloadDir().then(setOutputDir);
     setRawInput(initialRawInput || "");
     setExtraHeaders(initialExtraHeaders || "");
-    setParsedItems(
-      parseBatchInput(initialRawInput || "", initialFileTypes, initialRawInput)
+    const nextItems = parseBatchInput(
+      initialRawInput || "",
+      initialFileTypes,
+      initialRawInput
     );
+    setParsedItems(nextItems);
+    setSelectedRowKeys(nextItems.map((item) => item.key));
   }, [initialExtraHeaders, initialFileTypes, initialRawInput, open, resetKey]);
 
   useEffect(() => {
-    setParsedItems(
-      parseBatchInput(rawInput, initialFileTypes, initialRawInput)
-    );
+    const nextItems = parseBatchInput(rawInput, initialFileTypes, initialRawInput);
+    setParsedItems(nextItems);
+    setSelectedRowKeys(nextItems.map((item) => item.key));
   }, [initialFileTypes, initialRawInput, rawInput]);
 
-  const validItems = parsedItems.filter((item) => item.valid);
-  const invalidItems = parsedItems.filter((item) => !item.valid);
+  const selectedKeySet = new Set(selectedRowKeys);
+  const selectedItems = parsedItems.filter((item) => selectedKeySet.has(item.key));
+  const validItems = selectedItems.filter((item) => item.valid);
+  const invalidItems = selectedItems.filter((item) => !item.valid);
 
   const handleSelectDir = async () => {
     const selected = await openDialog({
@@ -240,7 +247,7 @@ export function BatchDownloadModal({
 
   const handleSubmit = async () => {
     if (validItems.length === 0) {
-      message.warning("请先粘贴至少一条可用的下载地址");
+      message.warning("请至少选择一条可用的下载地址");
       return;
     }
 
@@ -333,7 +340,7 @@ export function BatchDownloadModal({
           <Alert
             type={invalidItems.length > 0 ? "warning" : "info"}
             showIcon
-            message={`共解析 ${parsedItems.length} 条，待创建 ${validItems.length} 条${
+            message={`共解析 ${parsedItems.length} 条，已选择 ${selectedItems.length} 条，待创建 ${validItems.length} 条${
               invalidItems.length > 0 ? `，异常 ${invalidItems.length} 条` : ""
             }`}
           />
@@ -348,6 +355,10 @@ export function BatchDownloadModal({
                 rowKey="key"
                 pagination={false}
                 dataSource={parsedItems}
+                rowSelection={{
+                  selectedRowKeys,
+                  onChange: setSelectedRowKeys,
+                }}
                 scroll={{ y: 200 }}
                 columns={[
                   {
@@ -520,7 +531,7 @@ export function BatchDownloadModal({
               type="primary"
               onClick={() => void handleSubmit()}
               loading={submitting}
-              disabled={validItems.length === 0}
+              disabled={selectedItems.length === 0}
             >
               开始批量下载
             </Button>
