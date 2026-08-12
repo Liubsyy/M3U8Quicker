@@ -20,5 +20,11 @@
       script: "injects/cctv.js",
       flag: "m3u8quickerCctvInjected",
     },
+    {
+      id: "huya",
+      hostPattern: /(^|\.)huya\.com$/i,
+      script: "injects/huya.js",
+      flag: "m3u8quickerHuyaInjected",
+    },
   ];
 })();

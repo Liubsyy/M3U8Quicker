@@ -29,6 +29,7 @@ const FLV_TAG_PREVIOUS_SIZE_LEN: usize = 4;
 const FLV_DEDUPE_MAX_TAGS: usize = 2048;
 const FLV_DEDUPE_MAX_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(500);
+const HUYA_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 // 运行时可配置的录播节奏参数。由设置加载/变更时通过 `set_live_settings` 更新，
 // 全部为逐请求/逐循环读取，无需重建 HTTP 客户端。
 static HLS_REFRESH_MIN_MS: AtomicU64 = AtomicU64::new(DEFAULT_HLS_REFRESH_MIN_MS);
@@ -528,6 +529,138 @@ impl LiveStopSignal {
     }
 }
 
+/// 虎牙直播地址带短时签名。扩展会把直播间页面作为 Referer 传入，因此 FLV 每次
+/// 建连前都可以只针对虎牙重新读取页面配置，刷新签名而不影响其他站点的录播逻辑。
+async fn refresh_huya_flv_url(
+    client: &reqwest::Client,
+    original_url: &str,
+    headers: &RequestHeaders,
+) -> Result<Option<String>, AppError> {
+    let Some(referer) = huya_room_referer(original_url, headers) else {
+        return Ok(None);
+    };
+
+    let mut request = client.get(&referer).timeout(HUYA_REFRESH_TIMEOUT);
+    for (name, value) in headers.iter() {
+        request = request.header(name, value);
+    }
+    let html = request.send().await?.error_for_status()?.text().await?;
+    resolve_huya_flv_url(&html, original_url)
+}
+
+fn huya_room_referer(original_url: &str, headers: &RequestHeaders) -> Option<String> {
+    let stream_url = Url::parse(original_url).ok()?;
+    let stream_host = stream_url.host_str()?;
+    if !is_huya_host(stream_host)
+        || !stream_url.path().to_ascii_lowercase().ends_with(".flv")
+    {
+        return None;
+    }
+
+    let referer = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("referer"))
+        .map(|(_, value)| value.trim())?;
+    let referer_url = Url::parse(referer).ok()?;
+    is_huya_host(referer_url.host_str()?).then(|| referer.to_string())
+}
+
+fn is_huya_host(host: &str) -> bool {
+    let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+    normalized == "huya.com" || normalized.ends_with(".huya.com")
+}
+
+fn resolve_huya_flv_url(html: &str, original_url: &str) -> Result<Option<String>, AppError> {
+    let Some(raw_stream) = html.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("stream:")
+            .map(|value| value.trim().trim_end_matches(',').trim())
+            .filter(|value| value.starts_with('{'))
+    }) else {
+        return Ok(None);
+    };
+
+    let stream: serde_json::Value = serde_json::from_str(raw_stream).map_err(|error| {
+        AppError::InvalidInput(format!("虎牙直播配置解析失败: {error}"))
+    })?;
+    let Some(lines) = stream
+        .get("data")
+        .and_then(|value| value.as_array())
+        .and_then(|data| data.first())
+        .and_then(|room| room.get("gameStreamInfoList"))
+        .and_then(|value| value.as_array())
+    else {
+        return Ok(None);
+    };
+
+    let original = Url::parse(original_url)?;
+    let original_host = original.host_str().unwrap_or_default();
+    let selected = lines
+        .iter()
+        .filter(|line| {
+            huya_json_str(line, "sFlvUrl").is_some()
+                && huya_json_str(line, "sStreamName").is_some()
+                && huya_json_str(line, "sFlvUrlSuffix").is_some()
+        })
+        .max_by_key(|line| {
+            let same_host = huya_json_str(line, "sFlvUrl")
+                .and_then(|value| Url::parse(value).ok())
+                .and_then(|url| {
+                    url.host_str()
+                        .map(|host| host.eq_ignore_ascii_case(original_host))
+                })
+                .unwrap_or(false);
+            (same_host, huya_json_i64(line, "iWebPriorityRate"))
+        });
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+
+    let base = huya_json_str(selected, "sFlvUrl").unwrap_or_default();
+    let stream_name = huya_json_str(selected, "sStreamName").unwrap_or_default();
+    let suffix = huya_json_str(selected, "sFlvUrlSuffix").unwrap_or("flv");
+    let anti_code = huya_json_str(selected, "sFlvAntiCode").unwrap_or_default();
+    let mut base_url = Url::parse(base)?;
+    if original.scheme() == "https" && base_url.scheme() == "http" {
+        let _ = base_url.set_scheme("https");
+    }
+
+    let mut refreshed = format!(
+        "{}/{}.{}",
+        base_url.as_str().trim_end_matches('/'),
+        stream_name,
+        suffix.trim_start_matches('.')
+    );
+    if !anti_code.is_empty() {
+        refreshed.push('?');
+        refreshed.push_str(anti_code.trim_start_matches('?'));
+    }
+
+    for (name, value) in original
+        .query_pairs()
+        .filter(|(name, _)| matches!(name.as_ref(), "ratio" | "codec"))
+    {
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        serializer.append_pair(&name, &value);
+        let encoded = serializer.finish();
+        refreshed.push(if refreshed.contains('?') { '&' } else { '?' });
+        refreshed.push_str(&encoded);
+    }
+
+    Ok(Some(refreshed))
+}
+
+fn huya_json_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(|field| field.as_str()).filter(|field| !field.is_empty())
+}
+
+fn huya_json_i64(value: &serde_json::Value, key: &str) -> i64 {
+    value
+        .get(key)
+        .and_then(|field| field.as_i64().or_else(|| field.as_str()?.parse().ok()))
+        .unwrap_or(0)
+}
+
 pub async fn run_live_record(
     app_handle: AppHandle,
     live_records: Arc<Mutex<HashMap<DownloadId, LiveRecordTask>>>,
@@ -588,6 +721,17 @@ pub async fn run_live_record(
 
         let result = match protocol {
             LiveProtocol::Flv => {
+                let attempt_url = match refresh_huya_flv_url(&client, &url, headers.as_ref()).await {
+                    Ok(Some(refreshed)) => refreshed,
+                    Ok(None) => url.clone(),
+                    Err(error) => {
+                        eprintln!(
+                            "[live_recorder][huya] failed to refresh signed FLV url, use existing url: {}",
+                            error
+                        );
+                        url.clone()
+                    }
+                };
                 // 分段时 file_path 会随分段轮换更新，每次连接都取最新值。
                 let output_path = {
                     let map = live_records.lock().await;
@@ -601,7 +745,7 @@ pub async fn run_live_record(
                     live_records.clone(),
                     client.clone(),
                     task_id.clone(),
-                    url.clone(),
+                    attempt_url,
                     headers.clone(),
                     output_path,
                     signal.clone(),
@@ -1983,6 +2127,72 @@ mod tests {
 
     fn unique_temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("m3u8quicker_{}_{}", name, uuid::Uuid::new_v4()))
+    }
+
+    fn huya_player_html() -> &'static str {
+        r#"<script>
+            var hyPlayerConfig = {
+                stream: {"data":[{"gameStreamInfoList":[{"sCdnType":"AL","sStreamName":"fresh-stream","sFlvUrl":"http://al.flv.huya.com/src","sFlvUrlSuffix":"flv","sFlvAntiCode":"wsSecret=al-new&wsTime=222","iWebPriorityRate":100},{"sCdnType":"TX","sStreamName":"fresh-stream","sFlvUrl":"http://tx.flv.huya.com/src","sFlvUrlSuffix":"flv","sFlvAntiCode":"wsSecret=tx-new&wsTime=333","iWebPriorityRate":10}]}]}
+            };
+        </script>"#
+    }
+
+    #[test]
+    fn huya_refresh_keeps_cdn_and_quality_but_replaces_signature() {
+        let original = "https://tx.flv.huya.com/src/old-stream.flv?wsSecret=old&wsTime=111&ratio=2000&codec=264&title=test";
+        let refreshed = resolve_huya_flv_url(huya_player_html(), original)
+            .expect("resolve huya url")
+            .expect("huya stream available");
+        let parsed = Url::parse(&refreshed).expect("parse refreshed url");
+        let query: HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+
+        assert_eq!(parsed.scheme(), "https");
+        assert_eq!(parsed.host_str(), Some("tx.flv.huya.com"));
+        assert_eq!(parsed.path(), "/src/fresh-stream.flv");
+        assert_eq!(query.get("wsSecret").map(String::as_str), Some("tx-new"));
+        assert_eq!(query.get("wsTime").map(String::as_str), Some("333"));
+        assert_eq!(query.get("ratio").map(String::as_str), Some("2000"));
+        assert_eq!(query.get("codec").map(String::as_str), Some("264"));
+        assert!(!query.contains_key("title"));
+    }
+
+    #[test]
+    fn huya_refresh_uses_web_priority_when_current_cdn_is_missing() {
+        let original = "https://unknown.flv.huya.com/src/old.flv?ratio=500";
+        let refreshed = resolve_huya_flv_url(huya_player_html(), original)
+            .expect("resolve huya url")
+            .expect("huya stream available");
+        let parsed = Url::parse(&refreshed).expect("parse refreshed url");
+
+        assert_eq!(parsed.host_str(), Some("al.flv.huya.com"));
+        assert_eq!(
+            parsed
+                .query_pairs()
+                .find(|(name, _)| name == "ratio")
+                .unwrap()
+                .1,
+            "500"
+        );
+    }
+
+    #[test]
+    fn huya_refresh_requires_huya_flv_and_huya_referer() {
+        let mut headers = RequestHeaders::new();
+        headers.insert(
+            "Referer".to_string(),
+            "https://www.huya.com/813749".to_string(),
+        );
+
+        assert_eq!(
+            huya_room_referer("https://tx.flv.huya.com/src/live.flv", &headers).as_deref(),
+            Some("https://www.huya.com/813749")
+        );
+        assert!(huya_room_referer("https://example.com/live.flv", &headers).is_none());
+        headers.insert(
+            "Referer".to_string(),
+            "https://example.com/watch".to_string(),
+        );
+        assert!(huya_room_referer("https://tx.flv.huya.com/src/live.flv", &headers).is_none());
     }
 
     fn flv_file_header() -> Vec<u8> {

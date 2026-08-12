@@ -419,8 +419,9 @@
     if (qualityOptions.length > 0) {
       url = qualityOptions[0].url;
     }
-    const fileType = detail.fileType === "dash" || detail.fileType === "hls" ? detail.fileType : "mp4";
-    const ext = fileType === "hls" ? "m3u8" : fileType === "dash" ? "mpd" : "mp4";
+    const fileType = ["dash", "hls", "flv"].includes(detail.fileType) ? detail.fileType : "mp4";
+    const ext = fileType === "hls" ? "m3u8" : fileType === "dash" ? "mpd" : fileType === "flv" ? "flv" : "mp4";
+    const isLive = detail.isLive === true || fileType === "flv";
     const fallback = `${detail.source || "video"}-${detectedTargets.length + 1}.${ext}`;
     const fileName = sanitizeFilename(detail.fileName || "", fallback);
     const groupId = typeof detail.groupId === "string" ? detail.groupId.trim() : "";
@@ -430,6 +431,8 @@
     if (existing) {
       existing.url = url;
       existing.fileName = /\.[a-z0-9]{2,5}$/i.test(fileName) ? fileName : `${fileName}.${ext}`;
+      existing.fileType = fileType;
+      existing.isLive = isLive;
       existing.thumbnail = detail.thumbnail || existing.thumbnail || null;
       existing.qualityOptions = qualityOptions;
       qualityOptions.forEach((quality) => checkedTargets.add(stripTitleParam(quality.url)));
@@ -452,6 +455,7 @@
       thumbnail: detail.thumbnail || null,
       groupId: groupId || null,
       qualityOptions,
+      isLive,
     });
     appendButton();
     updateButtonVisibility(true);
