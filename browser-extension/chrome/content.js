@@ -74,6 +74,8 @@
         source: detail.source,
         manifestJson: detail.manifest,
         title: detail.title,
+        groupId: detail.groupId,
+        qualities: detail.qualities,
       });
     });
     window.addEventListener(CUSTOM_TARGET_EVENT, (event) => {
@@ -414,48 +416,110 @@
     if (!isTopLevelContext) {
       return;
     }
-    const url = typeof detail.url === "string" ? detail.url.trim() : "";
+    let url = typeof detail.url === "string" ? detail.url.trim() : "";
     if (!url) {
       return;
+    }
+    const qualityOptions = normalizeCustomQualities(detail.qualities);
+    if (qualityOptions.length > 0) {
+      url = qualityOptions[0].url;
     }
     const fileType = detail.fileType === "dash" || detail.fileType === "hls" ? detail.fileType : "mp4";
     const ext = fileType === "hls" ? "m3u8" : fileType === "dash" ? "mpd" : "mp4";
     const fallback = `${detail.source || "video"}-${detectedTargets.length + 1}.${ext}`;
     const fileName = sanitizeFilename(detail.fileName || "", fallback);
-    if (detectedTargets.find((item) => item.url === url)) {
+    const groupId = typeof detail.groupId === "string" ? detail.groupId.trim() : "";
+    const existing = detectedTargets.find((item) =>
+      (groupId && item.groupId === groupId) || (!groupId && item.url === url)
+    );
+    if (existing) {
+      existing.url = url;
+      existing.fileName = /\.[a-z0-9]{2,5}$/i.test(fileName) ? fileName : `${fileName}.${ext}`;
+      existing.thumbnail = detail.thumbnail || existing.thumbnail || null;
+      existing.qualityOptions = qualityOptions;
+      qualityOptions.forEach((quality) => checkedTargets.add(stripTitleParam(quality.url)));
+      refreshOpenPanel();
       return;
     }
-    checkedTargets.add(url);
+
+    const qualityUrls = new Set(qualityOptions.map((quality) => stripTitleParam(quality.url)));
+    for (let index = detectedTargets.length - 1; index >= 0; index -= 1) {
+      if (!detectedTargets[index].groupId && qualityUrls.has(stripTitleParam(detectedTargets[index].url))) {
+        detectedTargets.splice(index, 1);
+      }
+    }
+    checkedTargets.add(stripTitleParam(url));
+    qualityOptions.forEach((quality) => checkedTargets.add(stripTitleParam(quality.url)));
     addDetectedTarget({
       url,
       fileName: /\.[a-z0-9]{2,5}$/i.test(fileName) ? fileName : `${fileName}.${ext}`,
       fileType,
       thumbnail: detail.thumbnail || null,
+      groupId: groupId || null,
+      qualityOptions,
     });
     appendButton();
     updateButtonVisibility(true);
     refreshOpenPanel();
   }
 
-  function registerCustomManifest({ source, manifestJson, title }) {
+  function normalizeCustomQualities(qualities) {
+    if (!Array.isArray(qualities)) {
+      return [];
+    }
+    const seen = new Set();
+    return qualities.reduce((result, quality, index) => {
+      const url = quality && typeof quality.url === "string" ? quality.url.trim() : "";
+      if (!url || seen.has(url)) {
+        return result;
+      }
+      seen.add(url);
+      result.push({
+        url,
+        label: typeof quality.label === "string" && quality.label.trim()
+          ? quality.label.trim()
+          : `清晰度 ${index + 1}`,
+      });
+      return result;
+    }, []);
+  }
+
+  function registerCustomManifest({ source, manifestJson, title, groupId, qualities }) {
     if (!isTopLevelContext) {
       return;
+    }
+    const qualityOptions = normalizeCustomQualities(qualities);
+    if (qualityOptions.length > 0) {
+      manifestJson = qualityOptions[0].url;
     }
     if (!manifestJson || typeof manifestJson !== "string") {
       return;
     }
-    if (detectedTargets.find((item) => item.url === manifestJson)) {
-      return;
-    }
+    const normalizedGroupId = typeof groupId === "string" ? groupId.trim() : "";
+    const existing = detectedTargets.find((item) =>
+      (normalizedGroupId && item.groupId === normalizedGroupId) ||
+      (!normalizedGroupId && item.url === manifestJson)
+    );
     const fallback = source ? `${source}-dash` : "custom-dash";
     const name = sanitizeFilename(title || getPageTitle(), fallback);
+    if (existing) {
+      existing.url = manifestJson;
+      existing.fileName = `${name}.json`;
+      existing.qualityOptions = qualityOptions;
+      qualityOptions.forEach((quality) => checkedTargets.add(quality.url));
+      refreshOpenPanel();
+      return;
+    }
     addDetectedTarget({
       url: manifestJson,
       fileName: `${name}.json`,
       fileType: "dash",
       thumbnail: null,
+      groupId: normalizedGroupId || null,
+      qualityOptions,
     });
     checkedTargets.add(manifestJson);
+    qualityOptions.forEach((quality) => checkedTargets.add(quality.url));
     appendButton();
     updateButtonVisibility(true);
     refreshOpenPanel();
@@ -701,8 +765,8 @@
     };
 
     selectAllButton.addEventListener("click", () => {
-      detectedTargets.forEach((item) => {
-        selectedUrls.add(item.url);
+      panelItems.forEach((item) => {
+        selectedUrls.add(item.selectionKey);
       });
       selectionInputs.forEach((input) => {
         input.checked = true;
@@ -728,7 +792,7 @@
       }
 
       openBatchDownloader(
-        panelItems.filter((item) => selectedUrls.has(item.url))
+        panelItems.filter((item) => selectedUrls.has(item.selectionKey))
       );
       panel.remove();
     });
@@ -775,9 +839,9 @@
       selectionInputs.push(checkbox);
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) {
-          selectedUrls.add(item.url);
+          selectedUrls.add(item.selectionKey);
         } else {
-          selectedUrls.delete(item.url);
+          selectedUrls.delete(item.selectionKey);
         }
         updateBatchButtonState();
       });
@@ -819,10 +883,10 @@
         renderPlaceholder();
       }
 
-      const content = document.createElement("button");
-      content.type = "button";
+      const content = document.createElement("div");
       content.title = isInlineDashJsonTarget(item) ? item.displayName : item.url;
-      content.style.flex = "1";
+      content.style.flex = "1 1 0";
+      content.style.minWidth = "0";
       content.style.border = "none";
       content.style.padding = "0";
       content.style.background = "transparent";
@@ -832,19 +896,57 @@
       content.style.whiteSpace = "normal";
       content.style.wordBreak = "break-word";
       content.style.overflowWrap = "anywhere";
-      content.style.cursor = "pointer";
-      content.addEventListener("click", () => {
+      const name = document.createElement("button");
+      name.type = "button";
+      name.textContent = item.displayName;
+      name.style.display = "block";
+      name.style.width = "100%";
+      name.style.padding = "0";
+      name.style.border = "none";
+      name.style.background = "transparent";
+      name.style.textAlign = "left";
+      name.style.cursor = "pointer";
+      name.style.fontSize = "13px";
+      name.style.fontWeight = "600";
+      name.style.color = "#17324d";
+      name.addEventListener("click", () => {
         openDownloader(item.url, item.fileType || "hls");
         panel.remove();
       });
 
-      const name = document.createElement("div");
-      name.textContent = item.displayName;
-      name.style.fontSize = "13px";
-      name.style.fontWeight = "600";
-      name.style.color = "#17324d";
-
       content.appendChild(name);
+
+      if (Array.isArray(item.qualityOptions) && item.qualityOptions.length > 1) {
+        const qualitySelect = document.createElement("select");
+        qualitySelect.setAttribute("aria-label", `${item.displayName} 清晰度`);
+        qualitySelect.style.display = "block";
+        qualitySelect.style.width = "100%";
+        qualitySelect.style.minWidth = "0";
+        qualitySelect.style.marginTop = "6px";
+        qualitySelect.style.boxSizing = "border-box";
+        qualitySelect.style.padding = "3px 24px 3px 6px";
+        qualitySelect.style.border = "1px solid #c8d6e8";
+        qualitySelect.style.borderRadius = "6px";
+        qualitySelect.style.background = "#ffffff";
+        qualitySelect.style.color = "#17324d";
+        qualitySelect.style.fontSize = "12px";
+        qualitySelect.style.cursor = "pointer";
+        item.qualityOptions.forEach((quality) => {
+          const option = document.createElement("option");
+          option.value = quality.url;
+          option.textContent = quality.label;
+          qualitySelect.appendChild(option);
+        });
+        qualitySelect.value = item.url;
+        qualitySelect.addEventListener("change", () => {
+          item.url = qualitySelect.value;
+          item.batchUrl = item.batchTitle
+            ? appendCustomTitle(item.url, item.batchTitle)
+            : item.url;
+          content.title = item.url;
+        });
+        content.appendChild(qualitySelect);
+      }
 
       const previewButton = document.createElement("button");
       previewButton.type = "button";
@@ -1031,8 +1133,10 @@
       if (!key || total <= 1) {
         return {
           ...item,
+          selectionKey: item.groupId || item.url,
           displayName: item.fileName || "video",
-          batchUrl: item.url
+          batchUrl: item.url,
+          batchTitle: ""
         };
       }
 
@@ -1040,8 +1144,10 @@
       indexes.set(key, nextIndex);
       return {
         ...item,
+        selectionKey: item.groupId || item.url,
         displayName: item.fileName || "video",
-        batchUrl: appendCustomTitle(item.url, `${title}-${nextIndex}`)
+        batchUrl: appendCustomTitle(item.url, `${title}-${nextIndex}`),
+        batchTitle: `${title}-${nextIndex}`
       };
     });
   }

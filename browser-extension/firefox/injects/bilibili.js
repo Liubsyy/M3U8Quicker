@@ -100,9 +100,14 @@
           : `v${videoIndex + 1}`;
       const codecPart = codecLabel(videoTrack.codecs);
       const title = `${pageTitle} - ${qualityLabel} ${codecPart}`;
+      const resolutionLabel = videoTrack.width && videoTrack.height
+        ? `${videoTrack.width}×${videoTrack.height}（${qualityLabel}）`
+        : qualityLabel;
+      const bitrateLabel = Math.round((videoTrack.bandwidth || 0) / 1000);
 
       manifests.push({
         title,
+        optionLabel: `${resolutionLabel} · ${codecPart} · ${bitrateLabel} kbps`,
         manifest: {
           format: FORMAT,
           title,
@@ -127,8 +132,9 @@
     if (manifests.length === 0) {
       return;
     }
-    const payloads = manifests.map(({ title, manifest }) => ({
+    const payloads = manifests.map(({ title, optionLabel, manifest }) => ({
       title,
+      optionLabel,
       manifestJson: JSON.stringify(manifest),
     }));
     const signature = payloads.map((item) => item.manifestJson).join("|");
@@ -136,17 +142,21 @@
       return;
     }
     lastSignature = signature;
-    payloads.forEach(({ title, manifestJson }) => {
-      window.dispatchEvent(
-        new CustomEvent(EVENT_NAME, {
-          detail: {
-            source: SOURCE_ID,
-            title,
-            manifest: manifestJson,
-          },
-        })
-      );
-    });
+    const first = payloads[0];
+    window.dispatchEvent(
+      new CustomEvent(EVENT_NAME, {
+        detail: {
+          source: SOURCE_ID,
+          title: document.title || "bilibili",
+          manifest: first.manifestJson,
+          groupId: `${SOURCE_ID}:${location.pathname}${location.search}`,
+          qualities: payloads.map(({ optionLabel, manifestJson }) => ({
+            label: optionLabel,
+            url: manifestJson,
+          })),
+        },
+      })
+    );
   }
 
   emitManifests();
