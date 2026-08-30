@@ -14,7 +14,7 @@ import {
 } from "antd";
 import type { MenuProps } from "antd";
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ColumnsType } from "antd/es/table";
 import {
   CaretRightOutlined,
@@ -200,6 +200,15 @@ export function DownloadList({
     Record<string, DownloadTaskSegmentState>
   >({});
   const [segmentLoading, setSegmentLoading] = useState<Record<string, boolean>>({});
+  const [openSegmentPopoverId, setOpenSegmentPopoverId] = useState<string | null>(
+    null
+  );
+  const openSegmentPopoverIdRef = useRef<string | null>(null);
+  const pendingSegmentRecordRef = useRef<DownloadTaskSummary | null>(null);
+  const segmentRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const segmentRequestVersionRef = useRef(0);
+  const scheduledSegmentUpdateRef = useRef<Record<string, string>>({});
+  const getSegmentStateRef = useRef(getSegmentState);
   const [ctxMenu, setCtxMenu] = useState<
     { record: DownloadTaskSummary; x: number; y: number } | null
   >(null);
@@ -358,34 +367,127 @@ export function DownloadList({
     }
   };
 
-  const handleSegmentPopoverOpen = async (
-    open: boolean,
-    record: DownloadTaskSummary
-  ) => {
-    if (!open) {
-      return;
-    }
+  useEffect(() => {
+    getSegmentStateRef.current = getSegmentState;
+  }, [getSegmentState]);
 
-    const cached = segmentStates[record.id];
-    if (cached && cached.updated_at === record.updated_at) {
-      return;
-    }
-
+  const refreshSegmentState = useCallback(async (record: DownloadTaskSummary) => {
+    const requestVersion = segmentRequestVersionRef.current + 1;
+    segmentRequestVersionRef.current = requestVersion;
     setSegmentLoading((prev) => ({ ...prev, [record.id]: true }));
+
     try {
-      const nextState = await getSegmentState(record);
+      const nextState = await getSegmentStateRef.current(record);
+      if (
+        segmentRequestVersionRef.current !== requestVersion ||
+        openSegmentPopoverIdRef.current !== record.id
+      ) {
+        return;
+      }
       setSegmentStates((prev) => ({
         ...prev,
         [record.id]: nextState,
       }));
+    } catch (error) {
+      console.error("Failed to load download segment state", error);
     } finally {
-      setSegmentLoading((prev) => ({ ...prev, [record.id]: false }));
+      if (segmentRequestVersionRef.current === requestVersion) {
+        setSegmentLoading((prev) => ({ ...prev, [record.id]: false }));
+      }
     }
+  }, []);
+
+  const scheduleSegmentRefresh = useCallback(
+    (record: DownloadTaskSummary, delay: number) => {
+      pendingSegmentRecordRef.current = record;
+      if (segmentRefreshTimerRef.current !== null) {
+        return;
+      }
+
+      segmentRefreshTimerRef.current = setTimeout(() => {
+        segmentRefreshTimerRef.current = null;
+        const pendingRecord = pendingSegmentRecordRef.current;
+        pendingSegmentRecordRef.current = null;
+        if (
+          pendingRecord &&
+          openSegmentPopoverIdRef.current === pendingRecord.id
+        ) {
+          void refreshSegmentState(pendingRecord);
+        }
+      }, delay);
+    },
+    [refreshSegmentState]
+  );
+
+  useEffect(() => {
+    if (!openSegmentPopoverId) {
+      return;
+    }
+
+    const record = downloads.find((item) => item.id === openSegmentPopoverId);
+    if (!record) {
+      return;
+    }
+    if (scheduledSegmentUpdateRef.current[record.id] === record.updated_at) {
+      return;
+    }
+
+    scheduledSegmentUpdateRef.current[record.id] = record.updated_at;
+    scheduleSegmentRefresh(record, 400);
+  }, [downloads, openSegmentPopoverId, scheduleSegmentRefresh]);
+
+  useEffect(
+    () => () => {
+      if (segmentRefreshTimerRef.current !== null) {
+        clearTimeout(segmentRefreshTimerRef.current);
+      }
+      segmentRequestVersionRef.current += 1;
+    },
+    []
+  );
+
+  const handleSegmentPopoverOpen = (
+    open: boolean,
+    record: DownloadTaskSummary
+  ) => {
+    if (!open) {
+      if (openSegmentPopoverIdRef.current !== record.id) {
+        return;
+      }
+      openSegmentPopoverIdRef.current = null;
+      setOpenSegmentPopoverId(null);
+      pendingSegmentRecordRef.current = null;
+      if (segmentRefreshTimerRef.current !== null) {
+        clearTimeout(segmentRefreshTimerRef.current);
+        segmentRefreshTimerRef.current = null;
+      }
+      segmentRequestVersionRef.current += 1;
+      setSegmentLoading((prev) => ({ ...prev, [record.id]: false }));
+      return;
+    }
+
+    if (openSegmentPopoverIdRef.current !== record.id) {
+      pendingSegmentRecordRef.current = null;
+      if (segmentRefreshTimerRef.current !== null) {
+        clearTimeout(segmentRefreshTimerRef.current);
+        segmentRefreshTimerRef.current = null;
+      }
+      segmentRequestVersionRef.current += 1;
+    }
+    openSegmentPopoverIdRef.current = record.id;
+    setOpenSegmentPopoverId(record.id);
+    scheduledSegmentUpdateRef.current[record.id] = record.updated_at;
+    scheduleSegmentRefresh(record, 0);
   };
 
   const renderCompletedSegmentsPopover = (record: DownloadTaskSummary) => {
     const segmentState = segmentStates[record.id];
     const loadingSegments = segmentLoading[record.id];
+    const completedSegmentCount =
+      segmentState?.completed_segment_indices.length ?? record.completed_segments;
+    const failedSegmentCount =
+      segmentState?.failed_segment_indices.length ?? record.failed_segment_count;
+    const totalSegments = segmentState?.total_segments ?? record.total_segments;
 
     const content = (
       <div
@@ -400,7 +502,7 @@ export function DownloadList({
         <Space size={12} wrap style={{ display: "flex", marginBottom: 8 }}>
           <Typography.Text strong>已下载切片</Typography.Text>
           <Typography.Text type="secondary">
-            {record.completed_segments}/{record.total_segments}
+            {completedSegmentCount}/{totalSegments}
           </Typography.Text>
         </Space>
         <Space size={12} wrap style={{ display: "flex", marginBottom: 12 }}>
@@ -412,7 +514,7 @@ export function DownloadList({
           </Tag>
           <Tag style={{ marginInlineEnd: 0 }}>未完成</Tag>
         </Space>
-        {record.failed_segment_count > 0 ? (
+        {failedSegmentCount > 0 ? (
           <Button
             type="link"
             size="small"
@@ -423,8 +525,8 @@ export function DownloadList({
             重试失败分片
           </Button>
         ) : null}
-        {loadingSegments ? <Spin size="small" /> : null}
-        {!loadingSegments && segmentState ? renderSegmentGrid(segmentState) : null}
+        {loadingSegments && !segmentState ? <Spin size="small" /> : null}
+        {segmentState ? renderSegmentGrid(segmentState) : null}
       </div>
     );
 
@@ -434,7 +536,7 @@ export function DownloadList({
         trigger="hover"
         placement="topLeft"
         onOpenChange={(open) => {
-          void handleSegmentPopoverOpen(open, record);
+          handleSegmentPopoverOpen(open, record);
         }}
       >
         <Typography.Text
