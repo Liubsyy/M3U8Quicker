@@ -11,9 +11,8 @@
 
 行为说明：
 
-- 扩展会通过后台 `webRequest` 监听浏览器网络层中的 `.m3u8`、`.mpd` 和 `.flv` 请求，包含 iframe 内的请求
-- 当页面中的 `<video>` 元素 `currentSrc` 或 `src` 含有受支持的媒体后缀时，扩展也会校验该地址
-- 虎牙页面会读取 `hyPlayerConfig`，主动生成优先 CDN 的 HTTP-FLV 地址和清晰度列表，并在签名临近过期时刷新页面配置
+- 扩展会通过后台 `webRequest` 监听浏览器网络层中的 `.m3u8` 请求，包含 iframe 内的请求
+- 当页面中的 `<video>` 元素 `currentSrc` 或 `src` 含有 `.m3u8` 时，扩展也会校验该地址
 - 校验通过后，页面右上角会出现按钮“M3U8 Quicker”，按钮图标与桌面端 `src-tauri/icons/icon.png` 保持一致
 - 按钮支持拖动调整位置；只有点击才会触发唤起下载，拖动不会触发
 - 点击按钮会尝试通过 `m3u8quicker://new-task?url=...&extra_headers=...` 唤起桌面端，并自动打开“新建下载”弹窗
@@ -31,4 +30,3 @@
 - `content.js`：接收后台检测结果、按需注入站点脚本、校验与按钮 UI
 - `injects/registry.js`：站点注入清单，按域名映射到对应注入脚本
 - `injects/bilibili.js`：注入到 bilibili 页面读取 `__playinfo__`，输出 DASH manifest
-- `injects/huya.js`：注入到虎牙页面读取 `hyPlayerConfig`，输出直播地址与清晰度列表

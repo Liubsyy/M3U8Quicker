@@ -34,7 +34,6 @@
         "injects/bilibili.js",
         "injects/cctv.js",
         "injects/douyin.js",
-        "injects/huya.js",
         "icon.png"
       ],
       "matches": [
