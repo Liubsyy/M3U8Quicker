@@ -171,6 +171,8 @@ export function PreviewWindow() {
   );
   const loading = Boolean(token) && previewStatus === "loading";
   const loadedCount = previewStatus === "done" ? count : thumbnails.length;
+  const firstThumbnail = thumbnails.find((thumbnail) => thumbnail.index === 0);
+  const videoInfo = firstThumbnail?.video_info;
   const progressPercent =
     count > 0 ? Math.min(100, Math.round((loadedCount / count) * 100)) : 0;
 
@@ -360,8 +362,21 @@ export function PreviewWindow() {
           background: themeToken.colorBgContainer,
         }}
       >
-        <Space>
+        <Space size={16} wrap>
           <Typography.Text strong>视频预览</Typography.Text>
+          {firstThumbnail ? (
+            <Space size={16} wrap style={{ fontSize: 12 }}>
+              <Typography.Text type="secondary">
+                帧率：{videoInfo?.frame_rate ? `${Number(videoInfo.frame_rate.toFixed(3))} fps` : "未知"}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                分辨率：{videoInfo?.width && videoInfo?.height ? `${videoInfo.width} × ${videoInfo.height}` : "未知"}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                编码格式：{videoInfo?.codec_name?.toUpperCase() || "未知"}
+              </Typography.Text>
+            </Space>
+          ) : null}
         </Space>
         <Space size={10} wrap>
           <div

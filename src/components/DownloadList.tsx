@@ -21,6 +21,7 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   DeleteOutlined,
+  FileSearchOutlined,
   FolderOpenOutlined,
   GlobalOutlined,
   InfoCircleOutlined,
@@ -61,6 +62,7 @@ interface DownloadListProps {
   onRemove: (id: string, deleteFile: boolean) => void;
   onStop?: (id: string) => void;
   onPlay?: (task: DownloadTaskSummary) => void;
+  onAnalyze?: (filePath: string) => void;
   loading: boolean;
   showActions: ("pause" | "resume" | "cancel" | "stop" | "remove" | "open" | "play")[];
   showSpeed?: boolean;
@@ -189,6 +191,7 @@ export function DownloadList({
   onRemove,
   onStop,
   onPlay,
+  onAnalyze,
   loading,
   showActions,
   showSpeed = true,
@@ -235,6 +238,14 @@ export function DownloadList({
         icon: <VideoCameraOutlined />,
         label: "播放",
         disabled: !canOpenInProgressPlayback(record),
+      });
+    }
+    if (onAnalyze && record.status === "Completed") {
+      opGroup.push({
+        key: "analyze",
+        icon: <FileSearchOutlined />,
+        label: "分析视频",
+        disabled: !record.file_path?.trim(),
       });
     }
     if (showActions.includes("pause") && record.status === "Downloading") {
@@ -324,6 +335,11 @@ export function DownloadList({
     switch (info.key) {
       case "play":
         onPlay?.(record);
+        return;
+      case "analyze":
+        if (record.status === "Completed" && record.file_path?.trim()) {
+          onAnalyze?.(record.file_path);
+        }
         return;
       case "pause":
         onPause(record.id);

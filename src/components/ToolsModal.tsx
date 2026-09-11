@@ -140,10 +140,11 @@ const AUDIO_CODEC_OPTIONS_BY_FORMAT: Record<
 interface ToolsModalProps {
   open: boolean;
   tool: ToolAction | null;
+  initialInputPath?: string;
   onClose: () => void;
 }
 
-export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
+export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModalProps) {
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<MediaAnalysisResult | null>(null);
@@ -244,6 +245,9 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
   useEffect(() => {
     if (!open) return;
     form.resetFields();
+    if (tool === "analyze-media" && initialInputPath) {
+      form.setFieldValue("input_path", initialInputPath);
+    }
     setAnalysisResult(null);
     setClipStatus({ duration: 0, loadFailed: false });
     if (tool === "format-convert") {
@@ -261,7 +265,7 @@ export function ToolsModal({ open, tool, onClose }: ToolsModalProps) {
     if (tool === "clip-video") {
       form.setFieldValue("clip_mode", "fast");
     }
-  }, [form, open, tool]);
+  }, [form, open, tool, initialInputPath]);
 
   const handlePickInput = async () => {
     if (tool === "merge-ts" || tool === "multi-track-hls-to-mp4") {

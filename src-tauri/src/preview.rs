@@ -35,7 +35,7 @@ pub struct PreviewSession {
     /// remote segments. ffmpeg's default protocol whitelist for files refuses
     /// to follow `http(s)` URIs, so we have to widen it for these sessions.
     pub uses_local_playlist: bool,
-    pub duration_secs: Mutex<Option<f64>>,
+    pub media_info: Mutex<Option<ffmpeg::PreviewMediaInfo>>,
     pub operation_lock: RwLock<()>,
     pub cancel_token: Mutex<CancellationToken>,
     pub cancelled_runs: Mutex<HashSet<String>>,
@@ -61,6 +61,7 @@ pub struct PreviewThumbnail {
     pub index: usize,
     pub time_secs: f64,
     pub path: String,
+    pub video_info: Option<ffmpeg::PreviewVideoInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,7 +115,7 @@ pub async fn create_session(
         cache_dir,
         resolved_input,
         uses_local_playlist,
-        duration_secs: Mutex::new(None),
+        media_info: Mutex::new(None),
         operation_lock: RwLock::new(()),
         cancel_token: Mutex::new(CancellationToken::new()),
         cancelled_runs: Mutex::new(HashSet::new()),
@@ -188,12 +189,12 @@ pub async fn extract_thumbnails(
         }
     };
 
-    let duration_secs = {
-        let mut guard = session.duration_secs.lock().await;
-        if let Some(value) = *guard {
-            value
+    let media_info = {
+        let mut guard = session.media_info.lock().await;
+        if let Some(value) = guard.as_ref() {
+            value.clone()
         } else {
-            let value = ffmpeg::probe_media_duration_secs_cancellable(
+            let value = ffmpeg::probe_preview_media_cancellable(
                 &ffmpeg_path,
                 &session.resolved_input,
                 session.extra_headers.as_deref(),
@@ -202,15 +203,16 @@ pub async fn extract_thumbnails(
                 &cancel_token,
             )
             .await?;
-            if !(value.is_finite() && value > 0.0) {
+            if !(value.duration_secs.is_finite() && value.duration_secs > 0.0) {
                 return Err(AppError::Conversion(
                     "无法识别视频时长，无法生成预览".to_string(),
                 ));
             }
-            *guard = Some(value);
+            *guard = Some(value.clone());
             value
         }
     };
+    let duration_secs = media_info.duration_secs;
 
     let thumbnail_dir =
         thumbnail_dir_for_options(&session.cache_dir, count, target_width, jpeg_quality);
@@ -233,6 +235,7 @@ pub async fn extract_thumbnails(
             let token = token.to_string();
             let run_id = run_id.to_string();
             let proxy_url = proxy_url.clone();
+            let video_info = if index == 0 { media_info.video.clone() } else { None };
 
             async move {
                 if cancel_token.is_cancelled() {
@@ -267,6 +270,7 @@ pub async fn extract_thumbnails(
                     index,
                     time_secs: time,
                     path: output_path.to_string_lossy().into_owned(),
+                    video_info,
                 };
                 let _ = app_handle.emit(
                     "preview-thumbnail",

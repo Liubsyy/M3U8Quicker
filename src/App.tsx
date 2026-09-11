@@ -138,6 +138,7 @@ function App({
   >("general");
   const [toolModalOpen, setToolModalOpen] = useState(false);
   const [activeTool, setActiveTool] = useState<ToolAction | null>(null);
+  const [toolInputPath, setToolInputPath] = useState<string | undefined>();
   const [downloadDraft, setDownloadDraft] = useState<DownloadDraft | null>(null);
   const [batchDownloadDraft, setBatchDownloadDraft] = useState<BatchDownloadDraft | null>(null);
   const [liveRecordDraft, setLiveRecordDraft] = useState<{
@@ -751,6 +752,11 @@ function App({
             void handleOpenPlaybackWindow(task);
           }}
           loading={loadingHistory}
+          onAnalyze={(filePath) => {
+            setToolInputPath(filePath);
+            setActiveTool("analyze-media");
+            setToolModalOpen(true);
+          }}
           showActions={["play", "remove", "open"]}
           showSpeed={false}
           actionsHeaderExtra={
@@ -894,6 +900,7 @@ function App({
               return;
             }
             setActiveTool(tool);
+            setToolInputPath(undefined);
             setToolModalOpen(true);
           }}
           onOpenSettings={() => {
@@ -962,9 +969,11 @@ function App({
       <ToolsModal
         open={toolModalOpen}
         tool={activeTool}
+        initialInputPath={toolInputPath}
         onClose={() => {
           setToolModalOpen(false);
           setActiveTool(null);
+          setToolInputPath(undefined);
         }}
       />
       <BatchDownloadModal

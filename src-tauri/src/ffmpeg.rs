@@ -798,20 +798,34 @@ fn download_macos_ffprobe(dest_dir: &Path, app_handle: &AppHandle) -> Result<(),
     Ok(())
 }
 
-/// Probe duration and stop the ffprobe/ffmpeg child promptly when cancelled.
-pub async fn probe_media_duration_secs_cancellable(
+#[derive(Debug, Clone, Serialize)]
+pub struct PreviewVideoInfo {
+    pub frame_rate: Option<f64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub codec_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreviewMediaInfo {
+    pub duration_secs: f64,
+    pub video: Option<PreviewVideoInfo>,
+}
+
+/// Probe preview metadata once and stop the child promptly when cancelled.
+pub async fn probe_preview_media_cancellable(
     ffmpeg_path: &Path,
     input: &str,
     extra_headers: Option<&str>,
     proxy: Option<&str>,
     extra_input_args: &[&str],
     cancel_token: &CancellationToken,
-) -> Result<f64, AppError> {
+) -> Result<PreviewMediaInfo, AppError> {
     let formatted_headers = format_ffmpeg_headers(extra_headers);
     let sanitized_proxy = sanitize_ffmpeg_proxy(proxy);
     let sibling_ffprobe = ffmpeg_path.with_file_name(ffprobe_binary_name());
 
-    if let Ok(value) = run_ffprobe_duration_cancellable(
+    if let Ok(value) = run_ffprobe_preview_cancellable(
         sibling_ffprobe.as_os_str(),
         input,
         formatted_headers.as_deref(),
@@ -821,12 +835,12 @@ pub async fn probe_media_duration_secs_cancellable(
     )
     .await
     {
-        if value.is_finite() && value > 0.0 {
+        if value.duration_secs.is_finite() && value.duration_secs > 0.0 {
             return Ok(value);
         }
     }
 
-    if let Ok(value) = run_ffprobe_duration_cancellable(
+    if let Ok(value) = run_ffprobe_preview_cancellable(
         OsStr::new("ffprobe"),
         input,
         formatted_headers.as_deref(),
@@ -836,12 +850,12 @@ pub async fn probe_media_duration_secs_cancellable(
     )
     .await
     {
-        if value.is_finite() && value > 0.0 {
+        if value.duration_secs.is_finite() && value.duration_secs > 0.0 {
             return Ok(value);
         }
     }
 
-    probe_duration_via_ffmpeg_cancellable(
+    let duration_secs = probe_duration_via_ffmpeg_cancellable(
         ffmpeg_path,
         input,
         formatted_headers.as_deref(),
@@ -849,17 +863,18 @@ pub async fn probe_media_duration_secs_cancellable(
         extra_input_args,
         cancel_token,
     )
-    .await
+    .await?;
+    Ok(PreviewMediaInfo { duration_secs, video: None })
 }
 
-async fn run_ffprobe_duration_cancellable(
+async fn run_ffprobe_preview_cancellable(
     ffprobe_command: &OsStr,
     input: &str,
     formatted_headers: Option<&str>,
     proxy: Option<&str>,
     extra_input_args: &[&str],
     cancel_token: &CancellationToken,
-) -> Result<f64, AppError> {
+) -> Result<PreviewMediaInfo, AppError> {
     let mut command = tokio::process::Command::new(ffprobe_command);
     configure_background_command(&mut command);
     if let Some(headers) = formatted_headers {
@@ -875,10 +890,12 @@ async fn run_ffprobe_duration_cancellable(
         .args([
             "-v",
             "error",
+            "-select_streams",
+            "v:0",
             "-show_entries",
-            "format=duration",
+            "format=duration:stream=index,codec_name,width,height,avg_frame_rate,r_frame_rate",
             "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "json",
             input,
         ])
         .stdout(std::process::Stdio::piped())
@@ -899,10 +916,34 @@ async fn run_ffprobe_duration_cancellable(
         )));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    stdout
-        .parse::<f64>()
-        .map_err(|_| AppError::Conversion("ffprobe 未返回有效的时长".to_string()))
+    parse_preview_media_info(&output.stdout)
+}
+
+fn parse_preview_media_info(json: &[u8]) -> Result<PreviewMediaInfo, AppError> {
+    let output: FfprobeOutput = serde_json::from_slice(json)
+        .map_err(|e| AppError::Conversion(format!("解析预览媒体信息失败: {}", e)))?;
+    let duration_secs = output.format
+        .and_then(|format| format.duration)
+        .and_then(|duration| duration.parse::<f64>().ok())
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+        .ok_or_else(|| AppError::Conversion("ffprobe 未返回有效的时长".to_string()))?;
+    let video = output.streams.into_iter().next().map(|stream| PreviewVideoInfo {
+        frame_rate: stream.avg_frame_rate.as_deref().and_then(parse_preview_frame_rate)
+            .or_else(|| stream.r_frame_rate.as_deref().and_then(parse_preview_frame_rate)),
+        width: stream.width.filter(|width| *width > 0),
+        height: stream.height.filter(|height| *height > 0),
+        codec_name: stream.codec_name.filter(|name| !name.trim().is_empty()),
+    });
+    Ok(PreviewMediaInfo { duration_secs, video })
+}
+
+fn parse_preview_frame_rate(value: &str) -> Option<f64> {
+    let rate = if let Some((numerator, denominator)) = value.split_once('/') {
+        numerator.parse::<f64>().ok()? / denominator.parse::<f64>().ok()?
+    } else {
+        value.parse::<f64>().ok()?
+    };
+    (rate.is_finite() && rate > 0.0).then_some(rate)
 }
 
 async fn probe_duration_via_ffmpeg_cancellable(
@@ -998,6 +1039,9 @@ pub async fn extract_thumbnail_jpeg_cancellable(
     args.extend([
         "-i".to_string(),
         input.to_string(),
+        // Match the video stream used by the preview metadata probe.
+        "-map".to_string(),
+        "0:v:0".to_string(),
         "-frames:v".to_string(),
         "1".to_string(),
         "-vf".to_string(),
@@ -2615,6 +2659,39 @@ mod tests {
     fn format_ffmpeg_headers_skips_invalid_lines() {
         let formatted = format_ffmpeg_headers(Some("noseparator\nreferer: https://a.com"));
         assert_eq!(formatted.as_deref(), Some("referer: https://a.com\r\n"));
+    }
+
+    #[test]
+    fn preview_media_info_parses_source_video_metadata() {
+        let info = parse_preview_media_info(br#"{
+            "streams": [{"index": 0, "codec_name": "h264", "width": 1920,
+                "height": 1080, "avg_frame_rate": "30000/1001", "r_frame_rate": "30/1"}],
+            "format": {"duration": "120.5"}
+        }"#).unwrap();
+        assert_eq!(info.duration_secs, 120.5);
+        let video = info.video.unwrap();
+        assert!((video.frame_rate.unwrap() - 29.97002997).abs() < 0.000001);
+        assert_eq!((video.width, video.height), (Some(1920), Some(1080)));
+        assert_eq!(video.codec_name.as_deref(), Some("h264"));
+    }
+
+    #[test]
+    fn preview_media_info_handles_missing_and_invalid_metadata() {
+        let info = parse_preview_media_info(br#"{
+            "streams": [{"index": 0, "width": 0, "avg_frame_rate": "0/0", "r_frame_rate": "25/1"}],
+            "format": {"duration": "10"}
+        }"#).unwrap();
+        let video = info.video.unwrap();
+        assert_eq!(video.frame_rate, Some(25.0));
+        assert_eq!(video.width, None);
+        assert_eq!(video.height, None);
+        assert_eq!(video.codec_name, None);
+        for value in ["0/0", "25/0", "0/1", "-1/1", "NaN", "inf", "N/A"] {
+            assert_eq!(parse_preview_frame_rate(value), None, "{}", value);
+        }
+        assert_eq!(parse_preview_frame_rate("23.976"), Some(23.976));
+        assert!(parse_preview_media_info(br#"{"streams": [], "format": {"duration": "N/A"}}"#).is_err());
+        assert!(parse_preview_media_info(br#"{"streams": [], "format": {"duration": "NaN"}}"#).is_err());
     }
 
     #[test]

@@ -399,10 +399,18 @@ export async function openUrl(url: string): Promise<void> {
   return invoke("open_url", { url });
 }
 
+export interface PreviewVideoInfo {
+  frame_rate: number | null;
+  width: number | null;
+  height: number | null;
+  codec_name: string | null;
+}
+
 export interface PreviewThumbnail {
   index: number;
   time_secs: number;
   path: string;
+  video_info: PreviewVideoInfo | null;
 }
 
 export async function createPreviewSession(
