@@ -123,6 +123,8 @@ interface SettingsModalProps {
   themeMode: ThemeMode;
   zoomFactor: number;
   updateAvailable?: boolean;
+  updateNotificationsEnabled: boolean;
+  onUpdateNotificationsChange: (enabled: boolean) => void;
   historyPageSize?: number;
   onClose: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
@@ -184,6 +186,8 @@ export function SettingsModal({
   themeMode,
   zoomFactor,
   updateAvailable = false,
+  updateNotificationsEnabled,
+  onUpdateNotificationsChange,
   historyPageSize = DEFAULT_HISTORY_PAGE_SIZE,
   onClose,
   onThemeModeChange,
@@ -1554,6 +1558,24 @@ export function SettingsModal({
             >
               检查更新
             </Button>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              marginTop: 16,
+              paddingTop: 16,
+              borderTop: `1px solid ${token.colorBorderSecondary}`,
+            }}
+          >
+            <Typography.Text>更新通知</Typography.Text>
+            <Switch
+              aria-label="更新通知"
+              checked={updateNotificationsEnabled}
+              onChange={onUpdateNotificationsChange}
+            />
           </div>
         </div>
       ),

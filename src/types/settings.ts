@@ -1,6 +1,7 @@
 export type ThemeMode = "light" | "dark";
 
 export const THEME_MODE_STORAGE_KEY = "m3u8quicker.themeMode";
+export const UPDATE_NOTIFICATIONS_STORAGE_KEY = "m3u8quicker.updateNotifications";
 export const DEFAULT_HISTORY_PAGE_SIZE = 50;
 export const HISTORY_PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200] as const;
 

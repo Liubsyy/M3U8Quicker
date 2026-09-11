@@ -66,6 +66,7 @@ import {
   DEFAULT_HISTORY_PAGE_SIZE,
   DEFAULT_ZOOM,
   normalizeZoom,
+  UPDATE_NOTIFICATIONS_STORAGE_KEY,
   ZOOM_STEP,
 } from "./types/settings";
 
@@ -149,6 +150,10 @@ function App({
   const [batchDownloadModalOpen, setBatchDownloadModalOpen] = useState(false);
   const [videoPreviewModalOpen, setVideoPreviewModalOpen] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateNotificationsEnabled, setUpdateNotificationsEnabled] = useState(
+    () => localStorage.getItem(UPDATE_NOTIFICATIONS_STORAGE_KEY) !== "false"
+  );
+  const showUpdateDot = updateNotificationsEnabled && updateAvailable;
   const [proxyEnabled, setProxyEnabled] = useState(false);
   const [historyPageSize, setHistoryPageSize] = useState(DEFAULT_HISTORY_PAGE_SIZE);
   const [chromiumInstallGuide, setChromiumInstallGuide] =
@@ -209,6 +214,13 @@ function App({
     loadingHistory: loadingLiveHistory,
   } = useLiveRecords(historyPageSize);
   const { token } = theme.useToken();
+
+  useEffect(() => {
+    localStorage.setItem(
+      UPDATE_NOTIFICATIONS_STORAGE_KEY,
+      String(updateNotificationsEnabled)
+    );
+  }, [updateNotificationsEnabled]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -896,7 +908,7 @@ function App({
           onProxyEnabledChange={(enabled) => {
             void handleProxyEnabledChange(enabled);
           }}
-          updateAvailable={updateAvailable}
+          updateAvailable={showUpdateDot}
         />
       </Header>
       <Content
@@ -934,7 +946,9 @@ function App({
         initialTab={settingsInitialTab}
         themeMode={themeMode}
         zoomFactor={zoomFactor}
-        updateAvailable={updateAvailable}
+        updateAvailable={showUpdateDot}
+        updateNotificationsEnabled={updateNotificationsEnabled}
+        onUpdateNotificationsChange={setUpdateNotificationsEnabled}
         historyPageSize={historyPageSize}
         onClose={() => {
           setSettingsOpen(false);
