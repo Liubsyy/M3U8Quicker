@@ -1,8 +1,16 @@
 # Changelog
+
 ## 1.2.8
+
 - 新增桌面应用多语言支持：简体中文、繁体中文、英语、日语、韩语、西班牙语、法语、德语、葡萄牙语（巴西）和俄语，首次启动自动匹配系统语言。浏览器扩展支持中/英切换
 - 视频预览增加展示：帧率/分辨率/编码格式
 - 下载完成视频增加右键分析视频
+
+**English**
+
+- Added desktop language support for Simplified Chinese, Traditional Chinese, English, Japanese, Korean, Spanish, French, German, Portuguese (Brazil), and Russian. The application automatically matches the system language on first launch. The browser extension supports switching between Chinese and English.
+- Video previews now display frame rate, resolution, and codec information.
+- Added a video analysis option to the context menu for completed downloads.
 
 ## 1.2.7
 - 浏览器扩展：优化抖音、bilibili下载视频可选不同清晰度
