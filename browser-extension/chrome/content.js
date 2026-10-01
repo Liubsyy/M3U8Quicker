@@ -26,6 +26,72 @@
   const videoThumbnailMap = new Map();
   let buttonPosition = { top: 20, right: 20 };
   let uiRoot = null;
+  const LANGUAGE_STORAGE_KEY = "m3u8quickerLanguage";
+  const browserLanguage = /^zh(?:[-_]|$)/i.test(chrome.i18n.getUILanguage()) ? "zh" : "en";
+  let language = browserLanguage;
+  let languageRevision = 0;
+  const messages = {
+    zh: {
+      title: "选择要下载的视频", selectAll: "全选", deselect: "不选", clear: "清空",
+      batch: "批量下载", close: "关闭", empty: "暂无可下载视频",
+      preview: "预览", copy: "复制", copied: "已复制", failed: "失败",
+      download: "下载", record: "录播", quality: "{name} 清晰度",
+      selectVideo: "选择 {name}", defaultQuality: "默认清晰度", qualityNumber: "清晰度 {number}",
+    },
+    en: {
+      title: "Select videos to download", selectAll: "Select all", deselect: "Deselect", clear: "Clear",
+      batch: "Download selected", close: "Close", empty: "No videos available",
+      preview: "Preview", copy: "Copy", copied: "Copied", failed: "Failed",
+      download: "Download", record: "Record", quality: "{name} quality",
+      selectVideo: "Select {name}", defaultQuality: "Default quality", qualityNumber: "Quality {number}",
+    },
+  };
+
+  function t(key, values = {}) {
+    return messages[language][key].replace(/\{(\w+)\}/g, (_, name) => String(values[name] ?? ""));
+  }
+
+  function applyLanguage(value) {
+    language = value === "zh" || value === "en" ? value : browserLanguage;
+    const panel = uiRoot && uiRoot.querySelector(`#${PANEL_ID}`);
+    if (panel) panel.updateLanguage();
+  }
+
+  function setLanguage(value) {
+    languageRevision += 1;
+    applyLanguage(value);
+    try {
+      chrome.storage.local.set({ [LANGUAGE_STORAGE_KEY]: value }, () => {
+        if (chrome.runtime.lastError) console.debug("[m3u8quicker] language preference could not be saved");
+      });
+    } catch (error) {
+      console.debug("[m3u8quicker] language preference could not be saved", error);
+    }
+  }
+
+  function initializeLanguage() {
+    if (!isTopLevelContext) return;
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && Object.prototype.hasOwnProperty.call(changes, LANGUAGE_STORAGE_KEY)) {
+        languageRevision += 1;
+        applyLanguage(changes[LANGUAGE_STORAGE_KEY].newValue);
+      }
+    });
+    const revision = languageRevision;
+    const restore = (result) => {
+      // A delayed initial read must not overwrite a newer manual selection.
+      if (revision === languageRevision) applyLanguage(result[LANGUAGE_STORAGE_KEY]);
+    };
+    try {
+      chrome.storage.local.get(LANGUAGE_STORAGE_KEY, (result) => {
+        if (!chrome.runtime.lastError) restore(result);
+      });
+    } catch (error) {
+      console.debug("[m3u8quicker] language preference could not be loaded", error);
+    }
+  }
+
+  initializeLanguage();
 
   bindDetectionListener();
   injectSiteHooks();
@@ -478,7 +544,11 @@
         url,
         label: typeof quality.label === "string" && quality.label.trim()
           ? quality.label.trim()
-          : `清晰度 ${index + 1}`,
+          : "",
+        labelKey: quality.labelKey === "defaultQuality" || quality.labelKey === "qualityNumber"
+          ? quality.labelKey
+          : (typeof quality.label === "string" && quality.label.trim() ? null : "qualityNumber"),
+        number: index + 1,
       });
       return result;
     }, []);
@@ -680,7 +750,9 @@
     panel.style.right = `${buttonPosition.right}px`;
     panel.style.top = `${buttonPosition.top + 52}px`;
     panel.style.zIndex = "2147483647";
-    panel.style.width = "400px";
+    panel.style.width = "440px";
+    panel.style.boxSizing = "border-box";
+    panel.style.fontFamily = "\"Segoe UI\", \"PingFang SC\", sans-serif";
     panel.style.maxWidth = "min(520px, calc(100vw - 24px))";
     panel.style.maxHeight = "60vh";
     panel.style.overflowY = "auto";
@@ -691,6 +763,12 @@
     panel.style.boxShadow = "0 18px 45px rgba(15, 33, 62, 0.18)";
     panel.style.pointerEvents = "auto";
 
+    const languageBindings = [];
+    const bindText = (element, key) => {
+      const update = () => { element.textContent = t(key); };
+      languageBindings.push(update);
+      update();
+    };
     const selectedUrls = new Set();
     const panelItems = buildTargetsWithUniqueNames(detectedTargets);
 
@@ -699,25 +777,30 @@
     header.style.alignItems = "center";
     header.style.justifyContent = "space-between";
     header.style.gap = "8px";
+    header.style.flexWrap = "wrap";
     header.style.marginBottom = "10px";
 
     const title = document.createElement("div");
-    title.textContent = "选择要下载的视频";
+    bindText(title, "title");
     title.style.color = "#17324d";
     title.style.fontSize = "13px";
     title.style.fontWeight = "700";
-    title.style.flex = "1";
+    title.style.flex = "1 1 150px";
 
     const headerActions = document.createElement("div");
     headerActions.style.display = "flex";
     headerActions.style.alignItems = "center";
     headerActions.style.gap = "6px";
+    headerActions.style.flexWrap = "wrap";
+    headerActions.style.borderTop = "1px solid #eaf0f7";
+    headerActions.style.paddingTop = "10px";
+    headerActions.style.marginBottom = "10px";
     const selectionInputs = [];
 
-    const createTextActionButton = (text) => {
+    const createTextActionButton = (key) => {
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = text;
+      bindText(button, key);
       button.style.border = "none";
       button.style.background = "transparent";
       button.style.color = "#5b718b";
@@ -727,13 +810,13 @@
       return button;
     };
 
-    const selectAllButton = createTextActionButton("全选");
-    const clearSelectionButton = createTextActionButton("不选");
-    const clearListButton = createTextActionButton("清空");
+    const selectAllButton = createTextActionButton("selectAll");
+    const clearSelectionButton = createTextActionButton("deselect");
+    const clearListButton = createTextActionButton("clear");
 
     const batchButton = document.createElement("button");
     batchButton.type = "button";
-    batchButton.textContent = "批量下载";
+    batchButton.style.marginLeft = "auto";
     batchButton.style.border = "1px solid rgba(17, 85, 204, 0.18)";
     batchButton.style.background = "#f2f7ff";
     batchButton.style.color = "#1155cc";
@@ -745,7 +828,7 @@
 
     const closeButton = document.createElement("button");
     closeButton.type = "button";
-    closeButton.textContent = "关闭";
+    bindText(closeButton, "close");
     closeButton.style.border = "none";
     closeButton.style.background = "transparent";
     closeButton.style.color = "#5b718b";
@@ -758,7 +841,7 @@
 
     const updateBatchButtonState = () => {
       const checkedCount = selectedUrls.size;
-      batchButton.textContent = checkedCount > 0 ? `批量下载 (${checkedCount})` : "批量下载";
+      batchButton.textContent = checkedCount > 0 ? `${t("batch")} (${checkedCount})` : t("batch");
       batchButton.disabled = checkedCount === 0;
       batchButton.style.opacity = checkedCount > 0 ? "1" : "0.45";
       batchButton.style.cursor = checkedCount > 0 ? "pointer" : "not-allowed";
@@ -797,18 +880,50 @@
       panel.remove();
     });
 
+    const languageSwitch = document.createElement("div");
+    languageSwitch.setAttribute("role", "group");
+    languageSwitch.setAttribute("aria-label", "语言 / Language");
+    languageSwitch.style.display = "inline-flex";
+    languageSwitch.style.flexShrink = "0";
+    languageSwitch.style.padding = "2px";
+    languageSwitch.style.border = "1px solid #d8e2f1";
+    languageSwitch.style.borderRadius = "7px";
+    languageSwitch.style.background = "#f2f5f9";
+    for (const [value, label, accessibleLabel] of [["zh", "中", "简体中文"], ["en", "EN", "English"]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.lang = value === "zh" ? "zh-CN" : "en";
+      button.setAttribute("aria-label", accessibleLabel);
+      button.style.border = "none";
+      button.style.borderRadius = "4px";
+      button.style.padding = "3px 7px";
+      button.style.fontSize = "12px";
+      button.style.cursor = "pointer";
+      button.addEventListener("click", () => setLanguage(value));
+      languageBindings.push(() => {
+        const active = language === value;
+        button.setAttribute("aria-pressed", String(active));
+        button.style.background = active ? "#ffffff" : "transparent";
+        button.style.color = active ? "#1155cc" : "#5b718b";
+        button.style.boxShadow = active ? "0 1px 3px rgba(23,50,77,0.12)" : "none";
+      });
+      languageSwitch.appendChild(button);
+    }
+
     header.appendChild(title);
+    header.appendChild(languageSwitch);
+    header.appendChild(closeButton);
     headerActions.appendChild(selectAllButton);
     headerActions.appendChild(clearSelectionButton);
     headerActions.appendChild(clearListButton);
     headerActions.appendChild(batchButton);
-    headerActions.appendChild(closeButton);
-    header.appendChild(headerActions);
     panel.appendChild(header);
+    panel.appendChild(headerActions);
 
     if (panelItems.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = "暂无可下载视频";
+      bindText(empty, "empty");
       empty.style.marginTop = "6px";
       empty.style.padding = "18px 12px";
       empty.style.border = "1px dashed #d8e2f1";
@@ -834,6 +949,7 @@
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.checked = false;
+      languageBindings.push(() => checkbox.setAttribute("aria-label", t("selectVideo", { name: item.displayName })));
       checkbox.style.margin = "3px 0 0";
       checkbox.style.cursor = "pointer";
       selectionInputs.push(checkbox);
@@ -918,7 +1034,7 @@
 
       if (Array.isArray(item.qualityOptions) && item.qualityOptions.length > 1) {
         const qualitySelect = document.createElement("select");
-        qualitySelect.setAttribute("aria-label", `${item.displayName} 清晰度`);
+        languageBindings.push(() => qualitySelect.setAttribute("aria-label", t("quality", { name: item.displayName })));
         qualitySelect.style.display = "block";
         qualitySelect.style.width = "100%";
         qualitySelect.style.minWidth = "0";
@@ -934,7 +1050,11 @@
         item.qualityOptions.forEach((quality) => {
           const option = document.createElement("option");
           option.value = quality.url;
-          option.textContent = quality.label;
+          languageBindings.push(() => {
+            option.textContent = quality.labelKey
+              ? t(quality.labelKey, { number: quality.number }) + (quality.label ? " · " + quality.label : "")
+              : quality.label;
+          });
           qualitySelect.appendChild(option);
         });
         qualitySelect.value = item.url;
@@ -950,7 +1070,7 @@
 
       const previewButton = document.createElement("button");
       previewButton.type = "button";
-      previewButton.textContent = "预览";
+      bindText(previewButton, "preview");
       previewButton.style.border = "none";
       previewButton.style.background = "transparent";
       previewButton.style.color = "#1155cc";
@@ -966,7 +1086,9 @@
 
       const copyButton = document.createElement("button");
       copyButton.type = "button";
-      copyButton.textContent = "复制";
+      let copyState = "copy";
+      languageBindings.push(() => { copyButton.textContent = t(copyState); });
+      copyButton.textContent = t(copyState);
       copyButton.style.border = "none";
       copyButton.style.background = "transparent";
       copyButton.style.color = "#1155cc";
@@ -977,16 +1099,17 @@
       copyButton.addEventListener("click", async (event) => {
         event.stopPropagation();
         const copied = await copyTextToClipboard(ensureTitleParam(item.url));
-        const originalText = copyButton.textContent;
-        copyButton.textContent = copied ? "已复制" : "失败";
+        copyState = copied ? "copied" : "failed";
+        copyButton.textContent = t(copyState);
         window.setTimeout(() => {
-          copyButton.textContent = originalText;
+          copyState = "copy";
+          copyButton.textContent = t(copyState);
         }, 1200);
       });
 
       const downloadButton = document.createElement("button");
       downloadButton.type = "button";
-      downloadButton.textContent = "下载";
+      bindText(downloadButton, "download");
       downloadButton.style.border = "none";
       downloadButton.style.background = "transparent";
       downloadButton.style.color = "#1155cc";
@@ -1003,7 +1126,9 @@
       const actions = document.createElement("div");
       actions.style.display = "flex";
       actions.style.alignItems = "center";
-      actions.style.gap = "2px";
+      actions.style.gap = "8px";
+      actions.style.flexWrap = "wrap";
+      actions.style.marginTop = "6px";
       actions.style.flex = "0 0 auto";
       actions.appendChild(copyButton);
       actions.appendChild(previewButton);
@@ -1012,7 +1137,7 @@
       if (item.isLive || item.fileType === "hls") {
         const recordButton = document.createElement("button");
         recordButton.type = "button";
-        recordButton.textContent = "录播";
+        bindText(recordButton, "record");
         recordButton.style.border = "none";
         recordButton.style.background = "transparent";
         recordButton.style.color = "#1155cc";
@@ -1031,11 +1156,16 @@
       entry.appendChild(checkbox);
       entry.appendChild(thumb);
       entry.appendChild(content);
-      entry.appendChild(actions);
+      content.appendChild(actions);
       panel.appendChild(entry);
     });
 
-    updateBatchButtonState();
+    panel.updateLanguage = () => {
+      panel.lang = language === "zh" ? "zh-CN" : "en";
+      languageBindings.forEach((update) => update());
+      updateBatchButtonState();
+    };
+    panel.updateLanguage();
     getUiRoot().appendChild(panel);
   }
 

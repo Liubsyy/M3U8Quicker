@@ -84,7 +84,8 @@
       if (heightKey) seenHeights.add(heightKey);
       results.push({
         url: candidate.url,
-        label: qualityLabel(candidate, results.length),
+        label: qualityLabel(candidate),
+        labelKey: candidate.height ? undefined : (results.length === 0 ? "defaultQuality" : "qualityNumber"),
         height: candidate.height || undefined,
         width: candidate.width || undefined,
         bitrate: candidate.bitrate || undefined
@@ -115,16 +116,12 @@
     }, 0);
   }
 
-  function qualityLabel(candidate, index) {
+  function qualityLabel(candidate) {
     const parts = [];
     if (candidate.width && candidate.height) {
       parts.push(candidate.width + "×" + candidate.height + "（" + candidate.height + "P）");
     } else if (candidate.height) {
       parts.push(candidate.height + "P");
-    } else if (index === 0) {
-      parts.push("默认清晰度");
-    } else {
-      parts.push("清晰度 " + (index + 1));
     }
     if (candidate.bitrate) {
       parts.push((candidate.bitrate / 1000000).toFixed(1) + " Mbps");
