@@ -1,5 +1,7 @@
 # Chrome Extension
 
+**简体中文** | [English](./README.en.md)
+
 这是一个最小可用的 Chrome Manifest V3 扩展。
 
 加载方式：

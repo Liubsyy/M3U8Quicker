@@ -1,5 +1,7 @@
 # M3U8 Quicker
 
+**简体中文** | [English](./README.en.md)
+
 <p align="center">
   <img src="./src-tauri/icons/icon.png" alt="M3U8 Quicker icon" width="96" />
 </p>
@@ -46,6 +48,7 @@
 - 自动扫描下载视频、直播视频
 - 一键新建下载视频任务/直播录制
 - 除通用网址，还兼容B站、抖音、CCTV等网站
+- 支持“中 / EN”切换，首次跟随浏览器语言，并记住手动选择
 
 ## 使用说明
 
