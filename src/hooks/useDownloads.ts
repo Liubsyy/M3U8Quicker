@@ -1,3 +1,4 @@
+import { t, useTranslation } from "../i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { message, Modal } from "antd";
@@ -45,10 +46,10 @@ function formatBytes(bytes: number): string {
 function confirmRestartMp4Download(downloadedBytes: number): Promise<boolean> {
   return new Promise((resolve) => {
     Modal.confirm({
-      title: "服务器不支持断点续传",
-      content: `当前已下载 ${formatBytes(downloadedBytes)}，继续将从头下载。`,
-      okText: "从头下载",
-      cancelText: "保持暂停",
+      title: t("serverDoesNotSupportResumingDownloads"),
+      content: t("downloadedSoFarResumingWillRestartFromTheBeginning", { value0: formatBytes(downloadedBytes) }),
+      okText: t("restartDownload"),
+      cancelText: t("keepPaused"),
       onOk: () => {
         resolve(true);
       },
@@ -98,6 +99,7 @@ function patchPageItem(
 }
 
 export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
+  useTranslation();
   const [counts, setCounts] = useState<DownloadCounts>({
     active_count: 0,
     history_count: 0,
@@ -308,7 +310,7 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
       return task;
     } catch (error) {
       console.error("Failed to resume download:", error);
-      message.error("原地址失效或已经过期，无法恢复下载");
+      message.error(t("theOriginalUrlIsInvalidOrExpiredCannotResumeDownload"));
       return undefined;
     }
   }, [refreshCounts, refreshGroup]);
@@ -336,7 +338,7 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
       });
     } catch (error) {
       console.error("Failed to remove download:", error);
-      message.error(`删除任务失败: ${error}`);
+      message.error(t("failedToDeleteTask", { value0: error }));
     }
   }, [refreshCounts, refreshGroup]);
 
@@ -349,10 +351,10 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
       await api.clearHistoryDownloads();
       await refreshCounts();
       await refreshGroup("history", 1);
-      message.success("已清空完成列表");
+      message.success(t("completedListCleared"));
     } catch (error) {
       console.error("Failed to clear history downloads:", error);
-      message.error(`清空列表失败: ${error}`);
+      message.error(t("failedToClearList", { value0: error }));
     }
   }, [counts.history_count, refreshCounts, refreshGroup]);
 

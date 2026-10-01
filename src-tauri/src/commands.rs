@@ -377,7 +377,7 @@ pub async fn pause_download(
 
         if task.status != DownloadStatus::Downloading {
             return Err(AppError::InvalidInput(
-                "只有下载中的任务可以暂停".to_string(),
+                crate::i18n::tr("onlyDownloadingTasksCanBePaused").to_string(),
             ));
         }
 
@@ -405,14 +405,14 @@ pub async fn resume_download(
 
     if task.status != DownloadStatus::Paused {
         return Err(AppError::InvalidInput(
-            "只有已暂停的任务可以继续".to_string(),
+            crate::i18n::tr("onlyPausedTasksCanBeResumed").to_string(),
         ));
     }
 
     {
         let tokens = state.cancel_tokens.lock().await;
         if tokens.contains_key(&id) {
-            return Err(AppError::InvalidInput("任务已在运行中".to_string()));
+            return Err(AppError::InvalidInput(crate::i18n::tr("taskIsAlreadyRunning").to_string()));
         }
     }
 
@@ -438,7 +438,7 @@ pub async fn resume_download(
         ) && !restart_confirmed.unwrap_or(false)
         {
             return Err(AppError::InvalidInput(
-                "服务器不支持断点续传，请确认后从头下载".to_string(),
+                crate::i18n::tr("theServerDoesNotSupportResumingConfirmToRestartTheDownload").to_string(),
             ));
         }
 
@@ -493,7 +493,7 @@ pub async fn resume_download(
         .await?;
         if task.hls_output_mode != HlsOutputMode::MultiTrackBundle {
             return Err(AppError::InvalidInput(
-                "检测到远端 DASH 结构已变化，请重新创建下载任务".to_string(),
+                crate::i18n::tr("theRemoteDashStructureHasChangedCreateANewDownloadTask").to_string(),
             ));
         }
         validate_bundle_layout(&task, &prepared.source_uris())?;
@@ -560,7 +560,7 @@ pub async fn resume_download(
         downloader::PreparedHlsDownload::Single(prepared) => {
             if task.hls_output_mode != HlsOutputMode::SingleStream {
                 return Err(AppError::InvalidInput(
-                    "检测到远端轨道结构已变化，请重新创建下载任务".to_string(),
+                    crate::i18n::tr("theRemoteTrackStructureHasChangedCreateANewDownloadTask").to_string(),
                 ));
             }
             validate_segment_layout(&task, &prepared.segments)?;
@@ -614,7 +614,7 @@ pub async fn resume_download(
         downloader::PreparedHlsDownload::Bundle(prepared) => {
             if task.hls_output_mode != HlsOutputMode::MultiTrackBundle {
                 return Err(AppError::InvalidInput(
-                    "检测到远端轨道结构已变化，请重新创建下载任务".to_string(),
+                    crate::i18n::tr("theRemoteTrackStructureHasChangedCreateANewDownloadTask").to_string(),
                 ));
             }
             validate_bundle_layout(&task, &prepared.source_uris())?;
@@ -682,7 +682,7 @@ pub async fn check_resume_download(
 
     if task.status != DownloadStatus::Paused {
         return Err(AppError::InvalidInput(
-            "只有已暂停的任务可以继续".to_string(),
+            crate::i18n::tr("onlyPausedTasksCanBeResumed").to_string(),
         ));
     }
 
@@ -728,13 +728,13 @@ pub async fn retry_failed_segments(
 
     if task.failed_segment_indices.is_empty() {
         return Err(AppError::InvalidInput(
-            "当前任务没有可重试的失败分片".to_string(),
+            crate::i18n::tr("thisTaskHasNoFailedSegmentsToRetry").to_string(),
         ));
     }
 
     if task.status != DownloadStatus::Downloading && task.status != DownloadStatus::Paused {
         return Err(AppError::InvalidInput(
-            "只有下载中或已暂停的任务可以重试失败分片".to_string(),
+            crate::i18n::tr("onlyDownloadingOrPausedTasksCanRetryFailedSegments").to_string(),
         ));
     }
 
@@ -758,7 +758,7 @@ pub async fn retry_failed_segments(
         .await?;
         if task.hls_output_mode != HlsOutputMode::MultiTrackBundle {
             return Err(AppError::InvalidInput(
-                "检测到远端 DASH 结构已变化，请重新创建下载任务".to_string(),
+                crate::i18n::tr("theRemoteDashStructureHasChangedCreateANewDownloadTask").to_string(),
             ));
         }
         validate_bundle_layout(&task, &prepared.source_uris())?;
@@ -826,7 +826,7 @@ pub async fn retry_failed_segments(
         downloader::PreparedHlsDownload::Single(prepared) => {
             if task.hls_output_mode != HlsOutputMode::SingleStream {
                 return Err(AppError::InvalidInput(
-                    "检测到远端轨道结构已变化，请重新创建下载任务".to_string(),
+                    crate::i18n::tr("theRemoteTrackStructureHasChangedCreateANewDownloadTask").to_string(),
                 ));
             }
             validate_segment_layout(&task, &prepared.segments)?;
@@ -881,7 +881,7 @@ pub async fn retry_failed_segments(
         downloader::PreparedHlsDownload::Bundle(prepared) => {
             if task.hls_output_mode != HlsOutputMode::MultiTrackBundle {
                 return Err(AppError::InvalidInput(
-                    "检测到远端轨道结构已变化，请重新创建下载任务".to_string(),
+                    crate::i18n::tr("theRemoteTrackStructureHasChangedCreateANewDownloadTask").to_string(),
                 ));
             }
             validate_bundle_layout(&task, &prepared.source_uris())?;
@@ -953,7 +953,7 @@ pub async fn cancel_download(
             .ok_or_else(|| AppError::InvalidInput(format!("Download {} not found", id)))?;
         if task.status != DownloadStatus::Downloading && task.status != DownloadStatus::Paused {
             return Err(AppError::InvalidInput(
-                "只有下载中或已暂停的任务可以取消".to_string(),
+                crate::i18n::tr("onlyDownloadingOrPausedTasksCanBeCancelled").to_string(),
             ));
         }
         task.status = DownloadStatus::Cancelled;
@@ -1173,7 +1173,7 @@ pub async fn set_default_download_dir(
 ) -> Result<(), AppError> {
     let path = path.trim();
     if path.is_empty() {
-        return Err(AppError::InvalidInput("下载目录不能为空".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("downloadFolderCannotBeEmpty").to_string()));
     }
 
     {
@@ -1207,6 +1207,7 @@ pub async fn get_app_settings(
     ) = live_recorder::live_settings_snapshot();
 
     Ok(AppSettings {
+        language: Some(crate::i18n::current_language()),
         default_download_dir: Some(state.default_download_dir.lock().await.clone()),
         proxy: state.proxy_settings.lock().await.clone(),
         download_concurrency: *state.max_concurrent_segments.lock().await,
@@ -1271,7 +1272,7 @@ pub(crate) async fn apply_proxy_settings(
 ) -> Result<(), AppError> {
     let proxy_url = proxy.url.trim();
     if proxy.enabled && proxy_url.is_empty() {
-        return Err(AppError::InvalidInput("代理地址不能为空".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("proxyUrlCannotBeEmpty").to_string()));
     }
 
     // 在写入 state 前先校验代理地址，避免把无效代理持久化进去。
@@ -1404,8 +1405,7 @@ pub async fn set_download_concurrency(
     download_concurrency: usize,
 ) -> Result<(), AppError> {
     if !(MIN_DOWNLOAD_CONCURRENCY..=MAX_DOWNLOAD_CONCURRENCY).contains(&download_concurrency) {
-        return Err(AppError::InvalidInput(format!(
-            "下载并发数量必须在 {} 到 {} 之间",
+        return Err(AppError::InvalidInput(crate::localized!("downloadConcurrencyMustBeBetweenAnd",
             MIN_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY
         )));
     }
@@ -1490,8 +1490,7 @@ pub async fn set_preview_columns(
     preview_columns: usize,
 ) -> Result<(), AppError> {
     if !(MIN_PREVIEW_COLUMNS..=MAX_PREVIEW_COLUMNS).contains(&preview_columns) {
-        return Err(AppError::InvalidInput(format!(
-            "每行预览图数量必须在 {} 到 {} 之间",
+        return Err(AppError::InvalidInput(crate::localized!("imagesPerRowMustBeBetweenAnd",
             MIN_PREVIEW_COLUMNS, MAX_PREVIEW_COLUMNS
         )));
     }
@@ -1517,8 +1516,7 @@ pub async fn set_preview_count(
     preview_count: usize,
 ) -> Result<(), AppError> {
     if !(MIN_PREVIEW_COUNT..=MAX_PREVIEW_COUNT).contains(&preview_count) {
-        return Err(AppError::InvalidInput(format!(
-            "预览图数量必须在 {} 到 {} 之间",
+        return Err(AppError::InvalidInput(crate::localized!("thumbnailCountMustBeBetweenAnd",
             MIN_PREVIEW_COUNT, MAX_PREVIEW_COUNT
         )));
     }
@@ -1547,14 +1545,12 @@ pub async fn set_preview_thumbnail_settings(
     if !(MIN_PREVIEW_THUMBNAIL_WIDTH..=MAX_PREVIEW_THUMBNAIL_WIDTH)
         .contains(&preview_thumbnail_width)
     {
-        return Err(AppError::InvalidInput(format!(
-            "预览图宽度必须在 {} 到 {} 之间",
+        return Err(AppError::InvalidInput(crate::localized!("thumbnailWidthMustBeBetweenAnd",
             MIN_PREVIEW_THUMBNAIL_WIDTH, MAX_PREVIEW_THUMBNAIL_WIDTH
         )));
     }
     if !(MIN_PREVIEW_JPEG_QUALITY..=MAX_PREVIEW_JPEG_QUALITY).contains(&preview_jpeg_quality) {
-        return Err(AppError::InvalidInput(format!(
-            "图片质量参数必须在 {} 到 {} 之间",
+        return Err(AppError::InvalidInput(crate::localized!("imageQualityMustBeBetweenAnd",
             MIN_PREVIEW_JPEG_QUALITY, MAX_PREVIEW_JPEG_QUALITY
         )));
     }
@@ -1614,12 +1610,12 @@ pub async fn open_download_playback_session(
     let task = get_or_load_task(&app_handle, &state, &id).await?;
 
     if !task.playback_available {
-        return Err(AppError::InvalidInput("多轨下载暂不支持播放".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("playbackIsNotSupportedForMultiTrackDownloads").to_string()));
     }
 
     if !playback::task_can_open_playback(&task) {
         return Err(AppError::InvalidInput(
-            "只有下载中、已暂停或已完成的任务可以打开播放器".to_string(),
+            crate::i18n::tr("onlyDownloadingPausedOrCompletedTasksCanBePlayed").to_string(),
         ));
     }
 
@@ -1668,7 +1664,7 @@ pub async fn open_download_playback_session(
         .read()
         .await
         .clone()
-        .ok_or_else(|| AppError::Internal("播放服务尚未初始化".to_string()))?;
+        .ok_or_else(|| AppError::Internal(crate::i18n::tr("playbackServiceHasNotBeenInitialized").to_string()))?;
 
     if let Some(session) = {
         let sessions = state.playback_sessions.lock().await;
@@ -1763,7 +1759,7 @@ pub async fn prioritize_download_playback_position(
             }
         }
         DownloadStatus::Completed | DownloadStatus::Merging | DownloadStatus::Converting => Ok(()),
-        DownloadStatus::Cancelled => Err(AppError::InvalidInput("任务已取消".to_string())),
+        DownloadStatus::Cancelled => Err(AppError::InvalidInput(crate::i18n::tr("taskCancelled").to_string())),
         DownloadStatus::Failed(message) => Err(AppError::InvalidInput(message)),
         DownloadStatus::Pending => Ok(()),
     }
@@ -1819,7 +1815,7 @@ pub async fn open_file_location(path: String) -> Result<(), AppError> {
     if target.exists() {
         open::that(target).map_err(|e| AppError::Internal(e.to_string()))?;
     } else {
-        return Err(AppError::InvalidInput("目录不存在".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("folderDoesNotExist").to_string()));
     }
     Ok(())
 }
@@ -1871,10 +1867,10 @@ pub async fn merge_ts_files(input_dir: String, output_path: String) -> Result<St
     let output_path = PathBuf::from(output_path.trim());
 
     if input_dir.as_os_str().is_empty() || !input_dir.is_dir() {
-        return Err(AppError::InvalidInput("请选择有效的 ts 目录".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAValidTsFolder").to_string()));
     }
     if output_path.as_os_str().is_empty() {
-        return Err(AppError::InvalidInput("输出文件不能为空".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("outputFileCannotBeEmpty").to_string()));
     }
 
     if let Some(parent) = output_path
@@ -1899,10 +1895,10 @@ pub async fn convert_ts_to_mp4_file(
     let output_path = PathBuf::from(output_path.trim());
 
     if input_path.as_os_str().is_empty() || !input_path.is_file() {
-        return Err(AppError::InvalidInput("请选择有效的 ts 文件".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAValidTsFile").to_string()));
     }
     if output_path.as_os_str().is_empty() {
-        return Err(AppError::InvalidInput("输出文件不能为空".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("outputFileCannotBeEmpty").to_string()));
     }
 
     if let Some(parent) = output_path
@@ -1936,10 +1932,10 @@ pub async fn convert_local_m3u8_to_mp4_file(
     let output_path = PathBuf::from(output_path.trim());
 
     if input_path.as_os_str().is_empty() || !input_path.is_file() {
-        return Err(AppError::InvalidInput("请选择有效的 m3u8 文件".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAValidM3u8File").to_string()));
     }
     if output_path.as_os_str().is_empty() {
-        return Err(AppError::InvalidInput("输出文件不能为空".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("outputFileCannotBeEmpty").to_string()));
     }
 
     if let Some(parent) = output_path
@@ -1976,29 +1972,29 @@ pub async fn convert_media_file(
     let convert_mode = convert_mode.trim().to_lowercase();
 
     if input_path.as_os_str().is_empty() || !input_path.is_file() {
-        return Err(AppError::InvalidInput("请选择有效的媒体文件".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAValidMediaFile").to_string()));
     }
     if output_path.as_os_str().is_empty() {
-        return Err(AppError::InvalidInput("输出文件不能为空".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("outputFileCannotBeEmpty").to_string()));
     }
     if target_format.is_empty() {
-        return Err(AppError::InvalidInput("请选择目标格式".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectATargetFormat").to_string()));
     }
     if convert_mode.is_empty() {
-        return Err(AppError::InvalidInput("请选择转换模式".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAConversionMode").to_string()));
     }
 
     let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
     if !ffmpeg_enabled {
         return Err(AppError::InvalidInput(
-            "FFmpeg 开关未开启，请先在设置 -> FFmpeg 中开启".to_string(),
+            crate::i18n::tr("ffmpegIsDisabledEnableItInSettingsFfmpeg").to_string(),
         ));
     }
     let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle)
         .await
         .ok_or_else(|| {
             AppError::InvalidInput(
-                "未检测到可用的 FFmpeg，请先在设置 -> FFmpeg 中配置或下载 FFmpeg".to_string(),
+                crate::i18n::tr("ffmpegWasNotFoundConfigureOrDownloadItInSettingsFfmpeg").to_string(),
             )
         })?;
 
@@ -2035,33 +2031,33 @@ pub async fn clip_video_file(
     let clip_mode = clip_mode.trim().to_lowercase();
 
     if input_path.as_os_str().is_empty() || !input_path.is_file() {
-        return Err(AppError::InvalidInput("请选择有效的媒体文件".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAValidMediaFile").to_string()));
     }
     if output_path.as_os_str().is_empty() {
-        return Err(AppError::InvalidInput("输出文件不能为空".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("outputFileCannotBeEmpty").to_string()));
     }
     if !start_seconds.is_finite()
         || !end_seconds.is_finite()
         || start_seconds < 0.0
         || end_seconds <= start_seconds
     {
-        return Err(AppError::InvalidInput("剪辑起止时间无效".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("invalidClipStartOrEndTime").to_string()));
     }
     if clip_mode != "fast" && clip_mode != "precise" {
-        return Err(AppError::InvalidInput("请选择剪辑模式".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAClipMode").to_string()));
     }
 
     let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
     if !ffmpeg_enabled {
         return Err(AppError::InvalidInput(
-            "FFmpeg 开关未开启，请先在设置 -> FFmpeg 中开启".to_string(),
+            crate::i18n::tr("ffmpegIsDisabledEnableItInSettingsFfmpeg").to_string(),
         ));
     }
     let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle)
         .await
         .ok_or_else(|| {
             AppError::InvalidInput(
-                "未检测到可用的 FFmpeg，请先在设置 -> FFmpeg 中配置或下载 FFmpeg".to_string(),
+                crate::i18n::tr("ffmpegWasNotFoundConfigureOrDownloadItInSettingsFfmpeg").to_string(),
             )
         })?;
 
@@ -2093,20 +2089,20 @@ pub async fn analyze_media_file(
     let input_path = PathBuf::from(input_path.trim());
 
     if input_path.as_os_str().is_empty() || !input_path.is_file() {
-        return Err(AppError::InvalidInput("请选择有效的媒体文件".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAValidMediaFile").to_string()));
     }
 
     let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
     if !ffmpeg_enabled {
         return Err(AppError::InvalidInput(
-            "FFmpeg 开关未开启，请先在设置 -> FFmpeg 中开启".to_string(),
+            crate::i18n::tr("ffmpegIsDisabledEnableItInSettingsFfmpeg").to_string(),
         ));
     }
     let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle)
         .await
         .ok_or_else(|| {
             AppError::InvalidInput(
-                "未检测到可用的 FFmpeg，请先在设置 -> FFmpeg 中配置或下载 FFmpeg".to_string(),
+                crate::i18n::tr("ffmpegWasNotFoundConfigureOrDownloadItInSettingsFfmpeg").to_string(),
             )
         })?;
 
@@ -2129,32 +2125,32 @@ pub async fn transcode_media_file(
     let audio_codec = audio_codec.trim().to_lowercase();
 
     if input_path.as_os_str().is_empty() || !input_path.is_file() {
-        return Err(AppError::InvalidInput("请选择有效的媒体文件".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAValidMediaFile").to_string()));
     }
     if output_path.as_os_str().is_empty() {
-        return Err(AppError::InvalidInput("输出文件不能为空".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("outputFileCannotBeEmpty").to_string()));
     }
     if output_format.is_empty() {
-        return Err(AppError::InvalidInput("请选择输出格式".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAnOutputFormat").to_string()));
     }
     if video_codec.is_empty() {
-        return Err(AppError::InvalidInput("请选择视频编码".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAVideoCodec").to_string()));
     }
     if audio_codec.is_empty() {
-        return Err(AppError::InvalidInput("请选择音频编码".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAnAudioCodec").to_string()));
     }
 
     let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
     if !ffmpeg_enabled {
         return Err(AppError::InvalidInput(
-            "FFmpeg 开关未开启，请先在设置 -> FFmpeg 中开启".to_string(),
+            crate::i18n::tr("ffmpegIsDisabledEnableItInSettingsFfmpeg").to_string(),
         ));
     }
     let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle)
         .await
         .ok_or_else(|| {
             AppError::InvalidInput(
-                "未检测到可用的 FFmpeg，请先在设置 -> FFmpeg 中配置或下载 FFmpeg".to_string(),
+                crate::i18n::tr("ffmpegWasNotFoundConfigureOrDownloadItInSettingsFfmpeg").to_string(),
             )
         })?;
 
@@ -2186,14 +2182,14 @@ pub async fn merge_video_files(
     merge_mode: String,
 ) -> Result<String, AppError> {
     if input_paths.len() < 2 {
-        return Err(AppError::InvalidInput("请至少选择两个视频文件".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAtLeastTwoVideoFiles").to_string()));
     }
 
     let mut resolved_inputs = Vec::with_capacity(input_paths.len());
     for input_path in input_paths {
         let path = PathBuf::from(input_path.trim());
         if path.as_os_str().is_empty() || !path.is_file() {
-            return Err(AppError::InvalidInput("请选择有效的视频文件".to_string()));
+            return Err(AppError::InvalidInput(crate::i18n::tr("selectAValidVideoFile").to_string()));
         }
         resolved_inputs.push(path);
     }
@@ -2201,23 +2197,23 @@ pub async fn merge_video_files(
     let output_path = PathBuf::from(output_path.trim());
     let merge_mode = merge_mode.trim().to_lowercase();
     if output_path.as_os_str().is_empty() {
-        return Err(AppError::InvalidInput("输出文件不能为空".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("outputFileCannotBeEmpty").to_string()));
     }
     if !matches!(merge_mode.as_str(), "fast" | "compatible") {
-        return Err(AppError::InvalidInput("请选择有效的合并模式".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAValidMergeMode").to_string()));
     }
 
     let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
     if !ffmpeg_enabled {
         return Err(AppError::InvalidInput(
-            "FFmpeg 开关未开启，请先在设置 -> FFmpeg 中开启".to_string(),
+            crate::i18n::tr("ffmpegIsDisabledEnableItInSettingsFfmpeg").to_string(),
         ));
     }
     let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle)
         .await
         .ok_or_else(|| {
             AppError::InvalidInput(
-                "未检测到可用的 FFmpeg，请先在设置 -> FFmpeg 中配置或下载 FFmpeg".to_string(),
+                crate::i18n::tr("ffmpegWasNotFoundConfigureOrDownloadItInSettingsFfmpeg").to_string(),
             )
         })?;
 
@@ -2250,25 +2246,25 @@ pub async fn convert_multi_track_hls_to_mp4_dir(
 
     if input_dir.as_os_str().is_empty() || !input_dir.is_dir() {
         return Err(AppError::InvalidInput(
-            "请选择有效的多轨 HLS 目录".to_string(),
+            crate::i18n::tr("selectAValidMultiTrackHlsFolder").to_string(),
         ));
     }
     if output_path.as_os_str().is_empty() {
-        return Err(AppError::InvalidInput("输出文件不能为空".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("outputFileCannotBeEmpty").to_string()));
     }
 
     let bundle = resolve_local_hls_bundle_paths(&input_dir)?;
     let ffmpeg_enabled = *app_handle.state::<AppState>().ffmpeg_enabled.lock().await;
     if !ffmpeg_enabled {
         return Err(AppError::InvalidInput(
-            "FFmpeg 开关未开启，请先在设置 -> FFmpeg 中开启".to_string(),
+            crate::i18n::tr("ffmpegIsDisabledEnableItInSettingsFfmpeg").to_string(),
         ));
     }
     let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path(&app_handle)
         .await
         .ok_or_else(|| {
             AppError::InvalidInput(
-                "未检测到可用的 FFmpeg，请先在设置 -> FFmpeg 中配置或下载 FFmpeg".to_string(),
+                crate::i18n::tr("ffmpegWasNotFoundConfigureOrDownloadItInSettingsFfmpeg").to_string(),
             )
         })?;
 
@@ -2356,7 +2352,7 @@ pub async fn create_preview_session(
     let source_kind = source_kind.unwrap_or(DownloadSourceKind::Url);
     let trimmed_url = url.trim();
     if trimmed_url.is_empty() {
-        return Err(AppError::InvalidInput("请输入下载地址".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("enterADownloadUrl").to_string()));
     }
     // Surface invalid Header format early using the existing parser.
     parse_request_headers(extra_headers.as_deref())?;
@@ -2370,7 +2366,7 @@ pub async fn create_preview_session(
         DownloadSourceKind::InlineDashJson => {
             let raw = source_text.as_deref().unwrap_or(trimmed_url).trim();
             if raw.is_empty() {
-                return Err(AppError::InvalidInput("DASH JSON 不能为空".to_string()));
+                return Err(AppError::InvalidInput(crate::i18n::tr("dashJsonCannotBeEmpty").to_string()));
             }
             Some(raw.to_string())
         }
@@ -2465,7 +2461,7 @@ async fn ensure_task_playback_ready(
             prepared.segments,
         ),
         downloader::PreparedHlsDownload::Bundle(_) => {
-            return Err(AppError::InvalidInput("多轨下载暂不支持播放".to_string()))
+            return Err(AppError::InvalidInput(crate::i18n::tr("playbackIsNotSupportedForMultiTrackDownloads").to_string()))
         }
     };
     validate_segment_layout(&task, &segments)?;
@@ -2499,7 +2495,7 @@ async fn ensure_task_playback_ready(
 
 fn playback_target_for_task(task: &DownloadTask) -> Result<(PlaybackSourceKind, String), AppError> {
     if !task.playback_available {
-        return Err(AppError::InvalidInput("多轨下载暂不支持播放".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("playbackIsNotSupportedForMultiTrackDownloads").to_string()));
     }
 
     match task.status {
@@ -2507,13 +2503,13 @@ fn playback_target_for_task(task: &DownloadTask) -> Result<(PlaybackSourceKind, 
             let file_path = task
                 .file_path
                 .as_ref()
-                .ok_or_else(|| AppError::InvalidInput("下载完成文件不存在".to_string()))?;
+                .ok_or_else(|| AppError::InvalidInput(crate::i18n::tr("theDownloadedFileDoesNotExist").to_string()))?;
             let path = std::path::Path::new(file_path);
             if task.hls_media_kind == HlsMediaKind::Fmp4 && path.is_dir() {
                 return Ok((PlaybackSourceKind::Hls, playback::playlist_path(&task.id)));
             }
             if !path.is_file() {
-                return Err(AppError::InvalidInput("下载完成文件不存在".to_string()));
+                return Err(AppError::InvalidInput(crate::i18n::tr("theDownloadedFileDoesNotExist").to_string()));
             }
             Ok((PlaybackSourceKind::File, playback::file_path(&task.id)))
         }
@@ -2526,9 +2522,9 @@ fn playback_target_for_task(task: &DownloadTask) -> Result<(PlaybackSourceKind, 
             Ok((PlaybackSourceKind::File, playback::file_path(&task.id)))
         }
         DownloadStatus::Downloading | DownloadStatus::Paused => Err(AppError::InvalidInput(
-            "当前格式暂不支持边下边播，请等待下载完成后再播放".to_string(),
+            crate::i18n::tr("thisFormatCannotBePlayedWhileDownloadingWaitForTheDownloadTo").to_string(),
         )),
-        _ => Err(AppError::InvalidInput("当前任务状态不支持播放".to_string())),
+        _ => Err(AppError::InvalidInput(crate::i18n::tr("thisTaskCannotBePlayedInItsCurrentState").to_string())),
     }
 }
 
@@ -2632,7 +2628,7 @@ fn validate_segment_layout(task: &DownloadTask, segments: &[SegmentInfo]) -> Res
     let current_init_indices = segment_init_indices(segments);
     if !task.segment_init_indices.is_empty() && task.segment_init_indices != current_init_indices {
         return Err(AppError::InvalidInput(
-            "检测到远端 fMP4 初始化片段已变化，请重新创建下载任务".to_string(),
+            crate::i18n::tr("theRemoteFmp4InitializationSegmentHasChangedCreateANewDownloadTask").to_string(),
         ));
     }
     Ok(())
@@ -2655,7 +2651,7 @@ fn validate_uri_layout(task: &DownloadTask, current_uris: &[String]) -> Result<(
 
     if !stored_uris.is_empty() && stored_uris != current_uris {
         return Err(AppError::InvalidInput(
-            "检测到远端分片结构已变化，请重新创建下载任务".to_string(),
+            crate::i18n::tr("theRemoteSegmentStructureHasChangedCreateANewDownloadTask").to_string(),
         ));
     }
     Ok(())
@@ -2674,13 +2670,13 @@ struct LocalHlsBundlePaths {
 }
 
 fn resolve_local_hls_bundle_paths(input_dir: &Path) -> Result<LocalHlsBundlePaths, AppError> {
-    let video_playlist = required_track_playlist_path(input_dir, "video", "视频")?;
-    let audio_playlist = optional_track_playlist_path(input_dir, "audio", "音频")?;
-    let subtitle_playlist = optional_track_playlist_path(input_dir, "subtitle", "字幕")?;
+    let video_playlist = required_track_playlist_path(input_dir, "video", crate::i18n::tr("video"))?;
+    let audio_playlist = optional_track_playlist_path(input_dir, "audio", crate::i18n::tr("audio"))?;
+    let subtitle_playlist = optional_track_playlist_path(input_dir, "subtitle", crate::i18n::tr("subtitle"))?;
 
     if audio_playlist.is_none() && subtitle_playlist.is_none() {
         return Err(AppError::InvalidInput(
-            "所选目录不是有效的多轨 HLS 目录，至少需要音频或字幕轨道".to_string(),
+            crate::i18n::tr("notAValidMultiTrackHlsFolderAtLeastOneAudioOr").to_string(),
         ));
     }
 
@@ -2700,8 +2696,7 @@ fn required_track_playlist_path(
     let playlist_path = track_dir.join("index.m3u8");
 
     if !track_dir.is_dir() || !playlist_path.is_file() {
-        return Err(AppError::InvalidInput(format!(
-            "所选目录缺少 {} 轨道的 index.m3u8",
+        return Err(AppError::InvalidInput(crate::localized!("theSelectedFolderIsMissingIndexM3u8ForTheTrack",
             track_label
         )));
     }
@@ -2721,8 +2716,7 @@ fn optional_track_playlist_path(
         return Ok(None);
     }
     if !track_dir.is_dir() || !playlist_path.is_file() {
-        return Err(AppError::InvalidInput(format!(
-            "所选目录中的 {} 轨道缺少 index.m3u8",
+        return Err(AppError::InvalidInput(crate::localized!("theTrackInThisFolderIsMissingIndexM3u8",
             track_label
         )));
     }
@@ -3337,7 +3331,7 @@ fn normalized_dash_source_text(params: &CreateDownloadParams) -> Result<Option<S
         .unwrap_or(params.url.as_str())
         .trim();
     if source.is_empty() {
-        return Err(AppError::InvalidInput("DASH JSON 不能为空".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("dashJsonCannotBeEmpty").to_string()));
     }
     Ok(Some(source.to_string()))
 }
@@ -3352,7 +3346,7 @@ fn dash_source_from_parts(
         DownloadSourceKind::InlineDashJson => {
             let source = source_text.unwrap_or(url).trim();
             if source.is_empty() {
-                return Err(AppError::InvalidInput("DASH JSON 不能为空".to_string()));
+                return Err(AppError::InvalidInput(crate::i18n::tr("dashJsonCannotBeEmpty").to_string()));
             }
             Ok(source.to_string())
         }
@@ -3443,8 +3437,7 @@ fn parse_request_headers(raw: Option<&str>) -> Result<RequestHeaders, AppError> 
         }
 
         let Some((name, value)) = trimmed.split_once(':') else {
-            return Err(AppError::InvalidInput(format!(
-                "附加 Header 第 {} 行格式无效，请使用 name:value",
+            return Err(AppError::InvalidInput(crate::localized!("invalidAdditionalHeaderOnLineUseNameValue",
                 index + 1
             )));
         };
@@ -3453,8 +3446,7 @@ fn parse_request_headers(raw: Option<&str>) -> Result<RequestHeaders, AppError> 
         let value = value.trim();
 
         if name.is_empty() || value.is_empty() {
-            return Err(AppError::InvalidInput(format!(
-                "附加 Header 第 {} 行格式无效，请使用 name:value",
+            return Err(AppError::InvalidInput(crate::localized!("invalidAdditionalHeaderOnLineUseNameValue",
                 index + 1
             )));
         }
@@ -4900,7 +4892,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("当前格式暂不支持边下边播，请等待下载完成后再播放"));
+            .contains(crate::i18n::tr("thisFormatCannotBePlayedWhileDownloadingWaitForTheDownloadTo")));
     }
 
     #[test]
@@ -4912,7 +4904,7 @@ mod tests {
 
         let error = playback_target_for_task(&task).expect_err("multi-track playback should fail");
 
-        assert!(error.to_string().contains("多轨下载暂不支持播放"));
+        assert!(error.to_string().contains(crate::i18n::tr("playbackIsNotSupportedForMultiTrackDownloads")));
     }
 
     #[test]
@@ -5137,7 +5129,7 @@ mod tests {
         let error =
             resolve_local_hls_bundle_paths(&temp_root).expect_err("bundle without video must fail");
 
-        assert!(error.to_string().contains("视频"));
+        assert!(error.to_string().contains(crate::i18n::tr("video")));
         remove_temp_dir(&temp_root);
     }
 
@@ -5149,7 +5141,7 @@ mod tests {
         let error =
             resolve_local_hls_bundle_paths(&temp_root).expect_err("video-only bundle must fail");
 
-        assert!(error.to_string().contains("至少需要音频或字幕轨道"));
+        assert!(error.to_string().contains(crate::i18n::tr("notAValidMultiTrackHlsFolderAtLeastOneAudioOr")));
         remove_temp_dir(&temp_root);
     }
 }

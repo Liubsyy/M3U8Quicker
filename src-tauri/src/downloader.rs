@@ -322,7 +322,7 @@ pub fn build_http_client(
 
     if let Some(url) = proxy_url.filter(|value| !value.trim().is_empty()) {
         let proxy = reqwest::Proxy::all(url.trim())
-            .map_err(|e| AppError::InvalidInput(format!("代理地址无效: {}", e)))?;
+            .map_err(|e| AppError::InvalidInput(crate::localized!("invalidProxyUrl", e)))?;
         builder = builder.proxy(proxy);
     } else {
         // Force direct connections when the app-level proxy is disabled.
@@ -429,7 +429,7 @@ pub async fn prepare_hls_download(
                 .find(|track| track.option.id == selected_video_id)
                 .cloned()
                 .ok_or_else(|| {
-                    AppError::InvalidInput("所选视频轨道不存在，请重新解析后再下载".to_string())
+                    AppError::InvalidInput(crate::i18n::tr("theSelectedVideoTrackNoLongerExistsParseTheUrlAgain").to_string())
                 })?;
 
             let available_audios = tracks_for_group(
@@ -444,12 +444,12 @@ pub async fn prepare_hls_download(
                 &available_audios,
                 requested_selection.audio_id.as_deref(),
                 default_audio_track_id(&available_audios).as_deref(),
-                "音频",
+                crate::i18n::tr("audio"),
             )?;
             let selected_subtitle = resolve_selected_optional_track(
                 &available_subtitles,
                 requested_selection.subtitle_id.as_deref(),
-                "字幕",
+                crate::i18n::tr("subtitle"),
             )?;
 
             let resolved_selection = HlsTrackSelection {
@@ -708,7 +708,7 @@ fn build_dash_bundle_download(
         .video_tracks
         .iter()
         .find(|track| track.option.id == video_id)
-        .ok_or_else(|| AppError::InvalidInput("所选 DASH 视频轨道不存在，请重新解析后再下载".to_string()))?;
+        .ok_or_else(|| AppError::InvalidInput(crate::i18n::tr("theSelectedDashVideoTrackNoLongerExistsParseTheUrlAgain").to_string()))?;
 
     let audio_id = requested
         .audio_id
@@ -820,10 +820,10 @@ fn build_dash_track_bundle_plan(
 
 fn parse_dash_json_manifest(raw: &str) -> Result<DashManifest, AppError> {
     let parsed: DashJsonManifest = serde_json::from_str(raw)
-        .map_err(|error| AppError::M3u8Parse(format!("DASH JSON 解析失败: {}", error)))?;
+        .map_err(|error| AppError::M3u8Parse(crate::localized!("failedToParseDashJson", error)))?;
     if parsed.format != "m3u8quicker-dash-v1" {
         return Err(AppError::M3u8Parse(
-            "DASH JSON format 必须为 m3u8quicker-dash-v1".to_string(),
+            crate::i18n::tr("dashJsonFormatMustBeM3u8quickerDashV1").to_string(),
         ));
     }
     let base_url = Url::parse(&parsed.base_url)?;
@@ -851,7 +851,7 @@ fn parse_dash_json_manifest(raw: &str) -> Result<DashManifest, AppError> {
         .map(|(index, track)| dash_json_track_to_track(&base_url, track, HlsTrackType::Audio, index, None))
         .collect::<Result<Vec<_>, _>>()?;
     if video_tracks.is_empty() {
-        return Err(AppError::M3u8Parse("DASH JSON 缺少 video 轨道".to_string()));
+        return Err(AppError::M3u8Parse(crate::i18n::tr("dashJsonIsMissingAVideoTrack").to_string()));
     }
 
     let default_selection = HlsTrackSelection {
@@ -936,12 +936,12 @@ fn build_dash_preview_playlist_content(manifest: &DashManifest) -> Result<String
                 .first()
                 .map(|track| track.option.id.as_str())
         })
-        .ok_or_else(|| AppError::M3u8Parse("DASH manifest 缺少视频轨道".to_string()))?;
+        .ok_or_else(|| AppError::M3u8Parse(crate::i18n::tr("dashManifestIsMissingAVideoTrack").to_string()))?;
     let track = manifest
         .video_tracks
         .iter()
         .find(|track| track.option.id == video_id)
-        .ok_or_else(|| AppError::M3u8Parse("DASH manifest 缺少视频轨道".to_string()))?;
+        .ok_or_else(|| AppError::M3u8Parse(crate::i18n::tr("dashManifestIsMissingAVideoTrack").to_string()))?;
 
     let map = track.init.as_ref().map(|init| m3u8_rs::Map {
         uri: init.uri.clone(),
@@ -1027,8 +1027,7 @@ fn dash_json_track_to_track(
         })
         .collect::<Result<Vec<_>, AppError>>()?;
     if segments.is_empty() {
-        return Err(AppError::M3u8Parse(format!(
-            "DASH JSON 轨道 {} 缺少 segments",
+        return Err(AppError::M3u8Parse(crate::localized!("dashJsonTrackIsMissingSegments",
             track.id
         )));
     }
@@ -1042,7 +1041,7 @@ fn dash_json_track_to_track(
                 if let Some(resolution) = &track.resolution {
                     resolution.clone()
                 } else {
-                    format!("轨道 {}", index + 1)
+                    crate::localized!("track", index + 1)
                 }
             }),
             name: track.label.clone(),
@@ -1079,7 +1078,7 @@ fn parse_dash_mpd_manifest(raw: &str, manifest_url: &Url) -> Result<DashManifest
     loop {
         match reader
             .read_event()
-            .map_err(|error| AppError::M3u8Parse(format!("DASH MPD XML 解析失败: {}", error)))?
+            .map_err(|error| AppError::M3u8Parse(crate::localized!("failedToParseDashMpdXml", error)))?
         {
             Event::Start(event) => {
                 let name = event.name().as_ref().to_vec();
@@ -1088,13 +1087,13 @@ fn parse_dash_mpd_manifest(raw: &str, manifest_url: &Url) -> Result<DashManifest
                         .as_deref()
                         .is_some_and(|value| value.eq_ignore_ascii_case("dynamic"))
                     {
-                        return Err(AppError::M3u8Parse("暂不支持 dynamic/live DASH".to_string()));
+                        return Err(AppError::M3u8Parse(crate::i18n::tr("dynamicLiveDashIsNotSupported").to_string()));
                     }
                     media_presentation_duration =
                         attr_value(&reader, &event, b"mediaPresentationDuration")?
                             .and_then(|value| parse_iso8601_duration_seconds(&value));
                 } else if name.as_slice() == b"ContentProtection" {
-                    return Err(AppError::M3u8Parse("暂不支持 DRM/encrypted DASH".to_string()));
+                    return Err(AppError::M3u8Parse(crate::i18n::tr("drmEncryptedDashIsNotSupported").to_string()));
                 } else if name.as_slice() == b"AdaptationSet" {
                     current_adaptation = Some(DashAdaptationBuild {
                         content_type: attr_value(&reader, &event, b"contentType")?,
@@ -1131,7 +1130,7 @@ fn parse_dash_mpd_manifest(raw: &str, manifest_url: &Url) -> Result<DashManifest
                     b"SegmentBase" | b"SegmentList" | b"SegmentURL"
                 ) {
                     return Err(AppError::M3u8Parse(
-                        "暂不支持 SegmentBase/SegmentList DASH".to_string(),
+                        crate::i18n::tr("segmentbaseSegmentlistDashIsNotSupported").to_string(),
                     ));
                 }
                 tag_stack.push(name);
@@ -1139,7 +1138,7 @@ fn parse_dash_mpd_manifest(raw: &str, manifest_url: &Url) -> Result<DashManifest
             Event::Empty(event) => {
                 let name = event.name().as_ref().to_vec();
                 if name.as_slice() == b"ContentProtection" {
-                    return Err(AppError::M3u8Parse("暂不支持 DRM/encrypted DASH".to_string()));
+                    return Err(AppError::M3u8Parse(crate::i18n::tr("drmEncryptedDashIsNotSupported").to_string()));
                 } else if name.as_slice() == b"SegmentTemplate" {
                     let target = if current_representation.is_some() {
                         DashTemplateTarget::Representation
@@ -1180,7 +1179,7 @@ fn parse_dash_mpd_manifest(raw: &str, manifest_url: &Url) -> Result<DashManifest
                     b"SegmentBase" | b"SegmentList" | b"SegmentURL"
                 ) {
                     return Err(AppError::M3u8Parse(
-                        "暂不支持 SegmentBase/SegmentList DASH".to_string(),
+                        crate::i18n::tr("segmentbaseSegmentlistDashIsNotSupported").to_string(),
                     ));
                 }
             }
@@ -1244,12 +1243,12 @@ fn attr_value(
 ) -> Result<Option<String>, AppError> {
     for attr in event.attributes().with_checks(false) {
         let attr =
-            attr.map_err(|error| AppError::M3u8Parse(format!("DASH MPD 属性解析失败: {}", error)))?;
+            attr.map_err(|error| AppError::M3u8Parse(crate::localized!("failedToParseDashMpdAttributes", error)))?;
         if attr.key.as_ref() == key {
             return attr
                 .decode_and_unescape_value(reader.decoder())
                 .map(|value| Some(value.into_owned()))
-                .map_err(|error| AppError::M3u8Parse(format!("DASH MPD 属性解析失败: {}", error)));
+                .map_err(|error| AppError::M3u8Parse(crate::localized!("failedToParseDashMpdAttributes", error)));
         }
     }
     Ok(None)
@@ -1279,7 +1278,7 @@ fn parse_dash_timeline_item(
 ) -> Result<DashTimelineItem, AppError> {
     let duration = attr_value(reader, event, b"d")?
         .and_then(|value| value.parse().ok())
-        .ok_or_else(|| AppError::M3u8Parse("DASH SegmentTimeline S 缺少 d".to_string()))?;
+        .ok_or_else(|| AppError::M3u8Parse(crate::i18n::tr("dashSegmenttimelineSIsMissingD").to_string()))?;
     Ok(DashTimelineItem {
         start_time: attr_value(reader, event, b"t")?.and_then(|value| value.parse().ok()),
         duration,
@@ -1335,7 +1334,7 @@ fn dash_adaptations_to_manifest(
                 .segment_template
                 .as_ref()
                 .or(adaptation.segment_template.as_ref())
-                .ok_or_else(|| AppError::M3u8Parse("DASH Representation 缺少 SegmentTemplate".to_string()))?;
+                .ok_or_else(|| AppError::M3u8Parse(crate::i18n::tr("dashRepresentationIsMissingSegmenttemplate").to_string()))?;
             let rep_base = representation
                 .base_url
                 .as_deref()
@@ -1365,7 +1364,7 @@ fn dash_adaptations_to_manifest(
     }
 
     if video_tracks.is_empty() {
-        return Err(AppError::M3u8Parse("DASH MPD 未找到可下载的视频轨道".to_string()));
+        return Err(AppError::M3u8Parse(crate::i18n::tr("noDownloadableVideoTrackFoundInDashMpd").to_string()));
     }
 
     let default_selection = HlsTrackSelection {
@@ -1420,11 +1419,11 @@ fn build_dash_track_from_template(
     let initialization = template
         .initialization
         .as_deref()
-        .ok_or_else(|| AppError::M3u8Parse("DASH SegmentTemplate 缺少 initialization".to_string()))?;
+        .ok_or_else(|| AppError::M3u8Parse(crate::i18n::tr("dashSegmenttemplateIsMissingInitialization").to_string()))?;
     let media = template
         .media
         .as_deref()
-        .ok_or_else(|| AppError::M3u8Parse("DASH SegmentTemplate 缺少 media".to_string()))?;
+        .ok_or_else(|| AppError::M3u8Parse(crate::i18n::tr("dashSegmenttemplateIsMissingMedia").to_string()))?;
     let init_uri = resolve_url(
         base_url,
         &apply_dash_template(initialization, representation, template.start_number, None)?,
@@ -1444,7 +1443,7 @@ fn build_dash_track_from_template(
         })
         .collect::<Result<Vec<_>, AppError>>()?;
     if segments.is_empty() {
-        return Err(AppError::M3u8Parse("DASH 轨道没有可展开的分片".to_string()));
+        return Err(AppError::M3u8Parse(crate::i18n::tr("dashTrackHasNoExpandableSegments").to_string()));
     }
 
     let resolution = match (representation.width, representation.height) {
@@ -1459,7 +1458,7 @@ fn build_dash_track_from_template(
     } else if let Some(language) = &adaptation.lang {
         language.clone()
     } else {
-        format!("轨道 {}", index + 1)
+        crate::localized!("track", index + 1)
     };
 
     Ok(DashTrack {
@@ -1502,7 +1501,7 @@ fn expand_dash_segments(
         for item in &template.timeline {
             if item.repeat < 0 {
                 return Err(AppError::M3u8Parse(
-                    "暂不支持 DASH SegmentTimeline 负数 repeat".to_string(),
+                    crate::i18n::tr("negativeRepeatValuesInDashSegmenttimelineAreNotSupported").to_string(),
                 ));
             }
             let _ = item.start_time;
@@ -1516,12 +1515,12 @@ fn expand_dash_segments(
 
     let Some(duration) = template.duration else {
         return Err(AppError::M3u8Parse(
-            "DASH SegmentTemplate 缺少 SegmentTimeline 或 duration".to_string(),
+            crate::i18n::tr("dashSegmenttemplateIsMissingSegmenttimelineOrDuration").to_string(),
         ));
     };
     let Some(total_duration) = media_presentation_duration else {
         return Err(AppError::M3u8Parse(
-            "DASH MPD 缺少 mediaPresentationDuration，无法展开 duration 模板".to_string(),
+            crate::i18n::tr("dashMpdIsMissingMediapresentationdurationCannotExpandTheDurationTemplate").to_string(),
         ));
     };
     let segment_duration = duration as f64 / timescale as f64;
@@ -1566,8 +1565,7 @@ fn apply_dash_template(
             "Number" => format_dash_template_number(number, format_width),
             "Time" => format_dash_template_number(time.unwrap_or(0), format_width),
             _ => {
-                return Err(AppError::M3u8Parse(format!(
-                    "暂不支持 DASH 模板变量 ${}$",
+                return Err(AppError::M3u8Parse(crate::localized!("dashTemplateVariableIsNotSupported",
                     token
                 )))
             }
@@ -1623,11 +1621,11 @@ fn parse_iso8601_duration_seconds(value: &str) -> Option<f64> {
 fn parse_dash_byte_range(value: &str) -> Result<ByteRangeSpec, AppError> {
     let (start, end) = value
         .split_once('-')
-        .ok_or_else(|| AppError::M3u8Parse(format!("无效 DASH byte_range: {}", value)))?;
+        .ok_or_else(|| AppError::M3u8Parse(crate::localized!("invalidDashByteRange", value)))?;
     let start = start
         .trim()
         .parse::<u64>()
-        .map_err(|_| AppError::M3u8Parse(format!("无效 DASH byte_range: {}", value)))?;
+        .map_err(|_| AppError::M3u8Parse(crate::localized!("invalidDashByteRange", value)))?;
     if end.trim().is_empty() {
         return Ok(ByteRangeSpec {
             length: 0,
@@ -1637,9 +1635,9 @@ fn parse_dash_byte_range(value: &str) -> Result<ByteRangeSpec, AppError> {
     let end = end
         .trim()
         .parse::<u64>()
-        .map_err(|_| AppError::M3u8Parse(format!("无效 DASH byte_range: {}", value)))?;
+        .map_err(|_| AppError::M3u8Parse(crate::localized!("invalidDashByteRange", value)))?;
     if end < start {
-        return Err(AppError::M3u8Parse(format!("无效 DASH byte_range: {}", value)));
+        return Err(AppError::M3u8Parse(crate::localized!("invalidDashByteRange", value)));
     }
     Ok(ByteRangeSpec {
         length: end - start + 1,
@@ -1667,12 +1665,12 @@ async fn fetch_hls_playlist(
 
     if looks_like_html_response(&bytes, content_type.as_deref()) {
         return Err(AppError::InvalidInput(
-            "链接内容不是有效的 M3U8 播放列表，请检查地址是否正确".to_string(),
+            crate::i18n::tr("theUrlDoesNotContainAValidM3u8PlaylistCheckTheUrl").to_string(),
         ));
     }
 
     let playlist = m3u8_rs::parse_playlist_res(&bytes).map_err(|_| {
-        AppError::InvalidInput("链接内容不是有效的 M3U8 播放列表，请检查地址是否正确".to_string())
+        AppError::InvalidInput(crate::i18n::tr("theUrlDoesNotContainAValidM3u8PlaylistCheckTheUrl").to_string())
     })?;
 
     Ok(FetchedPlaylist { base_url, playlist })
@@ -1903,13 +1901,13 @@ fn build_alternative_track_label(media: &m3u8_rs::AlternativeMedia) -> String {
 
     let mut flags = Vec::new();
     if media.default {
-        flags.push("默认");
+        flags.push(crate::i18n::tr("default"));
     }
     if media.autoselect {
-        flags.push("自动");
+        flags.push(crate::i18n::tr("automatic"));
     }
     if media.forced {
-        flags.push("强制");
+        flags.push(crate::i18n::tr("forced"));
     }
     if !flags.is_empty() {
         parts.push(flags.join("/"));
@@ -1950,8 +1948,7 @@ fn resolve_selected_alternative_track(
 ) -> Result<Option<MasterAlternativeTrack>, AppError> {
     if available_tracks.is_empty() {
         if selected_id.is_some() {
-            return Err(AppError::InvalidInput(format!(
-                "所选{}轨道已不存在，请重新解析后再下载",
+            return Err(AppError::InvalidInput(crate::localized!("theSelectedTrackNoLongerExistsParseTheUrlAgain",
                 track_name
             )));
         }
@@ -1974,8 +1971,7 @@ fn resolve_selected_alternative_track(
         .cloned()
         .map(Some)
         .ok_or_else(|| {
-            AppError::InvalidInput(format!(
-                "所选{}轨道已不存在，请重新解析后再下载",
+            AppError::InvalidInput(crate::localized!("theSelectedTrackNoLongerExistsParseTheUrlAgain",
                 track_name
             ))
         })
@@ -1996,8 +1992,7 @@ fn resolve_selected_optional_track(
         .cloned()
         .map(Some)
         .ok_or_else(|| {
-            AppError::InvalidInput(format!(
-                "所选{}轨道已不存在，请重新解析后再下载",
+            AppError::InvalidInput(crate::localized!("theSelectedTrackNoLongerExistsParseTheUrlAgain",
                 track_name
             ))
         })
@@ -2417,7 +2412,7 @@ fn validate_fmp4_init_encryption(init_segments: &[PreparedHlsInitSegment]) -> Re
             .is_some_and(|encryption| encryption.iv.is_none())
         {
             return Err(AppError::Decryption(
-                "加密的 fMP4 EXT-X-MAP 必须提供显式 IV".to_string(),
+                crate::i18n::tr("encryptedFmp4ExtXMapRequiresAnExplicitIv").to_string(),
             ));
         }
     }
@@ -3073,8 +3068,7 @@ async fn download_missing_fmp4_init_segments(
         match outcome {
             SegmentDownloadOutcome::Downloaded(file_size) => downloaded_bytes += file_size,
             SegmentDownloadOutcome::Skipped => {
-                return Err(AppError::Network(format!(
-                    "fMP4 初始化片段下载失败：{}",
+                return Err(AppError::Network(crate::localized!("failedToDownloadFmp4InitializationSegment",
                     init.info.uri
                 )));
             }
@@ -3895,7 +3889,7 @@ async fn bundle_download_worker_loop(
         let permit = tokio::select! {
             _ = cancel.cancelled() => return Err(AppError::Cancelled),
             permit = semaphore.acquire() => permit
-                .map_err(|_| AppError::Internal("下载并发控制已关闭".to_string()))?,
+                .map_err(|_| AppError::Internal(crate::i18n::tr("downloadConcurrencyControllerIsClosed").to_string()))?,
         };
 
         let entry = match entries.get(entry_index).cloned() {
@@ -4024,7 +4018,7 @@ fn rebalance_concurrency_permits(
             Ok(permit) => held_permits.push(permit),
             Err(TryAcquireError::NoPermits) => break,
             Err(TryAcquireError::Closed) => {
-                return Err(AppError::Internal("下载并发控制已关闭".to_string()));
+                return Err(AppError::Internal(crate::i18n::tr("downloadConcurrencyControllerIsClosed").to_string()));
             }
         }
     }
@@ -4068,7 +4062,7 @@ async fn download_worker_loop(
                 return Err(AppError::Cancelled);
             }
             permit = semaphore.acquire() => permit
-                .map_err(|_| AppError::Internal("下载并发控制已关闭".to_string()))?,
+                .map_err(|_| AppError::Internal(crate::i18n::tr("downloadConcurrencyControllerIsClosed").to_string()))?,
         };
 
         let segment = match segments.get(segment_index).cloned() {
@@ -4546,7 +4540,7 @@ pub async fn merge_ts_files_in_dir(input_dir: &Path, output_path: &Path) -> Resu
 
     if files.is_empty() {
         return Err(AppError::InvalidInput(
-            "所选目录中未找到可合并的 ts 文件".to_string(),
+            crate::i18n::tr("noMergeableTsFilesFoundInTheSelectedFolder").to_string(),
         ));
     }
 
@@ -4558,12 +4552,12 @@ pub async fn merge_ts_files_in_dir(input_dir: &Path, output_path: &Path) -> Resu
 fn resolve_local_m3u8_uri(base_dir: &Path, uri: &str) -> Result<PathBuf, AppError> {
     let trimmed = uri.trim();
     if trimmed.is_empty() {
-        return Err(AppError::M3u8Parse("m3u8 中存在空 URI".to_string()));
+        return Err(AppError::M3u8Parse(crate::i18n::tr("m3u8ContainsAnEmptyUri").to_string()));
     }
 
     let lower = trimmed.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
-        return Err(AppError::InvalidInput("本地转换不支持网络 URI".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("localConversionDoesNotSupportNetworkUris").to_string()));
     }
 
     let cleaned: &str = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
@@ -4590,8 +4584,7 @@ fn resolve_local_m3u8_uri(base_dir: &Path, uri: &str) -> Result<PathBuf, AppErro
 
     let resolved = std::fs::canonicalize(&candidate).unwrap_or(candidate);
     if !resolved.is_file() {
-        return Err(AppError::InvalidInput(format!(
-            "找不到本地文件：{}",
+        return Err(AppError::InvalidInput(crate::localized!("localFileNotFound",
             resolved.display()
         )));
     }
@@ -4612,8 +4605,7 @@ async fn read_local_m3u8_bytes(
     let length = byte_range.length as usize;
     let end = offset.saturating_add(length);
     if offset > bytes.len() || end > bytes.len() {
-        return Err(AppError::InvalidInput(format!(
-            "字节范围超出文件大小：{}",
+        return Err(AppError::InvalidInput(crate::localized!("byteRangeExceedsFileSize",
             path.display()
         )));
     }
@@ -4629,13 +4621,13 @@ pub async fn convert_local_m3u8_to_mp4_file(
 ) -> Result<(), AppError> {
     let bytes = tokio::fs::read(m3u8_path).await?;
     let playlist = m3u8_rs::parse_playlist_res(&bytes)
-        .map_err(|_| AppError::InvalidInput("所选文件不是有效的 M3U8 播放列表".to_string()))?;
+        .map_err(|_| AppError::InvalidInput(crate::i18n::tr("theSelectedFileIsNotAValidM3u8Playlist").to_string()))?;
 
     let media = match playlist {
         m3u8_rs::Playlist::MediaPlaylist(media) => media,
         m3u8_rs::Playlist::MasterPlaylist(_) => {
             return Err(AppError::InvalidInput(
-                "不支持主播放列表，请指向包含分片的 m3u8 文件".to_string(),
+                crate::i18n::tr("masterPlaylistsAreNotSupportedSelectAnM3u8FileContainingMediaSegments").to_string(),
             ));
         }
     };
@@ -4691,7 +4683,7 @@ pub async fn convert_local_m3u8_to_mp4_file(
         for (index, segment) in media.segments.iter().enumerate() {
             if !is_fmp4 && segment.byte_range.is_some() {
                 return Err(AppError::InvalidInput(
-                    "暂不支持包含 EXT-X-BYTERANGE 的播放列表".to_string(),
+                    crate::i18n::tr("playlistsContainingExtXByterangeAreNotSupported").to_string(),
                 ));
             }
 
@@ -4701,7 +4693,7 @@ pub async fn convert_local_m3u8_to_mp4_file(
                 } else if is_aes_cbc_method(&key.method) {
                     let method_name = key.method.to_string();
                     let key_uri = key.uri.as_ref().ok_or_else(|| {
-                        AppError::M3u8Parse(format!("{} key 缺少 URI", method_name))
+                        AppError::M3u8Parse(crate::localized!("keyIsMissingAUri", method_name))
                     })?;
                     let key_path = resolve_local_m3u8_uri(&base_dir, key_uri)?;
                     let key_bytes = if let Some(cached) = key_cache.get(&key_path) {
@@ -4709,8 +4701,7 @@ pub async fn convert_local_m3u8_to_mp4_file(
                     } else {
                         let bytes = tokio::fs::read(&key_path).await?;
                         if !matches!(bytes.len(), 16 | 24 | 32) {
-                            return Err(AppError::Decryption(format!(
-                                "AES key 长度非法：{} 字节",
+                            return Err(AppError::Decryption(crate::localized!("invalidAesKeyLengthBytes",
                                 bytes.len()
                             )));
                         }
@@ -4750,7 +4741,7 @@ pub async fn convert_local_m3u8_to_mp4_file(
                 if current_map_key.as_ref() != Some(&map_key) {
                     if current_enc.as_ref().is_some_and(|enc| enc.iv.is_none()) {
                         return Err(AppError::Decryption(
-                            "加密的 fMP4 EXT-X-MAP 必须提供显式 IV".to_string(),
+                            crate::i18n::tr("encryptedFmp4ExtXMapRequiresAnExplicitIv").to_string(),
                         ));
                     }
                     let raw = read_local_m3u8_bytes(&map_path, map_byte_range.as_ref()).await?;
@@ -4765,7 +4756,7 @@ pub async fn convert_local_m3u8_to_mp4_file(
                 }
             } else if is_fmp4 && current_map_key.is_none() {
                 return Err(AppError::InvalidInput(
-                    "fMP4 播放列表缺少 EXT-X-MAP".to_string(),
+                    crate::i18n::tr("fmp4PlaylistIsMissingExtXMap").to_string(),
                 ));
             }
 
@@ -4860,7 +4851,7 @@ fn remaining_mp4_download_time(deadline: Instant) -> Result<Duration, AppError> 
     deadline
         .checked_duration_since(Instant::now())
         .filter(|duration| !duration.is_zero())
-        .ok_or_else(|| AppError::Network("Direct 下载超过 1 小时仍未成功".to_string()))
+        .ok_or_else(|| AppError::Network(crate::i18n::tr("directDownloadHasNotSucceededAfter1Hour").to_string()))
 }
 
 fn direct_download_retry_delay(attempt: u32, remaining: Duration) -> Duration {
@@ -4947,8 +4938,7 @@ pub async fn run_mp4_download(
                 let remaining = match remaining_mp4_download_time(deadline) {
                     Ok(remaining) => remaining,
                     Err(_) => {
-                        return Err(AppError::Network(format!(
-                            "Direct 下载超过 1 小时仍未成功，最后错误：{}",
+                        return Err(AppError::Network(crate::localized!("directDownloadHasNotSucceededAfter1HourLastError",
                             error
                         )));
                     }
@@ -5005,7 +4995,7 @@ async fn run_mp4_download_attempt(
             Mp4ResumeResponseMode::RestartRequired => {
                 if !restart_confirmed {
                     return Err(AppError::InvalidInput(
-                        "服务器不支持断点续传，请确认后从头下载".to_string(),
+                        crate::i18n::tr("theServerDoesNotSupportResumingConfirmToRestartTheDownload").to_string(),
                     ));
                 }
 

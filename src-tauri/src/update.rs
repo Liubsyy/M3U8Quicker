@@ -102,7 +102,7 @@ pub async fn check_for_update(
 
     let body_text = response.text().await?;
     let release: GithubRelease = serde_json::from_str(&body_text)
-        .map_err(|e| AppError::Network(format!("解析发布信息失败: {}", e)))?;
+        .map_err(|e| AppError::Network(crate::localized!("failedToParseReleaseInformation", e)))?;
 
     let latest_raw = release.tag_name.trim();
     let latest_clean = latest_raw.trim_start_matches(['v', 'V']);
@@ -188,7 +188,7 @@ pub async fn download_update_installer(
     asset: DownloadAssetArg,
 ) -> Result<String, AppError> {
     if asset.url.trim().is_empty() || asset.name.trim().is_empty() {
-        return Err(AppError::InvalidInput("无效的更新包信息".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("invalidUpdatePackageInformation").to_string()));
     }
 
     let target_dir = resolve_update_download_dir(&state).await;
@@ -283,7 +283,7 @@ pub async fn open_update_installer(
 ) -> Result<(), AppError> {
     let installer_path = PathBuf::from(path.trim());
     if installer_path.as_os_str().is_empty() || !installer_path.exists() {
-        return Err(AppError::InvalidInput("安装包不存在".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("installerDoesNotExist").to_string()));
     }
 
     #[cfg(target_os = "linux")]

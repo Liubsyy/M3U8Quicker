@@ -1,3 +1,6 @@
+import { changeAppLanguage, currentLanguage, t, useTranslation } from "../i18n";
+import type { AppLanguage } from "../types/settings";
+import { LANGUAGE_OPTIONS } from "../i18n/languages";
 import {
   useEffect,
   useRef,
@@ -107,7 +110,7 @@ function clampInt(value: number, min: number): number {
 }
 
 function formatSpeedKbps(kbps: number | null): string {
-  if (kbps === null || kbps <= 0) return "未设置";
+  if (kbps === null || kbps <= 0) return t("notSet");
   if (kbps >= 1024) {
     const mb = kbps / 1024;
     return `${Number.isInteger(mb) ? mb : mb.toFixed(1)} MB/s`;
@@ -134,6 +137,7 @@ interface SettingsModalProps {
 }
 
 function SectionTitle({ children }: { children: ReactNode }) {
+  useTranslation();
   return (
     <Typography.Text
       strong
@@ -153,6 +157,7 @@ const MOD_KEY =
 
 // 键盘按键样式的「键帽」
 function Kbd({ children }: { children: ReactNode }) {
+  useTranslation();
   const { token } = theme.useToken();
   return (
     <span
@@ -176,8 +181,8 @@ function Kbd({ children }: { children: ReactNode }) {
 }
 
 const ZOOM_SHORTCUTS: { combo: string; label: string }[] = [
-  { combo: `${MOD_KEY} +`, label: "放大" },
-  { combo: `${MOD_KEY} −`, label: "缩小" },
+  { combo: `${MOD_KEY} +`, get label() { return t("zoomIn"); } },
+  { combo: `${MOD_KEY} −`, get label() { return t("zoomOut"); } },
 ];
 
 export function SettingsModal({
@@ -195,6 +200,18 @@ export function SettingsModal({
   onHistoryPageSizeChange,
   onUpdateAvailabilityChange,
 }: SettingsModalProps) {
+  useTranslation();
+  const [savingLanguage, setSavingLanguage] = useState(false);
+  const handleLanguageChange = async (language: AppLanguage) => {
+    setSavingLanguage(true);
+    try {
+      await changeAppLanguage(language);
+    } catch (error) {
+      message.error(t("languageSaveFailed", { error: String(error) }));
+    } finally {
+      setSavingLanguage(false);
+    }
+  };
   const [activeTab, setActiveTab] = useState<
     "general" | "network" | "download" | "live" | "ffmpeg" | "about"
   >(initialTab);
@@ -309,7 +326,7 @@ export function SettingsModal({
         setCloseToTrayState(settings.close_to_tray);
       })
       .catch((error) => {
-        message.error(`读取设置失败：${formatSettingsError(error)}`);
+        message.error(t("failedToLoadSettings", { value0: formatSettingsError(error) }));
       })
       .finally(() => setLoading(false));
 
@@ -360,9 +377,9 @@ export function SettingsModal({
 
     try {
       await setProxySettings(nextProxy);
-      message.success("代理设置已保存");
+      message.success(t("proxySettingsSaved"));
     } catch (error) {
-      message.error(`保存代理设置失败：${formatSettingsError(error)}`);
+      message.error(t("failedToSaveProxySettings", { value0: formatSettingsError(error) }));
       const settings = await getAppSettings();
       setProxySettingsState(settings.proxy);
     } finally {
@@ -387,9 +404,9 @@ export function SettingsModal({
     try {
       await setDownloadConcurrency(normalizedValue);
       setSavedDownloadConcurrency(normalizedValue);
-      message.success("下载并发数量已保存");
+      message.success(t("downloadConcurrencySaved"));
     } catch (error) {
-      message.error(`保存下载并发数量失败：${formatSettingsError(error)}`);
+      message.error(t("failedToSaveDownloadConcurrency", { value0: formatSettingsError(error) }));
       const settings = await getAppSettings();
       setDownloadConcurrencyState(settings.download_concurrency);
       setSavedDownloadConcurrency(settings.download_concurrency);
@@ -419,9 +436,9 @@ export function SettingsModal({
     try {
       await setDownloadSpeedLimit(normalizedValue);
       setSavedDownloadSpeedLimitKbps(normalizedValue);
-      message.success("下载限速已保存");
+      message.success(t("downloadSpeedLimitSaved"));
     } catch (error) {
-      message.error(`保存下载限速失败：${formatSettingsError(error)}`);
+      message.error(t("failedToSaveDownloadSpeedLimit", { value0: formatSettingsError(error) }));
       const settings = await getAppSettings();
       setSavedDownloadSpeedLimitKbps(settings.download_speed_limit_kbps);
       setSpeedLimitMode(
@@ -446,9 +463,9 @@ export function SettingsModal({
       try {
         await setDownloadSpeedLimit(0);
         setSavedDownloadSpeedLimitKbps(0);
-        message.success("下载限速已关闭");
+        message.success(t("downloadSpeedLimitDisabled"));
       } catch (error) {
-        message.error(`保存下载限速失败：${formatSettingsError(error)}`);
+        message.error(t("failedToSaveDownloadSpeedLimit", { value0: formatSettingsError(error) }));
         const settings = await getAppSettings();
         setSavedDownloadSpeedLimitKbps(settings.download_speed_limit_kbps);
         setSpeedLimitMode(
@@ -485,9 +502,9 @@ export function SettingsModal({
         nextDeleteTsTempDirAfterDownload,
         nextConvertToMp4
       );
-      message.success("下载完成行为已保存");
+      message.success(t("postDownloadActionsSaved"));
     } catch (error) {
-      message.error(`保存下载完成行为失败：${formatSettingsError(error)}`);
+      message.error(t("failedToSavePostDownloadActions", { value0: formatSettingsError(error) }));
       const settings = await getAppSettings();
       setDeleteTsTempDirAfterDownload(
         settings.delete_ts_temp_dir_after_download
@@ -505,9 +522,9 @@ export function SettingsModal({
     try {
       await setDefaultDownloadDir(selectedPath);
       setDefaultDownloadDirState(selectedPath);
-      message.success("默认下载目录已保存");
+      message.success(t("defaultDownloadFolderSaved"));
     } catch (error) {
-      message.error(`保存默认下载目录失败：${formatSettingsError(error)}`);
+      message.error(t("failedToSaveDefaultDownloadFolder", { value0: formatSettingsError(error) }));
     }
   };
 
@@ -520,9 +537,9 @@ export function SettingsModal({
       const settings = await getAppSettings();
       setUserAgentState(settings.user_agent);
       setSavedUserAgent(settings.user_agent);
-      message.success("User-Agent 已保存");
+      message.success(t("userAgentSaved"));
     } catch (error) {
-      message.error(`保存 User-Agent 失败：${formatSettingsError(error)}`);
+      message.error(t("failedToSaveUserAgent", { value0: formatSettingsError(error) }));
       setUserAgentState(savedUserAgent);
     } finally {
       setSavingUserAgent(false);
@@ -535,9 +552,9 @@ export function SettingsModal({
     try {
       await setHistoryPageSize(nextPageSize);
       onHistoryPageSizeChange?.(nextPageSize);
-      message.success("每页展示已保存");
+      message.success(t("itemsPerPageSaved"));
     } catch (error) {
-      message.error(`保存每页展示失败：${formatSettingsError(error)}`);
+      message.error(t("failedToSaveItemsPerPage", { value0: formatSettingsError(error) }));
       const settings = await getAppSettings();
       setHistoryPageSizeValue(settings.history_page_size);
       onHistoryPageSizeChange?.(settings.history_page_size);
@@ -554,7 +571,7 @@ export function SettingsModal({
     try {
       await setCloseToTray(next);
     } catch (error) {
-      message.error(`保存关闭窗口行为失败：${formatSettingsError(error)}`);
+      message.error(t("failedToSaveWindowCloseBehavior", { value0: formatSettingsError(error) }));
       setCloseToTrayState(previous);
     } finally {
       setSavingCloseToTray(false);
@@ -581,9 +598,9 @@ export function SettingsModal({
     setSavingTimeouts(true);
     try {
       await setTimeoutSettings(metadata, segment, mp4);
-      message.success("请求超时已保存");
+      message.success(t("requestTimeoutsSaved"));
     } catch (error) {
-      message.error(`保存请求超时失败：${formatSettingsError(error)}`);
+      message.error(t("failedToSaveRequestTimeouts", { value0: formatSettingsError(error) }));
       const settings = await getAppSettings();
       setMetadataTimeoutSecs(settings.metadata_timeout_secs);
       setSegmentTimeoutSecs(settings.segment_timeout_secs);
@@ -636,9 +653,9 @@ export function SettingsModal({
         retryHls,
         retryFlv
       );
-      message.success("录播设置已保存");
+      message.success(t("recordingSettingsSaved"));
     } catch (error) {
-      message.error(`保存录播设置失败：${formatSettingsError(error)}`);
+      message.error(t("failedToSaveRecordingSettings", { value0: formatSettingsError(error) }));
       const settings = await getAppSettings();
       setHlsRefreshMinMs(settings.hls_refresh_min_ms);
       setHlsRefreshMaxMs(settings.hls_refresh_max_ms);
@@ -674,11 +691,11 @@ export function SettingsModal({
 
     try {
       await downloadFfmpeg();
-      message.success("FFmpeg 下载完成");
+      message.success(t("ffmpegDownloadCompleted"));
       const status = await getFfmpegStatus();
       setFfmpegStatus(status);
     } catch (error) {
-      message.error(`FFmpeg 下载失败：${String(error)}`);
+      message.error(t("ffmpegDownloadFailed", { value0: String(error) }));
     } finally {
       setFfmpegDownloading(false);
       setFfmpegDownloadProgress(0);
@@ -700,12 +717,12 @@ export function SettingsModal({
       const status = await setFfmpegPath(filePath);
       setFfmpegStatus(status);
       if (status.kind === "installed") {
-        message.success("FFmpeg 路径已保存");
+        message.success(t("ffmpegPathSaved"));
       } else {
-        message.warning("所选文件不是有效的 FFmpeg");
+        message.warning(t("theSelectedFileIsNotAValidFfmpegExecutable"));
       }
     } catch (error) {
-      message.error(`设置 FFmpeg 路径失败：${String(error)}`);
+      message.error(t("failedToSetFfmpegPath", { value0: String(error) }));
     }
   };
 
@@ -714,9 +731,9 @@ export function SettingsModal({
     try {
       const status = await setFfmpegPath(null);
       setFfmpegStatus(status);
-      message.success("已重置为自动检测");
+      message.success(t("resetToAutomaticDetection"));
     } catch (error) {
-      message.error(`重置 FFmpeg 路径失败：${String(error)}`);
+      message.error(t("failedToResetFfmpegPath", { value0: String(error) }));
     }
   };
 
@@ -725,9 +742,9 @@ export function SettingsModal({
     setSavingFfmpegEnabled(true);
     try {
       await setFfmpegEnabled(enabled);
-      message.success(enabled ? "FFmpeg 已开启" : "FFmpeg 已关闭");
+      message.success(enabled ? t("ffmpegEnabled") : t("ffmpegDisabled"));
     } catch (error) {
-      message.error(`保存 FFmpeg 开关失败：${String(error)}`);
+      message.error(t("failedToSaveFfmpegSetting", { value0: String(error) }));
       const settings = await getAppSettings();
       setFfmpegEnabledState(settings.ffmpeg_enabled);
     } finally {
@@ -755,25 +772,37 @@ export function SettingsModal({
   const settingsTabItems = [
     {
       key: "general",
-      label: "常规",
+      label: t("general"),
       children: (
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
-          <SectionTitle>主题</SectionTitle>
+          <Space direction="vertical" size={8}>
+            <SectionTitle>语言 / Language</SectionTitle>
+            <Select<AppLanguage>
+              aria-label="语言 / Language"
+              value={currentLanguage()}
+              options={LANGUAGE_OPTIONS}
+              style={{ width: 220 }}
+              loading={savingLanguage}
+              disabled={savingLanguage}
+              onChange={(language) => void handleLanguageChange(language)}
+            />
+          </Space>
+          <SectionTitle>{t("theme")}</SectionTitle>
           <Radio.Group
             value={themeMode}
             onChange={(event) => onThemeModeChange(event.target.value)}
           >
             <Space size={20}>
               <Radio value="light">
-                {themeMode === "light" ? "浅色（当前）" : "浅色"}
+                {themeMode === "light" ? t("lightCurrent") : t("light")}
               </Radio>
               <Radio value="dark">
-                {themeMode === "dark" ? "深色（当前）" : "深色"}
+                {themeMode === "dark" ? t("darkCurrent") : t("dark")}
               </Radio>
             </Space>
           </Radio.Group>
           <Space direction="vertical" size={10}>
-            <SectionTitle>界面缩放</SectionTitle>
+            <SectionTitle>{t("interfaceZoom")}</SectionTitle>
             <Space size={20} align="center" wrap>
               <div
                 style={{
@@ -787,7 +816,7 @@ export function SettingsModal({
                   overflow: "hidden",
                 }}
               >
-                <Tooltip title="缩小">
+                <Tooltip title={t("zoomOut")}>
                   <Button
                     type="text"
                     icon={<ZoomOutOutlined />}
@@ -813,7 +842,7 @@ export function SettingsModal({
                 >
                   {Math.round(zoomFactor * 100)}%
                 </Typography.Text>
-                <Tooltip title="放大">
+                <Tooltip title={t("zoomIn")}>
                   <Button
                     type="text"
                     icon={<ZoomInOutlined />}
@@ -836,9 +865,9 @@ export function SettingsModal({
             </Space>
           </Space>
           <Space direction="vertical" size={8}>
-            <SectionTitle>列表展示</SectionTitle>
+            <SectionTitle>{t("listDisplay")}</SectionTitle>
             <Space size={8} align="center">
-              <Typography.Text>每页展示</Typography.Text>
+              <Typography.Text>{t("itemsPerPage")}</Typography.Text>
               <Select
                 value={historyPageSizeValue}
                 options={HISTORY_PAGE_SIZE_SELECT_OPTIONS}
@@ -846,11 +875,11 @@ export function SettingsModal({
                 disabled={loading || savingHistoryPageSize}
                 onChange={(value) => void saveHistoryPageSizeValue(value)}
               />
-              <Typography.Text>条</Typography.Text>
+              <Typography.Text>{t("items")}</Typography.Text>
             </Space>
           </Space>
           <Space direction="vertical" size={8}>
-            <SectionTitle>关闭窗口时</SectionTitle>
+            <SectionTitle>{t("whenClosingTheWindow")}</SectionTitle>
             <Radio.Group
               value={closeToTray ? "tray" : "exit"}
               disabled={loading || savingCloseToTray}
@@ -859,8 +888,8 @@ export function SettingsModal({
               }
             >
               <Space size={20}>
-                <Radio value="tray">最小化到系统托盘</Radio>
-                <Radio value="exit">退出应用</Radio>
+                <Radio value="tray">{t("minimizeToSystemTray")}</Radio>
+                <Radio value="exit">{t("quitApplication")}</Radio>
               </Space>
             </Radio.Group>
           </Space>
@@ -869,13 +898,13 @@ export function SettingsModal({
     },
     {
       key: "network",
-      label: "网络",
+      label: t("network"),
       children: (
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <SectionTitle>代理设置</SectionTitle>
+            <SectionTitle>{t("proxySettings")}</SectionTitle>
             <Space style={{ width: "100%", justifyContent: "space-between" }}>
-              <Typography.Text>启用代理</Typography.Text>
+              <Typography.Text>{t("enableProxy")}</Typography.Text>
               <Switch
                 checked={proxySettings?.enabled ?? false}
                 loading={loading || savingProxy}
@@ -887,7 +916,7 @@ export function SettingsModal({
             </Space>
             <Input
               value={proxySettings?.url ?? ""}
-              placeholder="请输入代理地址"
+              placeholder={t("enterAProxyUrl")}
               disabled={!proxySettings || loading || savingProxy}
               onBlur={(event) => {
                 if (!proxySettings) return;
@@ -906,37 +935,35 @@ export function SettingsModal({
           </Space>
 
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <SectionTitle>默认 User-Agent</SectionTitle>
+            <SectionTitle>{t("defaultUserAgent")}</SectionTitle>
             <Input
               value={userAgent}
-              placeholder="留空则使用默认 User-Agent"
+              placeholder={t("leaveBlankToUseTheDefaultUserAgent")}
               disabled={loading || savingUserAgent}
               onChange={(event) => setUserAgentState(event.target.value)}
               onBlur={() => void saveUserAgentValue()}
             />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              新建任务时若在「附加 Header」中填写 User-Agent，将优先生效并覆盖此默认值。
-            </Typography.Text>
+              {t("aUserAgentInANewTaskSAdditionalHeaders")}</Typography.Text>
           </Space>
         </Space>
       ),
     },
     {
       key: "download",
-      label: "下载设置",
+      label: t("downloadSettings"),
       children: (
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <SectionTitle>默认下载目录</SectionTitle>
+            <SectionTitle>{t("defaultDownloadFolder")}</SectionTitle>
             <Space.Compact style={{ width: "calc(100% - 24px)" }}>
-              <Input value={defaultDownloadDir} readOnly placeholder="尚未设置" />
+              <Input value={defaultDownloadDir} readOnly placeholder={t("notConfigured")} />
               <Button onClick={() => void handleSelectDefaultDownloadDir()}>
-                选择
-              </Button>
+                {t("browse")}</Button>
             </Space.Compact>
           </Space>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <SectionTitle>下载并发数量</SectionTitle>
+            <SectionTitle>{t("concurrentDownloads")}</SectionTitle>
             <InputNumber
               min={MIN_DOWNLOAD_CONCURRENCY}
               max={MAX_DOWNLOAD_CONCURRENCY}
@@ -944,7 +971,7 @@ export function SettingsModal({
               value={downloadConcurrency ?? undefined}
               style={{ width: 180 }}
               disabled={loading || savingConcurrency}
-              placeholder="请输入下载并发数量"
+              placeholder={t("enterDownloadConcurrency")}
               onChange={(value) =>
                 setDownloadConcurrencyState(
                   typeof value === "number" ? value : null
@@ -967,14 +994,14 @@ export function SettingsModal({
                 justifyContent: "space-between",
               }}
             >
-              <SectionTitle>下载限速</SectionTitle>
+              <SectionTitle>{t("downloadSpeedLimit")}</SectionTitle>
               <Tag
                 bordered={false}
                 color={speedLimitMode === "unlimited" ? "success" : "processing"}
                 style={{ marginInlineEnd: 0, fontWeight: 500 }}
               >
                 {speedLimitMode === "unlimited"
-                  ? "全速下载"
+                  ? t("fullSpeed")
                   : `≤ ${formatSpeedKbps(downloadSpeedLimitKbps)}`}
               </Tag>
             </div>
@@ -1001,8 +1028,7 @@ export function SettingsModal({
                     label: (
                       <Space size={6}>
                         <ThunderboltOutlined />
-                        不限速
-                      </Space>
+                        {t("unlimited")}</Space>
                     ),
                     value: "unlimited",
                   },
@@ -1010,8 +1036,7 @@ export function SettingsModal({
                     label: (
                       <Space size={6}>
                         <DashboardOutlined />
-                        限速
-                      </Space>
+                        {t("limited")}</Space>
                     ),
                     value: "limited",
                   },
@@ -1026,7 +1051,7 @@ export function SettingsModal({
                     value={downloadSpeedLimitKbps ?? undefined}
                     style={{ width: "100%" }}
                     disabled={loading || savingSpeedLimit}
-                    placeholder="请输入下载限速"
+                    placeholder={t("enterDownloadSpeedLimit")}
                     onChange={(value) =>
                       setDownloadSpeedLimitKbps(
                         typeof value === "number" ? value : null
@@ -1041,8 +1066,7 @@ export function SettingsModal({
                       type="secondary"
                       style={{ fontSize: 12, marginRight: 2 }}
                     >
-                      快捷
-                    </Typography.Text>
+                      {t("presets")}</Typography.Text>
                     {SPEED_LIMIT_PRESETS.map((preset) => {
                       const active = downloadSpeedLimitKbps === preset.value;
                       return (
@@ -1067,16 +1091,15 @@ export function SettingsModal({
                   type="secondary"
                   style={{ fontSize: 12, lineHeight: 1.6 }}
                 >
-                  当前不限制下载速度，将以最大可用带宽下载。
-                </Typography.Text>
+                  {t("downloadsUseTheMaximumAvailableBandwidthWithNoSpeedLimit")}</Typography.Text>
               )}
             </div>
           </Space>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <SectionTitle>下载完成后</SectionTitle>
+            <SectionTitle>{t("afterDownloading")}</SectionTitle>
             <Space size={24}>
               <Space size={12}>
-                <Typography.Text>删除临时文件夹</Typography.Text>
+                <Typography.Text>{t("deleteTemporaryFolder")}</Typography.Text>
                 <Switch
                   checked={deleteTsTempDirAfterDownload}
                   loading={loading || savingDownloadOutput}
@@ -1086,7 +1109,7 @@ export function SettingsModal({
                 />
               </Space>
               <Space size={12}>
-                <Typography.Text>合并mp4</Typography.Text>
+                <Typography.Text>{t("mergeToMp4")}</Typography.Text>
                 <Switch
                   checked={convertToMp4}
                   loading={loading || savingDownloadOutput}
@@ -1101,7 +1124,7 @@ export function SettingsModal({
             </Space>
           </Space>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <SectionTitle>请求超时</SectionTitle>
+            <SectionTitle>{t("requestTimeouts")}</SectionTitle>
             <div
               style={{
                 display: "flex",
@@ -1110,10 +1133,10 @@ export function SettingsModal({
                 gap: 12,
               }}
             >
-              <Typography.Text>解析超时</Typography.Text>
+              <Typography.Text>{t("parsingTimeout")}</Typography.Text>
               <InputNumber
                 min={MIN_METADATA_TIMEOUT_SECS}                precision={0}
-                addonAfter="秒"
+                addonAfter={t("sec")}
                 style={{ width: 160 }}
                 value={metadataTimeoutSecs ?? undefined}
                 disabled={loading || savingTimeouts}
@@ -1133,10 +1156,10 @@ export function SettingsModal({
                 gap: 12,
               }}
             >
-              <Typography.Text>分片下载超时</Typography.Text>
+              <Typography.Text>{t("segmentDownloadTimeout")}</Typography.Text>
               <InputNumber
                 min={MIN_SEGMENT_TIMEOUT_SECS}                precision={0}
-                addonAfter="秒"
+                addonAfter={t("sec")}
                 style={{ width: 160 }}
                 value={segmentTimeoutSecs ?? undefined}
                 disabled={loading || savingTimeouts}
@@ -1154,10 +1177,10 @@ export function SettingsModal({
                 gap: 12,
               }}
             >
-              <Typography.Text>MP4 直链超时</Typography.Text>
+              <Typography.Text>{t("directMp4Timeout")}</Typography.Text>
               <InputNumber
                 min={MIN_MP4_TIMEOUT_SECS}                precision={0}
-                addonAfter="秒"
+                addonAfter={t("sec")}
                 style={{ width: 160 }}
                 value={mp4TimeoutSecs ?? undefined}
                 disabled={loading || savingTimeouts}
@@ -1173,14 +1196,13 @@ export function SettingsModal({
     },
     {
       key: "live",
-      label: "录播设置",
+      label: t("recordingSettings"),
       children: (
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <SectionTitle>HLS 刷新间隔</SectionTitle>
+            <SectionTitle>{t("hlsRefreshInterval")}</SectionTitle>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              录制 HLS 直播时轮询新分片的频率范围，越小越实时但请求更频繁。
-            </Typography.Text>
+              {t("pollingIntervalForNewHlsLiveSegmentsShorterIntervalsReduce")}</Typography.Text>
             <div
               style={{
                 display: "flex",
@@ -1189,10 +1211,10 @@ export function SettingsModal({
                 gap: 12,
               }}
             >
-              <Typography.Text>最小间隔</Typography.Text>
+              <Typography.Text>{t("minimumInterval")}</Typography.Text>
               <InputNumber
                 min={MIN_HLS_REFRESH_MIN_MS}                precision={0}
-                addonAfter="毫秒"
+                addonAfter={t("ms")}
                 style={{ width: 170 }}
                 value={hlsRefreshMinMs ?? undefined}
                 disabled={loading || savingLiveSettings}
@@ -1210,10 +1232,10 @@ export function SettingsModal({
                 gap: 12,
               }}
             >
-              <Typography.Text>最大间隔</Typography.Text>
+              <Typography.Text>{t("maximumInterval")}</Typography.Text>
               <InputNumber
                 min={MIN_HLS_REFRESH_MAX_MS}                precision={0}
-                addonAfter="毫秒"
+                addonAfter={t("ms")}
                 style={{ width: 170 }}
                 value={hlsRefreshMaxMs ?? undefined}
                 disabled={loading || savingLiveSettings}
@@ -1226,7 +1248,7 @@ export function SettingsModal({
           </Space>
 
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <SectionTitle>请求超时</SectionTitle>
+            <SectionTitle>{t("requestTimeouts")}</SectionTitle>
             <div
               style={{
                 display: "flex",
@@ -1235,10 +1257,10 @@ export function SettingsModal({
                 gap: 12,
               }}
             >
-              <Typography.Text>拉取 playlist 超时</Typography.Text>
+              <Typography.Text>{t("playlistFetchTimeout")}</Typography.Text>
               <InputNumber
                 min={MIN_HLS_PLAYLIST_TIMEOUT_SECS}                precision={0}
-                addonAfter="秒"
+                addonAfter={t("sec")}
                 style={{ width: 170 }}
                 value={hlsPlaylistTimeoutSecs ?? undefined}
                 disabled={loading || savingLiveSettings}
@@ -1258,10 +1280,10 @@ export function SettingsModal({
                 gap: 12,
               }}
             >
-              <Typography.Text>分片 / 流下载超时</Typography.Text>
+              <Typography.Text>{t("segmentStreamTimeout")}</Typography.Text>
               <InputNumber
                 min={MIN_LIVE_SEGMENT_TIMEOUT_SECS}                precision={0}
-                addonAfter="秒"
+                addonAfter={t("sec")}
                 style={{ width: 170 }}
                 value={liveSegmentTimeoutSecs ?? undefined}
                 disabled={loading || savingLiveSettings}
@@ -1276,10 +1298,9 @@ export function SettingsModal({
           </Space>
 
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <SectionTitle>断线重连间隔</SectionTitle>
+            <SectionTitle>{t("reconnectInterval")}</SectionTitle>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              录制中断流后等待多久再重连。
-            </Typography.Text>
+              {t("howLongToWaitBeforeReconnectingAfterAStreamDisconnects")}</Typography.Text>
             <div
               style={{
                 display: "flex",
@@ -1288,10 +1309,10 @@ export function SettingsModal({
                 gap: 12,
               }}
             >
-              <Typography.Text>HLS 重连</Typography.Text>
+              <Typography.Text>{t("hlsReconnect")}</Typography.Text>
               <InputNumber
                 min={MIN_LIVE_RETRY_HLS_MS}                precision={0}
-                addonAfter="毫秒"
+                addonAfter={t("ms")}
                 style={{ width: 170 }}
                 value={liveRetryHlsMs ?? undefined}
                 disabled={loading || savingLiveSettings}
@@ -1309,10 +1330,10 @@ export function SettingsModal({
                 gap: 12,
               }}
             >
-              <Typography.Text>FLV 重连</Typography.Text>
+              <Typography.Text>{t("flvReconnect")}</Typography.Text>
               <InputNumber
                 min={MIN_LIVE_RETRY_FLV_MS}                precision={0}
-                addonAfter="毫秒"
+                addonAfter={t("ms")}
                 style={{ width: 170 }}
                 value={liveRetryFlvMs ?? undefined}
                 disabled={loading || savingLiveSettings}
@@ -1332,12 +1353,10 @@ export function SettingsModal({
       children: (
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            FFmpeg 是一个专业的音视频处理工具，部分转码和合成功能会依赖它，
-            如果你想获得更佳的体验，请无脑下载 FFmpeg。
-          </Typography.Paragraph>
+            {t("ffmpegIsAMediaProcessingToolRequiredForSomeConversion")}</Typography.Paragraph>
 
           <Space style={{ width: "100%", justifyContent: "space-between" }}>
-            <SectionTitle>开启 FFmpeg</SectionTitle>
+            <SectionTitle>{t("enableFfmpeg")}</SectionTitle>
             <Switch
               checked={ffmpegEnabled}
               loading={loading || savingFfmpegEnabled}
@@ -1352,7 +1371,7 @@ export function SettingsModal({
             title={
               <Space>
                 <DashboardOutlined />
-                <span>环境检测</span>
+                <span>{t("environmentCheck")}</span>
               </Space>
             }
             styles={{ body: { padding: "10px 16px" } }}
@@ -1391,7 +1410,7 @@ export function SettingsModal({
                           icon={<CheckCircleFilled />}
                           style={{ marginInlineEnd: 0 }}
                         >
-                          已就绪 (v{info.version})
+                          {t("readyV")}{info.version})
                         </Tag>
                       ) : (
                         <Tag
@@ -1399,8 +1418,7 @@ export function SettingsModal({
                           icon={<CloseCircleFilled />}
                           style={{ marginInlineEnd: 0 }}
                         >
-                          未找到
-                        </Tag>
+                          {t("notFound")}</Tag>
                       )}
                     </div>
                     {info && (
@@ -1430,14 +1448,14 @@ export function SettingsModal({
               })()
             ) : (
               <div style={{ textAlign: "center", padding: "8px 0" }}>
-                <Badge status="processing" text="正在检测环境..." />
+                <Badge status="processing" text={t("checkingEnvironment")} />
               </div>
             )}
           </Card>
 
           {ffmpegEnabled && ffmpegStatus?.kind !== "installed" && (
             <Space direction="vertical" size={8} style={{ width: "100%" }}>
-              <SectionTitle>自动下载</SectionTitle>
+              <SectionTitle>{t("automaticDownload")}</SectionTitle>
               {ffmpegDownloading && (
                 <Progress percent={ffmpegDownloadProgress} size="small" />
               )}
@@ -1446,30 +1464,26 @@ export function SettingsModal({
                 loading={ffmpegDownloading}
                 onClick={() => void handleDownloadFfmpeg()}
               >
-                一键下载
-              </Button>
+                {t("downloadNow")}</Button>
             </Space>
           )}
 
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <SectionTitle>自定义路径</SectionTitle>
+            <SectionTitle>{t("customPath")}</SectionTitle>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              请选择 ffmpeg 可执行文件本身（非所在目录），同目录下需存在 ffprobe。
-            </Typography.Text>
+              {t("selectTheFfmpegExecutableItselfNotItsFolderFfprobeMust")}</Typography.Text>
             <Space size={8}>
               <Button
                 disabled={!ffmpegEnabled}
                 onClick={() => void handleSetFfmpegCustomPath()}
               >
-                选择文件
-              </Button>
+                {t("selectFile")}</Button>
               {ffmpegCustomPath && (
                 <Button
                   disabled={!ffmpegEnabled}
                   onClick={() => void handleResetFfmpegPath()}
                 >
-                  重置
-                </Button>
+                  {t("reset")}</Button>
               )}
             </Space>
             {ffmpegCustomPath && (
@@ -1488,8 +1502,7 @@ export function SettingsModal({
       key: "about",
       label: (
         <Badge dot={updateAvailable} offset={[6, 2]}>
-          关于
-        </Badge>
+          {t("about")}</Badge>
       ),
       children: (
         <div
@@ -1556,12 +1569,12 @@ export function SettingsModal({
               }
               onClick={() => setUpdateModalOpen(true)}
             >
-              检查更新
-            </Button>
+              {t("checkForUpdates")}</Button>
           </div>
+          {/* 暂时隐藏更新通知开关，保留现有设置与功能逻辑。 */}
           <div
             style={{
-              display: "flex",
+              display: "none",
               alignItems: "center",
               justifyContent: "space-between",
               gap: 12,
@@ -1570,9 +1583,9 @@ export function SettingsModal({
               borderTop: `1px solid ${token.colorBorderSecondary}`,
             }}
           >
-            <Typography.Text>更新通知</Typography.Text>
+            <Typography.Text>{t("updateNotifications")}</Typography.Text>
             <Switch
-              aria-label="更新通知"
+              aria-label={t("updateNotifications")}
               checked={updateNotificationsEnabled}
               onChange={onUpdateNotificationsChange}
             />
@@ -1585,13 +1598,13 @@ export function SettingsModal({
   return (
     <>
       <Modal
-        title="设置"
+        title={t("settings")}
         open={open}
         onCancel={onClose}
         onOk={() => void handleConfirm()}
-        okText="确定"
+        okText={t("ok")}
         cancelButtonProps={{ style: { display: "none" } }}
-        width={680}
+        width={["zh-CN", "zh-TW", "ja", "ko"].includes(currentLanguage()) ? 680 : 800}
         confirmLoading={
           loading ||
           savingProxy ||
@@ -1635,7 +1648,7 @@ export function SettingsModal({
 function formatSettingsError(error: unknown) {
   const text = String(error ?? "").trim();
   if (!text) {
-    return "未知错误";
+    return t("unknownError");
   }
 
   const normalized = text
@@ -1647,15 +1660,15 @@ function formatSettingsError(error: unknown) {
     .trim();
 
   if (!normalized) {
-    return "未知错误";
+    return t("unknownError");
   }
 
-  if (/^代理地址不能为空$/i.test(normalized)) {
+  if (/^(代理地址不能为空|Proxy URL cannot be empty)$/i.test(normalized)) {
     return normalized;
   }
 
-  if (/^代理地址无效[:：]\s*/i.test(normalized)) {
-    const detail = normalized.replace(/^代理地址无效[:：]\s*/i, "").trim();
+  if (/^(代理地址无效|Invalid proxy URL)[:：]\s*/i.test(normalized)) {
+    const detail = normalized.replace(/^(代理地址无效|Invalid proxy URL)[:：]\s*/i, "").trim();
     return formatProxyAddressDetail(detail);
   }
 
@@ -1668,31 +1681,31 @@ function formatProxyAddressDetail(detail: string) {
     .trim();
 
   if (!normalizedDetail) {
-    return "请输入有效的地址";
+    return t("enterAValidUrl");
   }
 
   if (/builder error/i.test(normalizedDetail)) {
-    return "代理地址端口无效";
+    return t("invalidProxyPort");
   }
 
   if (/^relative url without a base$/i.test(normalizedDetail)) {
-    return "请输入完整的代理地址，例如 http://127.0.0.1:7890";
+    return t("enterACompleteProxyUrlSuchAsHttp1270");
   }
 
   if (/unknown proxy scheme/i.test(normalizedDetail)) {
-    return "代理协议不受支持，请使用 http://、https:// 或 socks5://";
+    return t("unsupportedProxyProtocolUseHttpHttpsOrSocks5");
   }
 
   if (/empty host/i.test(normalizedDetail)) {
-    return "代理地址缺少主机名";
+    return t("proxyUrlIsMissingAHostname");
   }
 
   if (/invalid port number/i.test(normalizedDetail)) {
-    return "代理地址端口无效";
+    return t("invalidProxyPort");
   }
 
   if (/failed to create http client/i.test(normalizedDetail)) {
-    return "代理地址端口无效";
+    return t("invalidProxyPort");
   }
 
   return normalizedDetail;

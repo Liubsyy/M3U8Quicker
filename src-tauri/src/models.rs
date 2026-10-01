@@ -426,6 +426,8 @@ impl Default for ProxySettings {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
+    #[serde(default, deserialize_with = "crate::i18n::deserialize_saved_language")]
+    pub language: Option<crate::i18n::AppLanguage>,
     pub default_download_dir: Option<String>,
     pub proxy: ProxySettings,
     pub download_concurrency: usize,
@@ -474,6 +476,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            language: None,
             default_download_dir: None,
             proxy: ProxySettings::default(),
             download_concurrency: DEFAULT_DOWNLOAD_CONCURRENCY,

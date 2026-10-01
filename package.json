@@ -8,6 +8,7 @@
     "dev:desktop": "node .vscode/tauri-dev.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test:i18n": "node --test scripts/test-i18n.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -19,9 +20,11 @@
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "antd": "^6.3.4",
     "hls.js": "^1.6.15",
+    "i18next": "^26.4.2",
     "mpegts.js": "^1.8.0",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "react-i18next": "^17.0.15"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

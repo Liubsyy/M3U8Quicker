@@ -1,3 +1,4 @@
+import { t, useTranslation } from "../i18n";
 import { useMemo, useRef, useState } from "react";
 import { Alert, Button, Slider, Space, Typography } from "antd";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -39,6 +40,7 @@ export function VideoClipPicker({
   onChange,
   onLoadStateChange,
 }: VideoClipPickerProps) {
+  useTranslation();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -130,8 +132,8 @@ export function VideoClipPicker({
       <Alert
         type="info"
         showIcon
-        message="请先选择待剪辑的视频文件"
-        description="预览仅支持 mp4 / m4v / mov / webm；mkv / ts / m3u8 等格式请先用其它工具转为 mp4 再剪辑。"
+        message={t("selectAVideoToClipFirst")}
+        description={t("previewSupportsMp4M4vMovWebmOnlyConvertMkvTs")}
       />
     );
   }
@@ -139,14 +141,13 @@ export function VideoClipPicker({
   return (
     <Space direction="vertical" size={12} style={{ width: "100%" }}>
       <Typography.Text type="secondary">
-        预览仅支持 mp4 / m4v / mov / webm；mkv / ts / m3u8 等格式请先转为 mp4 再剪辑。
-      </Typography.Text>
+        {t("previewSupportsMp4M4vMovWebmOnlyConvertMkvTs2")}</Typography.Text>
       {loadFailed ? (
         <Alert
           type="warning"
           showIcon
-          message="该文件无法在预览中播放"
-          description="请先用「ts 转 mp4 / 本地 m3u8 转 mp4 / 多轨 HLS 转 mp4 / 格式转换」生成 mp4 后再剪辑。"
+          message={t("thisFileCannotBePlayedInThePreview")}
+          description={t("useTsToMp4LocalM3u8ToMp4MultiTrack")}
         />
       ) : (
         <video
@@ -172,17 +173,15 @@ export function VideoClipPicker({
       />
       <Space wrap>
         <Button size="small" onClick={handleSetStart} disabled={loadFailed || duration <= 0}>
-          设为起点（当前播放位置）
-        </Button>
+          {t("setStartCurrentPlaybackPosition")}</Button>
         <Button size="small" onClick={handleSetEnd} disabled={loadFailed || duration <= 0}>
-          设为终点（当前播放位置）
-        </Button>
+          {t("setEndCurrentPlaybackPosition")}</Button>
       </Space>
       <Space wrap size={[16, 4]}>
-        <Typography.Text type="secondary">起点：{formatTime(sliderValue[0])}</Typography.Text>
-        <Typography.Text type="secondary">终点：{formatTime(sliderValue[1])}</Typography.Text>
+        <Typography.Text type="secondary">{t("start")}{formatTime(sliderValue[0])}</Typography.Text>
+        <Typography.Text type="secondary">{t("end")}{formatTime(sliderValue[1])}</Typography.Text>
         <Typography.Text type="secondary">
-          时长：{formatTime(Math.max(0, sliderValue[1] - sliderValue[0]))}
+          {t("duration2")}{formatTime(Math.max(0, sliderValue[1] - sliderValue[0]))}
         </Typography.Text>
       </Space>
     </Space>

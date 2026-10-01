@@ -1,3 +1,4 @@
+import { t, useTranslation } from "../i18n";
 import { useState, useEffect } from "react";
 import { Modal, Form, Input, Button, Space, Radio, Typography, message } from "antd";
 import { FolderOpenOutlined, PictureOutlined } from "@ant-design/icons";
@@ -55,6 +56,7 @@ export function NewDownloadModal({
   onSwitchToLiveRecord,
   onSubmit,
 }: NewDownloadModalProps) {
+  useTranslation();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
@@ -115,20 +117,19 @@ export function NewDownloadModal({
 
   const submitDownload = async (params: CreateDownloadParams) => {
     await onSubmit(params);
-    message.success("下载已开始");
+    message.success(t("downloadStarted"));
   };
 
   const confirmSwitchToLiveRecord = async (params: CreateDownloadParams) => {
     return await new Promise<boolean>((resolve) => {
       Modal.confirm({
-        title: "检测到 HLS 直播",
+        title: t("hlsLiveStreamDetected"),
         content: (
           <Typography.Paragraph style={{ marginBottom: 0 }}>
-            当前地址看起来是直播流，普通下载可能会持续等待。是否转到直播录制窗口？
-          </Typography.Paragraph>
+            {t("thisUrlAppearsToBeALiveStreamANormal")}</Typography.Paragraph>
         ),
-        okText: "转到直播录制",
-        cancelText: "继续下载",
+        okText: t("switchToLiveRecording"),
+        cancelText: t("resumeDownload"),
         onOk: () => {
           onSwitchToLiveRecord({
             url: params.url,
@@ -162,15 +163,15 @@ export function NewDownloadModal({
       }
 
       const description = settings.convert_to_mp4
-        ? "当前下载包含独立音频或字幕轨。你已开启“合并 mp4”，要在下载完成后自动合成为 mp4，需要先在设置里开启并配置 FFmpeg。"
-        : "当前下载包含独立音频或字幕轨。建议先在设置里开启并配置 FFmpeg，后续合成 mp4 会更方便。";
+        ? t("thisDownloadHasSeparateAudioOrSubtitleTracksMergeTo")
+        : t("thisDownloadHasSeparateAudioOrSubtitleTracksEnableAnd");
 
       return await new Promise<boolean>((resolve) => {
         Modal.confirm({
-          title: "多轨下载建议开启 FFmpeg",
+          title: t("ffmpegRecommendedForMultiTrackDownloads"),
           content: <Typography.Paragraph style={{ marginBottom: 0 }}>{description}</Typography.Paragraph>,
-          okText: "前往设置",
-          cancelText: "继续下载",
+          okText: t("goToSettings"),
+          cancelText: t("resumeDownload"),
           onOk: () => {
             onOpenFfmpegSettings();
             resolve(false);
@@ -271,7 +272,7 @@ export function NewDownloadModal({
       await submitDownload(nextParams);
     } catch (e: unknown) {
       if (e && typeof e === "object" && "errorFields" in e) return;
-      message.error(`创建下载失败: ${formatCreateDownloadError(e)}`);
+      message.error(t("failedToCreateDownload", { value0: formatCreateDownloadError(e) }));
     } finally {
       setSubmitting(false);
     }
@@ -284,7 +285,7 @@ export function NewDownloadModal({
 
     const normalizedSelection = normalizeTrackSelection(hlsInspection, hlsSelection);
     if (!normalizedSelection.video_id) {
-      message.error("请选择视频轨道");
+      message.error(t("selectAVideoTrack"));
       return;
     }
 
@@ -299,7 +300,7 @@ export function NewDownloadModal({
       });
       closeTrackModal();
     } catch (error) {
-      message.error(`创建下载失败: ${formatCreateDownloadError(error)}`);
+      message.error(t("failedToCreateDownload", { value0: formatCreateDownloadError(error) }));
     } finally {
       setSubmitting(false);
     }
@@ -320,14 +321,13 @@ export function NewDownloadModal({
 
     return await new Promise<boolean>((resolve) => {
       Modal.confirm({
-        title: "预览需要 FFmpeg",
+        title: t("ffmpegRequiredForPreviews"),
         content: (
           <Typography.Paragraph style={{ marginBottom: 0 }}>
-            视频预览需要 FFmpeg 抽帧，请先在设置中开启并配置 FFmpeg。
-          </Typography.Paragraph>
+            {t("videoPreviewsUseFfmpegToExtractFramesEnableAndConfigure")}</Typography.Paragraph>
         ),
-        okText: "前往设置",
-        cancelText: "取消",
+        okText: t("goToSettings"),
+        cancelText: t("cancel"),
         onOk: () => {
           onOpenFfmpegSettings();
           resolve(false);
@@ -371,7 +371,7 @@ export function NewDownloadModal({
 
       const previewWindow = new WebviewWindow(label, {
         url: previewUrl,
-        title: "视频预览",
+        title: t("videoPreview2"),
         width: 960,
         height: 720,
         minWidth: 720,
@@ -386,11 +386,11 @@ export function NewDownloadModal({
       previewWindow.once("tauri://error", (event) => {
         console.error("Failed to create preview window", event);
         void closePreviewSession(token);
-        message.error("打开预览窗口失败");
+        message.error(t("failedToOpenPreviewWindow"));
       });
     } catch (e: unknown) {
       if (e && typeof e === "object" && "errorFields" in e) return;
-      message.error(`生成预览失败: ${formatCreateDownloadError(e)}`);
+      message.error(t("failedToGeneratePreview", { value0: formatCreateDownloadError(e) }));
     } finally {
       setPreviewing(false);
     }
@@ -398,30 +398,30 @@ export function NewDownloadModal({
 
   const inferredDirectFileType = inferDirectFileTypeFromUrl(watchedUrl);
   const urlLabel =
-    downloadMode === "direct" ? "地址" : downloadMode === "dash" ? "DASH 地址 / JSON" : "M3U8 地址";
+    downloadMode === "direct" ? t("url") : downloadMode === "dash" ? t("dashUrlJson") : t("m3u8Url");
   const supportedDirectTypes = DIRECT_FILE_TYPES.join(" / ");
   const urlPlaceholder =
     downloadMode === "direct"
-      ? `https://example.com/video/file.mp4\n支持 ${supportedDirectTypes} 格式`
+      ? t("httpsExampleComVideoFileMp4SupportedFormats", { value0: supportedDirectTypes })
       : downloadMode === "dash"
-        ? "https://example.com/video/manifest.mpd\n或粘贴 m3u8quicker-dash-v1 JSON"
+        ? t("httpsExampleComVideoManifestMpdOrPasteM3u8quickerDash")
         : "https://example.com/video/playlist.m3u8";
   const urlRequiredMessage =
     downloadMode === "direct"
-      ? "请输入 Direct 地址"
+      ? t("enterADirectDownloadUrl")
       : downloadMode === "dash"
-        ? "请输入 DASH 地址或 JSON"
-        : "请输入 M3U8 地址";
+        ? t("enterADashUrlOrJson")
+        : t("enterAnM3u8Url");
   const urlExtra =
     downloadMode === "direct"
       ? inferredDirectFileType
-        ? `文件类型将按地址推断为 ${getFileTypeLabel(inferredDirectFileType)}`
-        : "无法推断文件类型，默认mp4"
+        ? t("detectedFileType", { value0: getFileTypeLabel(inferredDirectFileType) })
+        : t("cannotDetectFileTypeMp4WillBeUsed")
       : undefined;
 
   return (
     <Modal
-      title="新建下载"
+      title={t("newDownload")}
       open={isOpen}
       onCancel={() => {
         closeTrackModal();
@@ -437,7 +437,7 @@ export function NewDownloadModal({
         className="new-download-form"
         onFinish={handleSubmit}
       >
-        <Form.Item label="下载方式">
+        <Form.Item label={t("downloadType")}>
           <Radio.Group
             value={downloadMode}
             onChange={(event) => {
@@ -463,9 +463,9 @@ export function NewDownloadModal({
             onChange={(event) => handleUrlChange(event.target.value)}
           />
         </Form.Item>
-        <Form.Item name="filename" label="文件名 (可选)">
+        <Form.Item name="filename" label={t("filenameOptional")}>
           <Input
-            placeholder="留空则自动从链接 title 或路径推导"
+            placeholder={t("leaveBlankToDeriveTheNameFromTheUrlTitle")}
             onChange={(event) => {
               const value = event.target.value;
               setFilenameTouched(Boolean(value.trim()));
@@ -474,26 +474,25 @@ export function NewDownloadModal({
         </Form.Item>
         <Form.Item
           name="extra_headers"
-          label="附加 Header"
+          label={t("additionalHeaders")}
         >
           <Input.TextArea
             placeholder={
-              "按行输入，每行一个 header\nreferer:https://example.com\norigin:https://example.com"
+              t("oneHeaderPerLineRefererHttpsExampleComOriginHttps")
             }
             rows={3}
           />
         </Form.Item>
-        <Form.Item label="保存目录">
+        <Form.Item label={t("saveTo")}>
           <Space.Compact style={{ width: "100%" }}>
             <Input value={outputDir} readOnly style={{ flex: 1 }} />
             <Button icon={<FolderOpenOutlined />} onClick={handleSelectDir}>
-              选择
-            </Button>
+              {t("browse")}</Button>
           </Space.Compact>
         </Form.Item>
         <Form.Item style={{ marginBottom: 0, textAlign: "right" }}>
           <Space>
-            <Button onClick={onClose}>取消</Button>
+            <Button onClick={onClose}>{t("cancel")}</Button>
             <Button
               color="cyan"
               variant="solid"
@@ -501,23 +500,21 @@ export function NewDownloadModal({
               onClick={handlePreview}
               loading={previewing}
             >
-              预览
-            </Button>
+              {t("preview")}</Button>
             <Button type="primary" htmlType="submit" loading={submitting}>
-              开始下载
-            </Button>
+              {t("startDownload")}</Button>
           </Space>
         </Form.Item>
       </Form>
       <Modal
-        title="选择下载轨道"
+        title={t("selectDownloadTracks")}
         open={Boolean(hlsInspection)}
         onCancel={closeTrackModal}
         onOk={() => {
           void handleConfirmTrackSelection();
         }}
-        okText="开始下载"
-        cancelText="返回"
+        okText={t("startDownload")}
+        cancelText={t("back")}
         confirmLoading={submitting}
         destroyOnClose
         maskClosable={false}
@@ -545,6 +542,7 @@ function HlsTrackSelectionContent({
   selection,
   onChange,
 }: HlsTrackSelectionContentProps) {
+  useTranslation();
   const normalizedSelection = normalizeTrackSelection(inspection, selection);
   const selectedVideo = inspection.video_tracks.find(
     (track) => track.id === normalizedSelection.video_id
@@ -561,10 +559,9 @@ function HlsTrackSelectionContent({
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <Typography.Text type="secondary">
-        已检测到多个视频、音频或字幕，请确认需要下载的轨道。
-      </Typography.Text>
+        {t("multipleVideoAudioOrSubtitleTracksDetectedSelectTheTracks")}</Typography.Text>
       <TrackRadioGroup
-        title="视频"
+        title={t("video")}
         value={normalizedSelection.video_id}
         options={inspection.video_tracks}
         onChange={(videoId) => {
@@ -573,7 +570,7 @@ function HlsTrackSelectionContent({
       />
       {audioTracks.length > 0 ? (
         <TrackRadioGroup
-          title="音频"
+          title={t("audio")}
           value={normalizedSelection.audio_id}
           options={audioTracks}
           onChange={(audioId) => {
@@ -583,12 +580,12 @@ function HlsTrackSelectionContent({
       ) : null}
       {subtitleTracks.length > 0 ? (
         <TrackRadioGroup
-          title="字幕"
+          title={t("subtitles")}
           value={normalizedSelection.subtitle_id ?? "__none__"}
           options={[
             {
               id: "__none__",
-              label: "不下载字幕",
+              label: t("noSubtitles"),
               track_type: "subtitle",
               name: null,
               language: null,
@@ -624,6 +621,7 @@ interface TrackRadioGroupProps {
 }
 
 function TrackRadioGroup({ title, value, options, onChange }: TrackRadioGroupProps) {
+  useTranslation();
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <Typography.Text strong>{title}</Typography.Text>
@@ -749,7 +747,7 @@ function willCreateMultiTrackBundle(
 function formatCreateDownloadError(error: unknown) {
   const text = String(error ?? "").trim();
   if (!text) {
-    return "未知错误";
+    return t("unknownError");
   }
 
   const normalized = text.replace(
@@ -758,7 +756,7 @@ function formatCreateDownloadError(error: unknown) {
   );
 
   if (/^relative URL without a base$/i.test(normalized)) {
-    return "请输入完整的 http:// 或 https:// 链接";
+    return t("enterACompleteHttpOrHttpsUrl");
   }
 
   return normalized;

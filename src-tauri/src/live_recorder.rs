@@ -1452,7 +1452,7 @@ async fn run_hls_record(
             if let Some(key) = segment.key.as_ref() {
                 if !matches!(key.method, m3u8_rs::KeyMethod::None) {
                     return Err(AppError::M3u8Parse(
-                        "暂不支持加密 (AES) HLS 直播录制".to_string(),
+                        crate::i18n::tr("encryptedAesHlsLiveRecordingIsNotSupported").to_string(),
                     ));
                 }
             }
@@ -1647,7 +1647,7 @@ async fn fetch_media_playlist_inner(
     let response = request.send().await?.error_for_status()?;
     let bytes = response.bytes().await?;
     let playlist = m3u8_rs::parse_playlist_res(&bytes)
-        .map_err(|_| AppError::InvalidInput("链接内容不是有效的 M3U8 播放列表".to_string()))?;
+        .map_err(|_| AppError::InvalidInput(crate::i18n::tr("theUrlDoesNotContainAValidM3u8Playlist").to_string()))?;
     match playlist {
         m3u8_rs::Playlist::MediaPlaylist(media) => Ok((base_url, media)),
         m3u8_rs::Playlist::MasterPlaylist(master) => {

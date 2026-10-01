@@ -1,3 +1,4 @@
+import { containsLocalizedMessage, t, useTranslation } from "../i18n";
 import {
   cloneElement,
   useEffect,
@@ -49,13 +50,13 @@ const WIDTH_OPTIONS = [
   { value: 1920, label: "1920 px" },
 ];
 
-const QUALITY_OPTIONS = [
-  { value: 2, label: "高" },
-  { value: 4, label: "标准" },
-  { value: 6, label: "较小" },
-  { value: 8, label: "小" },
-  { value: 10, label: "最小" },
-];
+const QUALITY_OPTIONS = () => ([
+  { value: 2, label: t("high") },
+  { value: 4, label: t("standard") },
+  { value: 6, label: t("smaller") },
+  { value: 8, label: t("small") },
+  { value: 10, label: t("minimum") },
+]);
 
 type DirectoryPickerWindow = Window &
   typeof globalThis & {
@@ -131,6 +132,7 @@ interface PreviewThumbnailEvent {
 type PreviewStatus = "loading" | "done" | "stopped" | "error";
 
 export function PreviewWindow() {
+  const { i18n: { language } } = useTranslation();
   const token = useMemo(
     () => new URLSearchParams(window.location.search).get("token") ?? "",
     []
@@ -151,7 +153,7 @@ export function PreviewWindow() {
     token ? "loading" : "error"
   );
   const [errorText, setErrorText] = useState<string | null>(
-    token ? null : "预览参数缺失，无法打开窗口。"
+    token ? null : t("previewParametersAreMissingThisWindowCannotBeOpened")
   );
   const forceRefresh = refreshRunKey === runKey;
   const runId = useMemo(
@@ -164,7 +166,7 @@ export function PreviewWindow() {
         { length: Math.floor((MAX_COUNT - MIN_COUNT) / STEP) + 1 },
         (_, index) => {
           const value = MIN_COUNT + index * STEP;
-          return { value, label: `${value} 张` };
+          return { value, label: t("images", { value0: value }) };
         }
       ),
     []
@@ -177,12 +179,12 @@ export function PreviewWindow() {
     count > 0 ? Math.min(100, Math.round((loadedCount / count) * 100)) : 0;
 
   useEffect(() => {
-    const windowTitle = previewTitle ? `视频预览 - ${previewTitle}` : "视频预览";
+    const windowTitle = previewTitle ? t("videoPreview", { value0: previewTitle }) : t("videoPreview2");
     document.title = windowTitle;
     void getCurrentWebviewWindow().setTitle(windowTitle).catch((error) => {
       console.error("Failed to set preview window title", error);
     });
-  }, [previewTitle]);
+  }, [previewTitle, language]);
 
   useEffect(() => {
     if (!token || !settingsLoaded) return;
@@ -325,7 +327,7 @@ export function PreviewWindow() {
     setErrorText(null);
     void cancelPreviewThumbnails(token, runId).catch((error) => {
       console.debug("Failed to stop preview extraction", error);
-      message.error("停止预览失败");
+      message.error(t("failedToStopPreview"));
       setPreviewStatus("loading");
     });
   };
@@ -363,17 +365,17 @@ export function PreviewWindow() {
         }}
       >
         <Space size={16} wrap>
-          <Typography.Text strong>视频预览</Typography.Text>
+          <Typography.Text strong>{t("videoPreview2")}</Typography.Text>
           {firstThumbnail ? (
             <Space size={16} wrap style={{ fontSize: 12 }}>
               <Typography.Text type="secondary">
-                帧率：{videoInfo?.frame_rate ? `${Number(videoInfo.frame_rate.toFixed(3))} fps` : "未知"}
+                {t("frameRate")}{videoInfo?.frame_rate ? `${Number(videoInfo.frame_rate.toFixed(3))} fps` : t("unknown")}
               </Typography.Text>
               <Typography.Text type="secondary">
-                分辨率：{videoInfo?.width && videoInfo?.height ? `${videoInfo.width} × ${videoInfo.height}` : "未知"}
+                {t("resolution")}{videoInfo?.width && videoInfo?.height ? `${videoInfo.width} × ${videoInfo.height}` : t("unknown")}
               </Typography.Text>
               <Typography.Text type="secondary">
-                编码格式：{videoInfo?.codec_name?.toUpperCase() || "未知"}
+                {t("codec")}{videoInfo?.codec_name?.toUpperCase() || t("unknown")}
               </Typography.Text>
             </Space>
           ) : null}
@@ -403,8 +405,7 @@ export function PreviewWindow() {
                   pointerEvents: "none",
                 }}
               >
-                已加载 {loadedCount}/{count} 张
-              </Typography.Text>
+                {t("previewLoadedCount", { loaded: loadedCount, total: count })}</Typography.Text>
               <Progress
                 percent={progressPercent}
                 size="small"
@@ -419,9 +420,9 @@ export function PreviewWindow() {
                 }}
               />
             </div>
-            <Tooltip title={loading ? "停止生成预览图" : "重新生成预览"}>
+            <Tooltip title={loading ? t("stopGeneratingThumbnails") : t("regeneratePreview")}>
               <Button
-                aria-label={loading ? "停止生成预览图" : "重新生成预览"}
+                aria-label={loading ? t("stopGeneratingThumbnails") : t("regeneratePreview")}
                 icon={loading ? <StopOutlined /> : <ReloadOutlined />}
                 size="small"
                 type="text"
@@ -431,8 +432,8 @@ export function PreviewWindow() {
           </div>
           <CompactSelectControl
             icon={<PictureOutlined style={iconStyle} />}
-            label="宽度"
-            ariaLabel="选择预览图宽度"
+            label={t("width")}
+            ariaLabel={t("selectThumbnailWidth")}
             disabled={loading}
             value={thumbnailWidth}
             options={WIDTH_OPTIONS}
@@ -442,34 +443,33 @@ export function PreviewWindow() {
           />
           <CompactSelectControl
             icon={<PictureOutlined style={iconStyle} />}
-            label="质量"
-            ariaLabel="选择预览图质量"
+            label={t("quality")}
+            ariaLabel={t("selectThumbnailQuality")}
             disabled={loading}
             value={jpegQuality}
-            options={QUALITY_OPTIONS}
+            options={QUALITY_OPTIONS()}
             selectWidth={70}
             popupWidth={90}
             onChange={handleJpegQualityChange}
           />
           <Stepper
             icon={<AppstoreOutlined style={iconStyle} />}
-            label={<>每行 <strong style={{ margin: "0 2px" }}>{columns}</strong> 张</>}
+            label={<>{t("perRow")}<strong style={{ margin: "0 2px" }}>{columns}</strong> {t("images2")}</>}
             onMinus={handleColumnsDecrement}
             onPlus={handleColumnsIncrement}
             minusDisabled={columns <= MIN_COLUMNS}
             plusDisabled={columns >= MAX_COLUMNS}
-            minusTooltip="每行少 1 张"
-            plusTooltip="每行多 1 张"
-            minusAriaLabel="每行减少 1 张"
-            plusAriaLabel="每行增加 1 张"
+            minusTooltip={t("1FewerPerRow")}
+            plusTooltip={t("1MorePerRow")}
+            minusAriaLabel={t("decreaseImagesPerRowBy1")}
+            plusAriaLabel={t("increaseImagesPerRowBy1")}
           />
           <Stepper
             icon={<PictureOutlined style={iconStyle} />}
             label={
               <>
-                共
-                <Select
-                  aria-label="选择预览图数量"
+                {t("total")}<Select
+                  aria-label={t("selectThumbnailCount")}
                   className="preview-count-select"
                   disabled={loading}
                   options={countOptions}
@@ -486,17 +486,17 @@ export function PreviewWindow() {
             onPlus={handleIncrement}
             minusDisabled={loading || count <= MIN_COUNT}
             plusDisabled={loading || count >= MAX_COUNT}
-            minusTooltip={`减少 ${STEP} 张预览图`}
-            plusTooltip={`增加 ${STEP} 张预览图`}
-            minusAriaLabel={`减少 ${STEP} 张预览图`}
-            plusAriaLabel={`增加 ${STEP} 张预览图`}
+            minusTooltip={t("decreaseThumbnailCountBy", { value0: STEP })}
+            plusTooltip={t("increaseThumbnailCountBy", { value0: STEP })}
+            minusAriaLabel={t("decreaseThumbnailCountBy", { value0: STEP })}
+            plusAriaLabel={t("increaseThumbnailCountBy", { value0: STEP })}
           />
         </Space>
       </div>
 
       <div style={{ flex: 1, overflow: "auto", padding: 16, position: "relative" }}>
         {errorText ? (
-          <Alert type="error" showIcon message="预览失败" description={errorText} />
+          <Alert type="error" showIcon message={t("previewFailed")} description={!token ? t("previewParametersAreMissingThisWindowCannotBeOpened") : errorText} />
         ) : null}
         {loading && thumbnails.length === 0 ? (
           <div
@@ -507,11 +507,11 @@ export function PreviewWindow() {
               justifyContent: "center",
             }}
           >
-            <Spin tip="正在抽取缩略图..." size="large" />
+            <Spin tip={t("extractingThumbnails")} size="large" />
           </div>
         ) : null}
         {!loading && !errorText && thumbnails.length === 0 ? (
-          <Empty description="暂无缩略图" />
+          <Empty description={t("noThumbnails")} />
         ) : null}
         {thumbnails.length > 0 ? (
           <div style={{ position: "relative" }}>
@@ -566,6 +566,7 @@ function Stepper({
   minusAriaLabel,
   plusAriaLabel,
 }: StepperProps) {
+  useTranslation();
   const { token } = theme.useToken();
   const wrapperStyle = buildStepperWrapperStyle(token);
   const buttonStyle = buildStepperButtonStyle(token);
@@ -650,6 +651,7 @@ function CompactSelectControl({
   popupWidth,
   onChange,
 }: CompactSelectControlProps) {
+  useTranslation();
   const { token } = theme.useToken();
   return (
     <div style={buildStepperWrapperStyle(token)}>
@@ -674,6 +676,7 @@ function CompactSelectControl({
 }
 
 function ThumbnailCard({ thumb }: { thumb: PreviewThumbnail }) {
+  useTranslation();
   const { token } = theme.useToken();
   const [aspectRatio, setAspectRatio] = useState<string>("16 / 9");
   return (
@@ -753,7 +756,7 @@ function renderPreviewActions(
           type="button"
           className={actionClassName}
           aria-label="download"
-          title="下载"
+          title={t("download")}
           onClick={(event) => {
             event.stopPropagation();
             void downloadPreviewImage(info.image.url, info.current);
@@ -774,14 +777,14 @@ async function downloadPreviewImage(url: string | undefined, current: number) {
     const blob = await response.blob();
     const savedPath = await savePreviewBlob(blob, filename);
     if (savedPath) {
-      message.success(`已保存到 ${savedPath}`);
+      message.success(t("savedTo", { value0: savedPath }));
     }
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       return;
     }
     console.debug("Failed to download preview image", error);
-    message.error("保存图片失败");
+    message.error(t("failedToSaveImage"));
   }
 }
 
@@ -800,7 +803,7 @@ async function savePreviewBlob(blob: Blob, filename: string) {
 
   const targetPath = await save({
     defaultPath: filename,
-    filters: [{ name: "JPEG 图片", extensions: ["jpg", "jpeg"] }],
+    filters: [{ name: t("jpegImage"), extensions: ["jpg", "jpeg"] }],
   });
   if (!targetPath) return null;
 
@@ -842,7 +845,7 @@ function clampThumbnailWidth(width: number) {
 }
 
 function clampJpegQuality(quality: number) {
-  const optionValues = QUALITY_OPTIONS.map((option) => option.value);
+  const optionValues = QUALITY_OPTIONS().map((option) => option.value);
   if (optionValues.includes(quality)) return quality;
   return DEFAULT_JPEG_QUALITY;
 }
@@ -861,7 +864,7 @@ function formatTimestamp(totalSeconds: number) {
 
 function formatError(error: unknown): string {
   const text = String(error ?? "").trim();
-  if (!text) return "未知错误";
+  if (!text) return t("unknownError");
   return text.replace(
     /^(Invalid input|Conversion error|Network error|IO error):\s*/i,
     ""
@@ -869,5 +872,5 @@ function formatError(error: unknown): string {
 }
 
 function isPreviewCancelledError(error: unknown): boolean {
-  return formatError(error).includes("预览已取消");
+  return containsLocalizedMessage(formatError(error), "previewCancelled");
 }

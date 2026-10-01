@@ -22,8 +22,16 @@ import type {
   ResumeDownloadCheckResult,
   MediaAnalysisResult,
 } from "../types";
-import type { AppSettings, FfmpegStatus, ProxySettings } from "../types/settings";
+import type { AppLanguage, AppSettings, FfmpegStatus, ProxySettings } from "../types/settings";
 import type { UpdateAsset, UpdateInfo } from "../types/update";
+
+export function getAppLanguage(): Promise<AppLanguage> {
+  return invoke("get_app_language");
+}
+
+export function setAppLanguage(language: AppLanguage): Promise<AppLanguage> {
+  return invoke("set_app_language", { language });
+}
 
 export async function createDownload(
   params: CreateDownloadParams

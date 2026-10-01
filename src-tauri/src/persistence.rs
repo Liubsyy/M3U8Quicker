@@ -604,13 +604,52 @@ pub async fn load_settings(app_handle: &tauri::AppHandle) -> AppSettings {
     settings
 }
 
-pub async fn save_settings(app_handle: &tauri::AppHandle, settings: &AppSettings) {
+static SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn save_settings(app_handle: &tauri::AppHandle, settings: &AppSettings) -> Result<(), AppError> {
     let path = get_settings_file(app_handle);
+    save_settings_at(&path, settings).await
+}
+
+async fn save_settings_at(path: &Path, settings: &AppSettings) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
+        tokio::fs::create_dir_all(parent).await?;
     }
-    if let Ok(json) = serde_json::to_string_pretty(settings) {
-        let _ = tokio::fs::write(&path, json).await;
+    let json = serde_json::to_string_pretty(settings).map_err(|error| AppError::Internal(error.to_string()))?;
+    // Replace only after a full write; readers never observe a partial settings file.
+    let temporary = path.with_extension("json.tmp");
+    tokio::fs::write(&temporary, json).await?;
+    tokio::fs::rename(&temporary, &path).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use crate::i18n::AppLanguage;
+
+    #[tokio::test]
+    async fn language_save_preserves_settings_and_failed_write_preserves_original() {
+        let root = std::env::temp_dir().join(format!("m3u8quicker-language-{}", uuid::Uuid::new_v4()));
+        let path = root.join("settings.json");
+        let mut settings = AppSettings::default();
+        settings.download_concurrency = 7;
+        settings.language = Some(AppLanguage::English);
+        save_settings_at(&path, &settings).await.unwrap();
+        settings.language = Some(AppLanguage::Chinese);
+        save_settings_at(&path, &settings).await.unwrap();
+        let saved: AppSettings = serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+        assert_eq!(saved.language, Some(AppLanguage::Chinese));
+        assert_eq!(saved.download_concurrency, 7);
+
+        // A blocked temporary path simulates a write failure without relying on OS permissions.
+        tokio::fs::create_dir(path.with_extension("json.tmp")).await.unwrap();
+        settings.language = Some(AppLanguage::English);
+        assert!(save_settings_at(&path, &settings).await.is_err());
+        let saved: AppSettings = serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+        assert_eq!(saved.language, Some(AppLanguage::Chinese));
+        assert_eq!(saved.download_concurrency, 7);
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }
 
@@ -618,9 +657,19 @@ pub async fn update_settings<F>(app_handle: &tauri::AppHandle, update: F)
 where
     F: FnOnce(&mut AppSettings),
 {
+    if let Err(error) = try_update_settings(app_handle, update).await {
+        eprintln!("Failed to save settings: {error}");
+    }
+}
+
+pub async fn try_update_settings<F>(app_handle: &tauri::AppHandle, update: F) -> Result<(), AppError>
+where
+    F: FnOnce(&mut AppSettings),
+{
+    let _guard = SETTINGS_LOCK.lock().await;
     let mut settings = load_settings(app_handle).await;
     update(&mut settings);
-    save_settings(app_handle, &settings).await;
+    save_settings(app_handle, &settings).await
 }
 
 // ===================== Live record persistence =====================

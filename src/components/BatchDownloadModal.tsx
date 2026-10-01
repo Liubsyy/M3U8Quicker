@@ -1,3 +1,4 @@
+import { t, useTranslation } from "../i18n";
 import { useEffect, useState, type Key } from "react";
 import {
   Alert,
@@ -36,7 +37,7 @@ import {
 } from "../types";
 
 const INLINE_DASH_JSON_PLACEHOLDER_URL = "inline-dash-json";
-const INLINE_DASH_JSON_DISPLAY = "B 站 DASH JSON";
+const INLINE_DASH_JSON_DISPLAY = () => (t("bilibiliDashJson"));
 
 const { TextArea } = Input;
 
@@ -78,6 +79,7 @@ export function BatchDownloadModal({
   onOpenFfmpegSettings,
   onSubmit,
 }: BatchDownloadModalProps) {
+  useTranslation();
   const [rawInput, setRawInput] = useState("");
   const [extraHeaders, setExtraHeaders] = useState("");
   const [outputDir, setOutputDir] = useState("");
@@ -171,14 +173,13 @@ export function BatchDownloadModal({
 
     return await new Promise<boolean>((resolve) => {
       Modal.confirm({
-        title: "预览需要 FFmpeg",
+        title: t("ffmpegRequiredForPreviews"),
         content: (
           <Typography.Paragraph style={{ marginBottom: 0 }}>
-            视频预览需要 FFmpeg 抽帧，请先在设置中开启并配置 FFmpeg。
-          </Typography.Paragraph>
+            {t("videoPreviewsUseFfmpegToExtractFramesEnableAndConfigure")}</Typography.Paragraph>
         ),
-        okText: "前往设置",
-        cancelText: "取消",
+        okText: t("goToSettings"),
+        cancelText: t("cancel"),
         onOk: () => {
           onOpenFfmpegSettings();
           resolve(false);
@@ -210,9 +211,9 @@ export function BatchDownloadModal({
       const previewTitle =
         item.filename?.trim() ||
         (item.sourceKind === "inline_dash_json"
-          ? INLINE_DASH_JSON_DISPLAY
+          ? INLINE_DASH_JSON_DISPLAY()
           : deriveFilenameFromUrl(item.url)) ||
-        "视频预览";
+        t("videoPreview2");
       const previewUrl = `/?${new URLSearchParams({
         view: "preview",
         token,
@@ -221,7 +222,7 @@ export function BatchDownloadModal({
 
       const previewWindow = new WebviewWindow(label, {
         url: previewUrl,
-        title: `视频预览 - ${previewTitle}`,
+        title: t("videoPreview", { value0: previewTitle }),
         width: 960,
         height: 720,
         minWidth: 720,
@@ -236,10 +237,10 @@ export function BatchDownloadModal({
       previewWindow.once("tauri://error", (event) => {
         console.error("Failed to create batch preview window", event);
         void closePreviewSession(token);
-        message.error("打开预览窗口失败");
+        message.error(t("failedToOpenPreviewWindow"));
       });
     } catch (error) {
-      message.error(`生成预览失败: ${formatBatchCreateError(error)}`);
+      message.error(t("failedToGeneratePreview", { value0: formatBatchCreateError(error) }));
     } finally {
       setPreviewingKey(null);
     }
@@ -247,12 +248,12 @@ export function BatchDownloadModal({
 
   const handleSubmit = async () => {
     if (validItems.length === 0) {
-      message.warning("请至少选择一条可用的下载地址");
+      message.warning(t("selectAtLeastOneValidDownloadUrl"));
       return;
     }
 
     if (invalidItems.length > 0) {
-      message.error("存在无法解析的行，请先修正后再开始下载");
+      message.error(t("someLinesCouldNotBeParsedFixThemBeforeStarting"));
       return;
     }
 
@@ -291,18 +292,18 @@ export function BatchDownloadModal({
       });
 
       if (failed.length === 0) {
-        message.success(`已添加 ${validItems.length} 个下载任务`);
+        message.success(t("addedDownloadTasks", { value0: validItems.length }));
         onClose();
         return;
       }
 
       if (failed.length === validItems.length) {
-        message.error(`批量下载创建失败：${failed[0]?.error ?? "未知错误"}`);
+        message.error(t("failedToCreateBatchDownloads", { value0: failed[0]?.error ?? t("unknownError") }));
         return;
       }
 
       message.warning(
-        `已成功添加 ${validItems.length - failed.length} 个任务，失败 ${failed.length} 个`
+        t("addedTasksFailed", { value0: validItems.length - failed.length, value1: failed.length })
       );
     } finally {
       setSubmitting(false);
@@ -311,7 +312,7 @@ export function BatchDownloadModal({
 
   return (
     <Modal
-      title="批量下载"
+      title={t("batchDownload")}
       open={open}
       onCancel={onClose}
       footer={null}
@@ -320,10 +321,9 @@ export function BatchDownloadModal({
     >
       <Space direction="vertical" size={16} style={{ width: "100%" }}>
         <div>
-          <Typography.Text strong>批量内容</Typography.Text>
+          <Typography.Text strong>{t("urlsToDownload")}</Typography.Text>
           <Typography.Paragraph type="secondary" style={{ margin: "6px 0 0" }}>
-            按行粘贴下载地址，每行一条。
-          </Typography.Paragraph>
+            {t("pasteOneDownloadUrlPerLine")}</Typography.Paragraph>
           <TextArea
             rows={5}
             value={rawInput}
@@ -340,14 +340,12 @@ export function BatchDownloadModal({
           <Alert
             type={invalidItems.length > 0 ? "warning" : "info"}
             showIcon
-            message={`共解析 ${parsedItems.length} 条，已选择 ${selectedItems.length} 条，待创建 ${validItems.length} 条${
-              invalidItems.length > 0 ? `，异常 ${invalidItems.length} 条` : ""
-            }`}
+            message={t("parsedSelectedReady", { value0: parsedItems.length, value1: selectedItems.length, value2: validItems.length, value3: invalidItems.length > 0 ? t("invalid", { value0: invalidItems.length }) : "" })}
           />
         ) : null}
 
         <div>
-          <Typography.Text strong>解析结果</Typography.Text>
+          <Typography.Text strong>{t("parsedResults")}</Typography.Text>
           <div style={{ marginTop: 10 }}>
             {parsedItems.length > 0 ? (
               <Table<ParsedBatchItem>
@@ -362,7 +360,7 @@ export function BatchDownloadModal({
                 scroll={{ y: 200 }}
                 columns={[
                   {
-                    title: "下载方式",
+                    title: t("downloadType"),
                     dataIndex: "mode",
                     width: 96,
                     render: (_, record) => {
@@ -398,14 +396,14 @@ export function BatchDownloadModal({
                     },
                   },
                   {
-                    title: "地址",
+                    title: t("url"),
                     dataIndex: "url",
                     ellipsis: true,
                     render: (value: string, record) => {
                       if (record.sourceKind === "inline_dash_json") {
                         return (
                           <Typography.Text type="secondary">
-                            {INLINE_DASH_JSON_DISPLAY}
+                            {INLINE_DASH_JSON_DISPLAY()}
                           </Typography.Text>
                         );
                       }
@@ -432,7 +430,7 @@ export function BatchDownloadModal({
                     },
                   },
                   {
-                    title: "名字",
+                    title: t("name"),
                     dataIndex: "filename",
                     width: 168,
                     ellipsis: true,
@@ -440,7 +438,7 @@ export function BatchDownloadModal({
                       <Input
                         size="small"
                         value={value ?? ""}
-                        placeholder="自动推导"
+                        placeholder={t("automatic")}
                         onChange={(event) =>
                           updateParsedItem(record.key, {
                             filename: event.target.value || undefined,
@@ -451,7 +449,7 @@ export function BatchDownloadModal({
                     ),
                   },
                   {
-                    title: "操作",
+                    title: t("actions"),
                     key: "action",
                     width: 88,
                     align: "center",
@@ -461,8 +459,8 @@ export function BatchDownloadModal({
                           type="text"
                           size="small"
                           icon={<PictureOutlined />}
-                          title="预览"
-                          aria-label="预览此行视频"
+                          title={t("preview")}
+                          aria-label={t("previewThisVideo")}
                           loading={previewingKey === record.key}
                           disabled={!record.valid}
                           onClick={() => void handlePreviewItem(record)}
@@ -472,8 +470,8 @@ export function BatchDownloadModal({
                           danger
                           size="small"
                           icon={<DeleteOutlined />}
-                          title="删除"
-                          aria-label="删除此行"
+                          title={t("delete")}
+                          aria-label={t("deleteThisRow")}
                           onClick={() => handleDeleteItem(record)}
                         />
                       </Space>
@@ -491,7 +489,7 @@ export function BatchDownloadModal({
               >
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description="粘贴多行内容后，这里会显示解析结果"
+                  description={t("pasteMultipleLinesToSeeParsedResultsHere")}
                 />
               </div>
             )}
@@ -499,42 +497,40 @@ export function BatchDownloadModal({
         </div>
 
         <div>
-          <Typography.Text strong>附加 Header</Typography.Text>
+          <Typography.Text strong>{t("additionalHeaders")}</Typography.Text>
           <div style={{ marginTop: 8 }}>
             <TextArea
               rows={3}
               value={extraHeaders}
               onChange={(event) => setExtraHeaders(event.target.value)}
               placeholder={
-                "按行输入，每行一个 header\nreferer:https://example.com\norigin:https://example.com"
+                t("oneHeaderPerLineRefererHttpsExampleComOriginHttps")
               }
             />
           </div>
         </div>
 
         <div>
-          <Typography.Text strong>下载目录</Typography.Text>
+          <Typography.Text strong>{t("downloadFolder")}</Typography.Text>
           <div style={{ marginTop: 8 }}>
             <Space.Compact style={{ width: "100%" }}>
               <Input value={outputDir} readOnly style={{ flex: 1 }} />
               <Button icon={<FolderOpenOutlined />} onClick={handleSelectDir}>
-                选择
-              </Button>
+                {t("browse")}</Button>
             </Space.Compact>
           </div>
         </div>
 
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <Space>
-            <Button onClick={onClose}>取消</Button>
+            <Button onClick={onClose}>{t("cancel")}</Button>
             <Button
               type="primary"
               onClick={() => void handleSubmit()}
               loading={submitting}
               disabled={selectedItems.length === 0}
             >
-              开始批量下载
-            </Button>
+              {t("startBatchDownload")}</Button>
           </Space>
         </div>
       </Space>
@@ -656,7 +652,7 @@ function normalizeParsedItem(item: ParsedBatchItem): ParsedBatchItem {
       ...item,
       url,
       valid: false,
-      error: "未找到下载地址",
+      error: t("noDownloadUrlFound"),
     };
   }
 
@@ -678,7 +674,7 @@ function normalizeParsedItem(item: ParsedBatchItem): ParsedBatchItem {
         ...item,
         url,
         valid: false,
-        error: "只支持 http:// 或 https:// 地址",
+        error: t("onlyHttpAndHttpsUrlsAreSupported"),
       };
     }
   } catch {
@@ -686,7 +682,7 @@ function normalizeParsedItem(item: ParsedBatchItem): ParsedBatchItem {
       ...item,
       url,
       valid: false,
-      error: "地址格式不正确",
+      error: t("invalidUrlFormat"),
     };
   }
 
@@ -729,7 +725,7 @@ function normalizeParsedItem(item: ParsedBatchItem): ParsedBatchItem {
 function formatBatchCreateError(error: unknown) {
   const text = String(error ?? "").trim();
   if (!text) {
-    return "未知错误";
+    return t("unknownError");
   }
 
   return text.replace(

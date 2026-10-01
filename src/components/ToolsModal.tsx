@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { t, useTranslation } from "../i18n";
+import { useEffect, useState } from "react";
 import {
   Button,
   Descriptions,
@@ -57,10 +58,10 @@ export type ToolAction =
 
 type ClipMode = "fast" | "precise";
 
-const CLIP_MODE_OPTIONS: Array<{ value: ClipMode; label: string }> = [
-  { value: "fast", label: "快速（不重编码）" },
-  { value: "precise", label: "精确（重新编码）" },
-];
+const CLIP_MODE_OPTIONS = (): Array<{ value: ClipMode; label: string }> => ([
+  { value: "fast", label: t("fastNoReEncoding") },
+  { value: "precise", label: t("preciseReEncode") },
+]);
 
 type ConvertFormat = "mp4" | "mkv" | "mov" | "mp3" | "m4a" | "wav";
 type ConvertMode = "quick" | "compatible";
@@ -78,15 +79,15 @@ const CONVERT_FORMAT_OPTIONS: Array<{ value: ConvertFormat; label: string }> = [
   { value: "wav", label: "WAV" },
 ];
 
-const CONVERT_MODE_OPTIONS: Array<{ value: ConvertMode; label: string }> = [
-  { value: "quick", label: "快速转换" },
-  { value: "compatible", label: "兼容转换" },
-];
+const CONVERT_MODE_OPTIONS = (): Array<{ value: ConvertMode; label: string }> => ([
+  { value: "quick", label: t("fastConversion") },
+  { value: "compatible", label: t("compatibleConversion") },
+]);
 
-const MERGE_VIDEO_MODE_OPTIONS: Array<{ value: MergeVideoMode; label: string }> = [
-  { value: "fast", label: "极速合并" },
-  { value: "compatible", label: "兼容合并" },
-];
+const MERGE_VIDEO_MODE_OPTIONS = (): Array<{ value: MergeVideoMode; label: string }> => ([
+  { value: "fast", label: t("fastMerge") },
+  { value: "compatible", label: t("compatibleMerge") },
+]);
 
 const CODEC_OUTPUT_FORMAT_OPTIONS: Array<{ value: CodecOutputFormat; label: string }> = [
   { value: "mp4", label: "MP4" },
@@ -94,48 +95,48 @@ const CODEC_OUTPUT_FORMAT_OPTIONS: Array<{ value: CodecOutputFormat; label: stri
   { value: "mov", label: "MOV" },
 ];
 
-const VIDEO_CODEC_OPTIONS_BY_FORMAT: Record<
+const VIDEO_CODEC_OPTIONS_BY_FORMAT = (): Record<
   CodecOutputFormat,
   Array<{ value: VideoCodec; label: string }>
-> = {
+> => ({
   mp4: [
     { value: "h264", label: "H.264" },
     { value: "h265", label: "H.265" },
-    { value: "copy", label: "复制原视频编码" },
+    { value: "copy", label: t("copyOriginalVideoCodec") },
   ],
   mkv: [
     { value: "h264", label: "H.264" },
     { value: "h265", label: "H.265" },
     { value: "vp9", label: "VP9" },
-    { value: "copy", label: "复制原视频编码" },
+    { value: "copy", label: t("copyOriginalVideoCodec") },
   ],
   mov: [
     { value: "h264", label: "H.264" },
     { value: "h265", label: "H.265" },
-    { value: "copy", label: "复制原视频编码" },
+    { value: "copy", label: t("copyOriginalVideoCodec") },
   ],
-};
+});
 
-const AUDIO_CODEC_OPTIONS_BY_FORMAT: Record<
+const AUDIO_CODEC_OPTIONS_BY_FORMAT = (): Record<
   CodecOutputFormat,
   Array<{ value: AudioCodec; label: string }>
-> = {
+> => ({
   mp4: [
     { value: "aac", label: "AAC" },
     { value: "mp3", label: "MP3" },
-    { value: "copy", label: "复制原音频编码" },
+    { value: "copy", label: t("copyOriginalAudioCodec") },
   ],
   mkv: [
     { value: "aac", label: "AAC" },
     { value: "mp3", label: "MP3" },
     { value: "opus", label: "Opus" },
-    { value: "copy", label: "复制原音频编码" },
+    { value: "copy", label: t("copyOriginalAudioCodec") },
   ],
   mov: [
     { value: "aac", label: "AAC" },
-    { value: "copy", label: "复制原音频编码" },
+    { value: "copy", label: t("copyOriginalAudioCodec") },
   ],
-};
+});
 
 interface ToolsModalProps {
   open: boolean;
@@ -145,6 +146,7 @@ interface ToolsModalProps {
 }
 
 export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModalProps) {
+  useTranslation();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<MediaAnalysisResult | null>(null);
@@ -157,12 +159,12 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
   const mergeVideoInputPaths = Form.useWatch("input_paths", form) as string[] | undefined;
   const clipInputPath = Form.useWatch("input_path", form) as string | undefined;
 
-  const title = useMemo(() => {
+  const title = (() => {
     if (tool === "merge-ts") {
       return (
         <Space size={8}>
           <MergeCellsOutlined />
-          <span>合并 ts</span>
+          <span>{t("mergeTs")}</span>
         </Space>
       );
     }
@@ -171,7 +173,7 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
       return (
         <Space size={8}>
           <SwapOutlined />
-          <span>ts 转 mp4</span>
+          <span>{t("tsToMp4")}</span>
         </Space>
       );
     }
@@ -180,7 +182,7 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
       return (
         <Space size={8}>
           <FileSyncOutlined />
-          <span>本地 m3u8 转 mp4</span>
+          <span>{t("localM3u8ToMp4")}</span>
         </Space>
       );
     }
@@ -189,7 +191,7 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
       return (
         <Space size={8}>
           <MergeCellsOutlined />
-          <span>合并视频</span>
+          <span>{t("mergeVideos")}</span>
         </Space>
       );
     }
@@ -198,7 +200,7 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
       return (
         <Space size={8}>
           <ScissorOutlined />
-          <span>剪辑视频</span>
+          <span>{t("clipVideo")}</span>
         </Space>
       );
     }
@@ -207,7 +209,7 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
       return (
         <Space size={8}>
           <SwapOutlined />
-          <span>格式转换</span>
+          <span>{t("convertFormat")}</span>
         </Space>
       );
     }
@@ -216,7 +218,7 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
       return (
         <Space size={8}>
           <RetweetOutlined />
-          <span>编码转换</span>
+          <span>{t("transcode")}</span>
         </Space>
       );
     }
@@ -225,7 +227,7 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
       return (
         <Space size={8}>
           <FileSearchOutlined />
-          <span>分析视频</span>
+          <span>{t("analyzeVideo")}</span>
         </Space>
       );
     }
@@ -234,13 +236,13 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
       return (
         <Space size={8}>
           <ApartmentOutlined />
-          <span>多轨 HLS 转 mp4</span>
+          <span>{t("multiTrackHlsToMp4")}</span>
         </Space>
       );
     }
 
-    return "工具";
-  }, [tool]);
+    return t("tools");
+  })();
 
   useEffect(() => {
     if (!open) return;
@@ -294,7 +296,7 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
         directory: false,
         filters: [
           {
-            name: "视频文件",
+            name: t("videoFiles"),
             extensions: ["mp4", "mkv", "mov", "webm", "avi", "wmv", "flv", "m4v", "ts"],
           },
         ],
@@ -321,11 +323,11 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
         directory: false,
         filters:
           tool === "ts-to-mp4"
-            ? [{ name: "TS 文件", extensions: ["ts"] }]
+            ? [{ name: t("tsFiles"), extensions: ["ts"] }]
             : tool === "local-m3u8-to-mp4"
-              ? [{ name: "M3U8 文件", extensions: ["m3u8"] }]
+              ? [{ name: t("m3u8Files"), extensions: ["m3u8"] }]
             : tool === "clip-video"
-              ? [{ name: "可预览视频", extensions: ["mp4", "m4v", "mov", "webm"] }]
+              ? [{ name: t("previewableVideos"), extensions: ["mp4", "m4v", "mov", "webm"] }]
               : undefined,
       });
 
@@ -383,16 +385,16 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
       defaultPath: currentOutput,
       filters:
         tool === "merge-ts"
-          ? [{ name: "TS 文件", extensions: ["ts"] }]
+          ? [{ name: t("tsFiles"), extensions: ["ts"] }]
           : tool === "merge-video"
-            ? [{ name: "MP4 文件", extensions: ["mp4"] }]
+            ? [{ name: t("mp4Files"), extensions: ["mp4"] }]
           : tool === "codec-convert"
-            ? [{ name: `${outputFormat.toUpperCase()} 文件`, extensions: [outputFormat] }]
+            ? [{ name: t("files", { value0: outputFormat.toUpperCase() }), extensions: [outputFormat] }]
           : tool === "format-convert"
-            ? [{ name: `${targetFormat.toUpperCase()} 文件`, extensions: [targetFormat] }]
+            ? [{ name: t("files", { value0: targetFormat.toUpperCase() }), extensions: [targetFormat] }]
           : tool === "clip-video"
-            ? [{ name: "MP4 文件", extensions: ["mp4"] }]
-            : [{ name: "MP4 文件", extensions: ["mp4"] }],
+            ? [{ name: t("mp4Files"), extensions: ["mp4"] }]
+            : [{ name: t("mp4Files"), extensions: ["mp4"] }],
     });
 
     if (selected) {
@@ -412,16 +414,16 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
         const savedPath = await mergeTsFiles(values.input_path.trim(), requestedOutput);
         message.success(
           savedPath === requestedOutput
-            ? "ts 已合并完成"
-            : `ts 已合并完成，已另存为 ${getPathName(savedPath)}`
+            ? t("tsFilesMerged")
+            : t("tsFilesMergedAndSavedAs", { value0: getPathName(savedPath) })
         );
       } else if (tool === "ts-to-mp4") {
         const requestedOutput = values.output_path.trim();
         const savedPath = await convertTsToMp4File(values.input_path.trim(), requestedOutput);
         message.success(
           savedPath === requestedOutput
-            ? "mp4 已生成，原 ts 文件已保留"
-            : `mp4 已生成，原 ts 文件已保留，已另存为 ${getPathName(savedPath)}`
+            ? t("mp4CreatedOriginalTsFileKept")
+            : t("mp4CreatedAndSavedAsOriginalTsFileKept", { value0: getPathName(savedPath) })
         );
       } else if (tool === "local-m3u8-to-mp4") {
         const requestedOutput = values.output_path.trim();
@@ -431,14 +433,14 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
         );
         message.success(
           savedPath === requestedOutput
-            ? "m3u8 已转换为 mp4，原文件已保留"
-            : `m3u8 已转换为 mp4，原文件已保留，已另存为 ${getPathName(savedPath)}`
+            ? t("m3u8ConvertedToMp4OriginalFilesKept")
+            : t("m3u8ConvertedToMp4AndSavedAsOriginalFilesKept", { value0: getPathName(savedPath) })
         );
       } else if (tool === "merge-video") {
         const inputPaths =
           (form.getFieldValue("input_paths") as string[] | undefined) ?? [];
         if (inputPaths.length < 2) {
-          message.error("请至少选择两个视频文件");
+          message.error(t("selectAtLeastTwoVideoFiles"));
           return;
         }
         const requestedOutput = values.output_path.trim();
@@ -446,17 +448,17 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
         const savedPath = await mergeVideoFiles(inputPaths, requestedOutput, mergeMode);
         message.success(
           savedPath === requestedOutput
-            ? "视频已合并完成，原文件已保留"
-            : `视频已合并完成，原文件已保留，已另存为 ${getPathName(savedPath)}`
+            ? t("videosMergedOriginalFilesKept")
+            : t("videosMergedAndSavedAsOriginalFilesKept", { value0: getPathName(savedPath) })
         );
       } else if (tool === "clip-video") {
         if (clipStatus.loadFailed) {
-          message.error("当前文件无法在预览中播放，请先转为 mp4 再剪辑");
+          message.error(t("thisFileCannotBePreviewedConvertItToMp4Before"));
           return;
         }
         const range = values.clip_range as ClipRange | undefined;
         if (!range || !(range.end - range.start >= 0.05)) {
-          message.error("请选择有效的剪辑区间");
+          message.error(t("selectAValidClipRange"));
           return;
         }
         const requestedOutput = values.output_path.trim();
@@ -469,8 +471,8 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
         );
         message.success(
           savedPath === requestedOutput
-            ? "视频剪辑完成，原文件已保留"
-            : `视频剪辑完成，原文件已保留，已另存为 ${getPathName(savedPath)}`
+            ? t("videoClippedOriginalFileKept")
+            : t("videoClippedAndSavedAsOriginalFileKept", { value0: getPathName(savedPath) })
         );
       } else if (tool === "format-convert") {
         const requestedOutput = values.output_path.trim();
@@ -483,8 +485,8 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
         const formatLabel = String(values.target_format).toUpperCase();
         message.success(
           savedPath === requestedOutput
-            ? `${formatLabel} 已生成，原文件已保留`
-            : `${formatLabel} 已生成，原文件已保留，已另存为 ${getPathName(savedPath)}`
+            ? t("createdOriginalFileKept", { value0: formatLabel })
+            : t("createdAndSavedAsOriginalFileKept", { value0: formatLabel, value1: getPathName(savedPath) })
         );
       } else if (tool === "codec-convert") {
         const requestedOutput = values.output_path.trim();
@@ -498,13 +500,13 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
         const formatLabel = String(values.output_format).toUpperCase();
         message.success(
           savedPath === requestedOutput
-            ? `${formatLabel} 编码转换完成，原文件已保留`
-            : `${formatLabel} 编码转换完成，原文件已保留，已另存为 ${getPathName(savedPath)}`
+            ? t("transcodingCompletedOriginalFileKept", { value0: formatLabel })
+            : t("transcodingCompletedAndSavedAsOriginalFileKept", { value0: formatLabel, value1: getPathName(savedPath) })
         );
       } else if (tool === "analyze-media") {
         const result = await analyzeMediaFile(values.input_path.trim());
         setAnalysisResult(result);
-        message.success("视频信息已分析完成");
+        message.success(t("videoAnalysisCompleted"));
       } else {
         const requestedOutput = values.output_path.trim();
         const savedPath = await convertMultiTrackHlsToMp4Dir(
@@ -513,8 +515,8 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
         );
         message.success(
           savedPath === requestedOutput
-            ? "多轨 HLS 已转为 mp4，原目录已保留"
-            : `多轨 HLS 已转为 mp4，原目录已保留，已另存为 ${getPathName(savedPath)}`
+            ? t("multiTrackHlsConvertedToMp4OriginalFolderKept")
+            : t("multiTrackHlsConvertedToMp4AndSavedAsOriginal", { value0: getPathName(savedPath) })
         );
       }
 
@@ -523,7 +525,7 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
       }
     } catch (error: unknown) {
       if (error && typeof error === "object" && "errorFields" in error) return;
-      message.error(`执行工具失败: ${formatToolError(error)}`);
+      message.error(t("toolFailed", { value0: formatToolError(error) }));
     } finally {
       setSubmitting(false);
     }
@@ -535,8 +537,8 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
       open={open}
       onCancel={onClose}
       onOk={() => void handleSubmit()}
-      okText={tool === "analyze-media" ? "开始分析" : "开始处理"}
-      cancelText="取消"
+      okText={tool === "analyze-media" ? t("startAnalysis") : t("startProcessing")}
+      cancelText={t("cancel")}
       confirmLoading={submitting}
       destroyOnClose
       okButtonProps={{
@@ -555,11 +557,10 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
     >
       <Form form={form} layout="vertical">
         {tool === "merge-video" ? (
-          <Form.Item label="视频文件" required>
+          <Form.Item label={t("videoFiles")} required>
             <Space direction="vertical" size={8} style={{ width: "100%" }}>
               <Button icon={<FileOutlined />} onClick={() => void handlePickInput()}>
-                选择多个视频
-              </Button>
+                {t("selectMultipleVideos")}</Button>
               {(mergeVideoInputPaths ?? []).length > 0 ? (
                 <Space direction="vertical" size={8} style={{ width: "100%" }}>
                   {(mergeVideoInputPaths ?? []).map((path, index, list) => (
@@ -599,7 +600,7 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
                 <Input.TextArea
                   readOnly
                   autoSize={{ minRows: 4, maxRows: 6 }}
-                  placeholder="请选择至少两个待拼接的视频文件"
+                  placeholder={t("selectAtLeastTwoVideosToMerge")}
                 />
               )}
             </Space>
@@ -608,20 +609,20 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
           <Form.Item
             label={
               tool === "merge-ts"
-                ? "TS 目录"
+                ? t("tsFolder")
                 : tool === "ts-to-mp4"
-                  ? "TS 文件"
+                  ? t("tsFiles")
                   : tool === "local-m3u8-to-mp4"
-                    ? "M3U8 文件"
+                    ? t("m3u8Files")
                   : tool === "format-convert"
-                    ? "媒体文件"
+                    ? t("mediaFile")
                     : tool === "codec-convert"
-                      ? "媒体文件"
+                      ? t("mediaFile")
                     : tool === "clip-video"
-                      ? "视频文件"
+                      ? t("videoFiles")
                     : tool === "analyze-media"
-                      ? "视频文件"
-                      : "多轨 HLS 目录"
+                      ? t("videoFiles")
+                      : t("multiTrackHlsFolder")
             }
             required
           >
@@ -634,20 +635,20 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
                     required: true,
                     message:
                       tool === "merge-ts"
-                        ? "请选择 TS 目录"
+                        ? t("selectATsFolder")
                         : tool === "ts-to-mp4"
-                          ? "请选择 TS 文件"
+                          ? t("selectATsFile")
                           : tool === "local-m3u8-to-mp4"
-                            ? "请选择 m3u8 文件"
+                            ? t("selectAnM3u8File")
                           : tool === "format-convert"
-                            ? "请选择媒体文件"
+                            ? t("selectAMediaFile")
                             : tool === "codec-convert"
-                              ? "请选择媒体文件"
+                              ? t("selectAMediaFile")
                             : tool === "clip-video"
-                              ? "请选择待剪辑的视频文件"
+                              ? t("selectAVideoToClip")
                             : tool === "analyze-media"
-                              ? "请选择视频文件"
-                              : "请选择多轨 HLS 目录",
+                              ? t("selectAVideoFile")
+                              : t("selectAMultiTrackHlsFolder"),
                   },
                 ]}
               >
@@ -655,20 +656,20 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
                   readOnly
                   placeholder={
                     tool === "merge-ts"
-                      ? "请选择包含 ts 切片的目录"
+                      ? t("selectAFolderContainingTsSegments")
                       : tool === "ts-to-mp4"
-                        ? "请选择待转换的 ts 文件"
+                        ? t("selectATsFileToConvert")
                         : tool === "local-m3u8-to-mp4"
-                          ? "请选择待转换的 m3u8 文件"
+                          ? t("selectAnM3u8FileToConvert")
                         : tool === "format-convert"
-                          ? "请选择待转换的媒体文件"
+                          ? t("selectAMediaFileToConvert")
                           : tool === "codec-convert"
-                            ? "请选择待进行编码转换的媒体文件"
+                            ? t("selectAMediaFileToTranscode")
                           : tool === "clip-video"
-                            ? "请选择待剪辑的 mp4 / m4v / mov / webm 文件"
+                            ? t("selectAnMp4M4vMovWebmFileToClip")
                           : tool === "analyze-media"
-                            ? "请选择待分析的视频文件"
-                            : "请选择本应用生成的多轨 HLS 目录"
+                            ? t("selectAVideoToAnalyze")
+                            : t("selectAMultiTrackHlsFolderCreatedByThisApp")
                   }
                 />
               </Form.Item>
@@ -687,20 +688,19 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
                 }
                 onClick={() => void handlePickInput()}
               >
-                选择
-              </Button>
+                {t("browse")}</Button>
             </Space.Compact>
           </Form.Item>
         )}
 
         {tool === "merge-video" && (
           <Form.Item
-            label="合并模式"
+            label={t("mergeMode")}
             name="merge_mode"
-            rules={[{ required: true, message: "请选择合并模式" }]}
+            rules={[{ required: true, message: t("selectMergeMode") }]}
           >
             <Radio.Group optionType="button" buttonStyle="solid">
-              {MERGE_VIDEO_MODE_OPTIONS.map((option) => (
+              {MERGE_VIDEO_MODE_OPTIONS().map((option) => (
                 <Radio.Button key={option.value} value={option.value}>
                   {option.label}
                 </Radio.Button>
@@ -712,17 +712,17 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
         {tool === "clip-video" && (
           <>
             <Form.Item
-              label="预览与选段"
+              label={t("previewAndClipRange")}
               required
               name="clip_range"
               rules={[
                 {
                   validator: async (_rule, value: ClipRange | undefined) => {
                     if (!value) {
-                      throw new Error("请先在播放器中选择剪辑区间");
+                      throw new Error(t("selectAClipRangeInThePlayerFirst"));
                     }
                     if (!(value.end - value.start >= 0.05)) {
-                      throw new Error("剪辑区间至少 0.05 秒");
+                      throw new Error(t("theClipMustBeAtLeast005SecondsLong"));
                     }
                   },
                 },
@@ -734,12 +734,12 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
               />
             </Form.Item>
             <Form.Item
-              label="剪辑模式"
+              label={t("clipMode")}
               name="clip_mode"
-              rules={[{ required: true, message: "请选择剪辑模式" }]}
+              rules={[{ required: true, message: t("selectClipMode") }]}
             >
               <Radio.Group optionType="button" buttonStyle="solid">
-                {CLIP_MODE_OPTIONS.map((option) => (
+                {CLIP_MODE_OPTIONS().map((option) => (
                   <Radio.Button key={option.value} value={option.value}>
                     {option.label}
                   </Radio.Button>
@@ -751,9 +751,9 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
 
         {tool === "format-convert" && (
           <Form.Item
-            label="目标格式"
+            label={t("targetFormat")}
             name="target_format"
-            rules={[{ required: true, message: "请选择目标格式" }]}
+            rules={[{ required: true, message: t("selectTargetFormat") }]}
           >
             <Select
               options={CONVERT_FORMAT_OPTIONS}
@@ -770,9 +770,9 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
 
         {tool === "codec-convert" && (
           <Form.Item
-            label="输出格式"
+            label={t("outputFormat")}
             name="output_format"
-            rules={[{ required: true, message: "请选择输出格式" }]}
+            rules={[{ required: true, message: t("selectOutputFormat") }]}
           >
             <Select
               options={CODEC_OUTPUT_FORMAT_OPTIONS}
@@ -781,8 +781,8 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
                 if (inputPath) {
                   form.setFieldValue("output_path", buildConvertedOutputPath(inputPath, value));
                 }
-                const nextVideoOptions = VIDEO_CODEC_OPTIONS_BY_FORMAT[value];
-                const nextAudioOptions = AUDIO_CODEC_OPTIONS_BY_FORMAT[value];
+                const nextVideoOptions = VIDEO_CODEC_OPTIONS_BY_FORMAT()[value];
+                const nextAudioOptions = AUDIO_CODEC_OPTIONS_BY_FORMAT()[value];
                 const currentVideoCodec = form.getFieldValue("video_codec") as VideoCodec | undefined;
                 const currentAudioCodec = form.getFieldValue("audio_codec") as AudioCodec | undefined;
                 if (!nextVideoOptions.some((option) => option.value === currentVideoCodec)) {
@@ -798,12 +798,12 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
 
         {tool === "format-convert" && (
           <Form.Item
-            label="转换模式"
+            label={t("conversionMode")}
             name="convert_mode"
-            rules={[{ required: true, message: "请选择转换模式" }]}
+            rules={[{ required: true, message: t("selectConversionMode") }]}
           >
             <Radio.Group optionType="button" buttonStyle="solid">
-              {CONVERT_MODE_OPTIONS.map((option) => (
+              {CONVERT_MODE_OPTIONS().map((option) => (
                 <Radio.Button key={option.value} value={option.value}>
                   {option.label}
                 </Radio.Button>
@@ -814,13 +814,13 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
 
         {tool === "codec-convert" && (
           <Form.Item
-            label="视频编码"
+            label={t("videoCodec")}
             name="video_codec"
-            rules={[{ required: true, message: "请选择视频编码" }]}
+            rules={[{ required: true, message: t("selectVideoCodec") }]}
           >
             <Select
               options={
-                VIDEO_CODEC_OPTIONS_BY_FORMAT[
+                VIDEO_CODEC_OPTIONS_BY_FORMAT()[
                   codecOutputFormat ?? "mp4"
                 ]
               }
@@ -830,13 +830,13 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
 
         {tool === "codec-convert" && (
           <Form.Item
-            label="音频编码"
+            label={t("audioCodec")}
             name="audio_codec"
-            rules={[{ required: true, message: "请选择音频编码" }]}
+            rules={[{ required: true, message: t("selectAudioCodec") }]}
           >
             <Select
               options={
-                AUDIO_CODEC_OPTIONS_BY_FORMAT[
+                AUDIO_CODEC_OPTIONS_BY_FORMAT()[
                   codecOutputFormat ?? "mp4"
                 ]
               }
@@ -845,112 +845,103 @@ export function ToolsModal({ open, tool, initialInputPath, onClose }: ToolsModal
         )}
 
         {tool !== "analyze-media" && (
-          <Form.Item label="输出文件" required>
+          <Form.Item label={t("outputFile")} required>
             <Space.Compact style={{ width: "100%" }}>
               <Form.Item
                 name="output_path"
                 noStyle
-                rules={[{ required: true, message: "请选择输出文件" }]}
+                rules={[{ required: true, message: t("selectAnOutputFile") }]}
               >
-                <Input readOnly placeholder="请选择输出文件" />
+                <Input readOnly placeholder={t("selectAnOutputFile")} />
               </Form.Item>
               <Button icon={<FolderOpenOutlined />} onClick={() => void handlePickOutput()}>
-                选择
-              </Button>
+                {t("browse")}</Button>
             </Space.Compact>
           </Form.Item>
         )}
 
         {tool === "ts-to-mp4" && (
           <Typography.Text type="secondary">
-            该工具会保留原 ts 文件，只额外生成一个 mp4 文件。
-          </Typography.Text>
+            {t("thisToolCreatesAnMp4FileAndKeepsTheOriginal")}</Typography.Text>
         )}
         {tool === "local-m3u8-to-mp4" && (
           <Typography.Text type="secondary">
-            该工具完全在本地处理：解析所选 m3u8、读取同目录下的分片与密钥文件，自动解密 AES-128 后生成 mp4，全程不会发起任何网络请求。
-          </Typography.Text>
+            {t("allProcessingIsLocalReadsTheSelectedM3u8SegmentsAnd")}</Typography.Text>
         )}
         {tool === "merge-video" && (
           <Typography.Text type="secondary">
-            极速合并会尽量直接拼接，速度更快，但要求分辨率、编码和音频轨规格一致；兼容合并会统一规格后再拼接，适合不同分辨率的视频。
-          </Typography.Text>
+            {t("fastMergeJoinsStreamsDirectlyWhenPossibleAndRequiresMatching")}</Typography.Text>
         )}
         {tool === "clip-video" && (
           <Typography.Text type="secondary">
-            快速模式直接复制流，不重编码，仅在关键帧附近切割；精确模式重新编码以达到帧级准确，耗时更长。
-          </Typography.Text>
+            {t("fastModeCopiesStreamsWithoutReEncodingAndCutsNear")}</Typography.Text>
         )}
         {tool === "format-convert" && (
           <Typography.Text type="secondary">
-            默认使用快速转换，不重编码，速度更快；兼容转换会重新编码，适合目标格式兼容性要求更高的场景。
-          </Typography.Text>
+            {t("fastConversionIsTheDefaultAndCopiesStreamsWithoutRe")}</Typography.Text>
         )}
         {tool === "codec-convert" && (
           <Typography.Text type="secondary">
-            该工具用于重新编码视频和音频轨道。建议优先选择 MP4 + H.264 + AAC，兼容性最好。
-          </Typography.Text>
+            {t("thisToolReEncodesVideoAndAudioTracksMp4H")}</Typography.Text>
         )}
         {tool === "analyze-media" && (
           <Typography.Text type="secondary">
-            会读取视频封装、时长、码率以及各个音视频轨道信息，并展示完整 ffprobe 原始结果。
-          </Typography.Text>
+            {t("readsTheContainerDurationBitrateAndMediaTracksAndDisplays")}</Typography.Text>
         )}
         {tool === "multi-track-hls-to-mp4" && (
           <Typography.Text type="secondary">
-            仅支持本应用生成的多轨 HLS 目录，会按设置中的 FFmpeg 路径处理并保留原目录。
-          </Typography.Text>
+            {t("onlyMultiTrackHlsFoldersCreatedByThisAppAre")}</Typography.Text>
         )}
 
         {tool === "analyze-media" && analysisResult && (
           <>
-            <Divider style={{ margin: "16px 0" }}>分析结果</Divider>
+            <Divider style={{ margin: "16px 0" }}>{t("analysisResults")}</Divider>
             <Descriptions
               size="small"
               bordered
               column={2}
               items={[
-                { key: "path", label: "文件路径", children: analysisResult.file_path, span: 2 },
+                { key: "path", label: t("filePath"), children: analysisResult.file_path, span: 2 },
                 {
                   key: "format",
-                  label: "封装格式",
+                  label: t("containerFormat"),
                   children: analysisResult.format_long_name || analysisResult.format_name || "-",
                 },
                 {
                   key: "streams",
-                  label: "流数量",
+                  label: t("streamCount"),
                   children: String(analysisResult.stream_count),
                 },
                 {
                   key: "duration",
-                  label: "时长",
+                  label: t("duration"),
                   children: formatDuration(analysisResult.duration),
                 },
                 {
                   key: "size",
-                  label: "文件大小",
+                  label: t("fileSize"),
                   children: formatBytes(analysisResult.size),
                 },
                 {
                   key: "bitrate",
-                  label: "总码率",
+                  label: t("totalBitrate"),
                   children: formatBitRate(analysisResult.bit_rate),
                 },
                 {
                   key: "probe-score",
-                  label: "探测分数",
+                  label: t("probeScore"),
                   children:
                     analysisResult.probe_score === null ? "-" : String(analysisResult.probe_score),
                 },
               ]}
             />
 
-            {renderStreamSection("视频轨", analysisResult.video_streams)}
-            {renderStreamSection("音频轨", analysisResult.audio_streams)}
-            {renderStreamSection("字幕轨", analysisResult.subtitle_streams)}
-            {renderStreamSection("其他轨", analysisResult.other_streams)}
+            {renderStreamSection(t("videoTracks"), analysisResult.video_streams)}
+            {renderStreamSection(t("audioTracks"), analysisResult.audio_streams)}
+            {renderStreamSection(t("subtitleTracks"), analysisResult.subtitle_streams)}
+            {renderStreamSection(t("otherTracks"), analysisResult.other_streams)}
 
-            <Divider style={{ margin: "16px 0 8px" }}>完整原始信息</Divider>
+            <Divider style={{ margin: "16px 0 8px" }}>{t("fullRawOutput")}</Divider>
             <Input.TextArea
               readOnly
               value={analysisResult.raw_json}
@@ -981,12 +972,12 @@ function renderStreamSection(title: string, streams: MediaAnalysisResult["video_
             items={[
               {
                 key: "index",
-                label: "轨道",
+                label: t("track"),
                 children: `#${stream.index}`,
               },
               {
                 key: "codec",
-                label: "编码",
+                label: t("codec2"),
                 children: stream.codec_long_name || stream.codec_name || "-",
               },
               {
@@ -996,33 +987,33 @@ function renderStreamSection(title: string, streams: MediaAnalysisResult["video_
               },
               {
                 key: "language",
-                label: "语言",
+                label: t("language"),
                 children: stream.language || "-",
               },
               {
                 key: "resolution",
-                label: "分辨率",
+                label: t("resolution2"),
                 children:
                   stream.width && stream.height ? `${stream.width} x ${stream.height}` : "-",
               },
               {
                 key: "pixel",
-                label: "像素格式",
+                label: t("pixelFormat"),
                 children: stream.pix_fmt || "-",
               },
               {
                 key: "fps",
-                label: "帧率",
+                label: t("frameRate2"),
                 children: stream.avg_frame_rate || stream.r_frame_rate || "-",
               },
               {
                 key: "sample-rate",
-                label: "采样率",
+                label: t("sampleRate"),
                 children: stream.sample_rate || "-",
               },
               {
                 key: "channels",
-                label: "声道",
+                label: t("channels"),
                 children:
                   stream.channels === null
                     ? "-"
@@ -1032,12 +1023,12 @@ function renderStreamSection(title: string, streams: MediaAnalysisResult["video_
               },
               {
                 key: "bitrate",
-                label: "码率",
+                label: t("bitrate"),
                 children: formatBitRate(stream.bit_rate),
               },
               {
                 key: "duration",
-                label: "时长",
+                label: t("duration"),
                 children: formatDuration(stream.duration),
               },
               {
@@ -1132,7 +1123,7 @@ function buildMultiTrackMp4OutputPath(inputDir: string) {
 function formatToolError(error: unknown) {
   const text = String(error ?? "").trim();
   if (!text) {
-    return "未知错误";
+    return t("unknownError");
   }
 
   return text.replace(
@@ -1152,16 +1143,16 @@ function formatDuration(value: string | null | undefined) {
   }
 
   if (seconds < 60) {
-    return `${seconds.toFixed(2)} 秒`;
+    return t("sec2", { value0: seconds.toFixed(2) });
   }
 
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const restSeconds = seconds % 60;
   if (hours > 0) {
-    return `${hours} 小时 ${minutes} 分 ${restSeconds.toFixed(2)} 秒`;
+    return t("hrMinSec", { value0: hours, value1: minutes, value2: restSeconds.toFixed(2) });
   }
-  return `${minutes} 分 ${restSeconds.toFixed(2)} 秒`;
+  return t("minSec", { value0: minutes, value1: restSeconds.toFixed(2) });
 }
 
 function formatBytes(value: string | null | undefined) {

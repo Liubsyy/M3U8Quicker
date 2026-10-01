@@ -482,7 +482,7 @@ pub async fn prioritize_download_position(
 ) -> Result<(), AppError> {
     if task.segment_durations.is_empty() || task.segment_durations.len() != task.total_segments {
         return Err(AppError::InvalidInput(
-            "当前任务缺少可播放的切片时长信息".to_string(),
+            crate::i18n::tr("thisTaskHasNoPlayableSegmentDurationInformation").to_string(),
         ));
     }
 
@@ -501,14 +501,14 @@ pub async fn prioritize_download_position(
 pub fn build_playlist(task: &DownloadTask, token: &str) -> Result<String, AppError> {
     if task.segment_durations.len() != task.total_segments {
         return Err(AppError::InvalidInput(
-            "当前任务缺少完整的切片时长信息".to_string(),
+            crate::i18n::tr("thisTaskHasIncompleteSegmentDurationInformation").to_string(),
         ));
     }
     if task.hls_media_kind == HlsMediaKind::Fmp4
         && task.segment_init_indices.len() != task.total_segments
     {
         return Err(AppError::InvalidInput(
-            "当前任务缺少完整的 fMP4 初始化片段信息".to_string(),
+            crate::i18n::tr("thisTaskHasIncompleteFmp4InitializationSegmentInformation").to_string(),
         ));
     }
 
@@ -542,7 +542,7 @@ pub fn build_playlist(task: &DownloadTask, token: &str) -> Result<String, AppErr
                 .copied()
                 .flatten()
                 .ok_or_else(|| {
-                    AppError::InvalidInput("当前 fMP4 切片缺少 EXT-X-MAP".to_string())
+                    AppError::InvalidInput(crate::i18n::tr("thisFmp4SegmentIsMissingExtXMap").to_string())
                 })?;
             if Some(init_index) != last_init_index {
                 lines.push(format!(
@@ -652,7 +652,7 @@ async fn serve_init_segment(
             .any(|init| init.index == init_index)
     {
         lease.finish().await;
-        return PlaybackHttpError::new(StatusCode::NOT_FOUND, "初始化片段不存在").into_response();
+        return PlaybackHttpError::new(StatusCode::NOT_FOUND, crate::i18n::tr("initializationSegmentDoesNotExist")).into_response();
     }
 
     let response =
@@ -693,7 +693,7 @@ async fn serve_segment(
 
     if segment_index >= task.total_segments {
         lease.finish().await;
-        return PlaybackHttpError::new(StatusCode::NOT_FOUND, "切片不存在").into_response();
+        return PlaybackHttpError::new(StatusCode::NOT_FOUND, crate::i18n::tr("segmentDoesNotExist")).into_response();
     }
 
     let response = match read_or_wait_for_segment(&state, &task, &query.token, segment_index).await
@@ -806,7 +806,7 @@ async fn acquire_live_session(
             ));
             return Err(PlaybackHttpError::new(
                 StatusCode::NOT_FOUND,
-                "播放会话不存在",
+                crate::i18n::tr("playbackSessionDoesNotExist"),
             ));
         };
         if session.session_token != token {
@@ -816,7 +816,7 @@ async fn acquire_live_session(
             ));
             return Err(PlaybackHttpError::new(
                 StatusCode::FORBIDDEN,
-                "播放会话令牌无效",
+                crate::i18n::tr("invalidPlaybackSessionToken"),
             ));
         }
         session.last_accessed_at = Utc::now();
@@ -826,7 +826,7 @@ async fn acquire_live_session(
         let map = state.live_records.lock().await;
         map.get(task_id).cloned()
     };
-    task.ok_or_else(|| PlaybackHttpError::new(StatusCode::NOT_FOUND, "直播任务不存在"))
+    task.ok_or_else(|| PlaybackHttpError::new(StatusCode::NOT_FOUND, crate::i18n::tr("liveRecordingTaskDoesNotExist")))
 }
 
 /// HLS only: the directory currently holding `index.m3u8` + segments.
@@ -950,11 +950,11 @@ async fn serve_live_playlist(
         Err(error) => return error.into_response(),
     };
     if task.protocol != LiveProtocol::Hls {
-        return PlaybackHttpError::new(StatusCode::CONFLICT, "当前直播任务不是 HLS")
+        return PlaybackHttpError::new(StatusCode::CONFLICT, crate::i18n::tr("thisLiveRecordingIsNotHls"))
             .into_response();
     }
     let Some(dir) = live_active_dir(&task) else {
-        return PlaybackHttpError::new(StatusCode::NOT_FOUND, "直播录制目录不存在").into_response();
+        return PlaybackHttpError::new(StatusCode::NOT_FOUND, crate::i18n::tr("liveRecordingFolderDoesNotExist")).into_response();
     };
     let playlist_path = dir.join("index.m3u8");
     let text = match tokio::fs::read_to_string(&playlist_path).await {
@@ -986,10 +986,10 @@ async fn serve_live_segment(
         Err(error) => return error.into_response(),
     };
     if !is_valid_live_segment_name(&name) {
-        return PlaybackHttpError::new(StatusCode::BAD_REQUEST, "非法的分片名称").into_response();
+        return PlaybackHttpError::new(StatusCode::BAD_REQUEST, crate::i18n::tr("invalidSegmentName")).into_response();
     }
     let Some(dir) = live_active_dir(&task) else {
-        return PlaybackHttpError::new(StatusCode::NOT_FOUND, "直播录制目录不存在").into_response();
+        return PlaybackHttpError::new(StatusCode::NOT_FOUND, crate::i18n::tr("liveRecordingFolderDoesNotExist")).into_response();
     };
     let segment_path = dir.join(&name);
     match tokio::fs::read(&segment_path).await {
@@ -1020,11 +1020,11 @@ async fn serve_live_flv_file(
         Err(error) => return error.into_response(),
     };
     if task.protocol != LiveProtocol::Flv {
-        return PlaybackHttpError::new(StatusCode::CONFLICT, "当前直播任务不是 FLV")
+        return PlaybackHttpError::new(StatusCode::CONFLICT, crate::i18n::tr("thisLiveRecordingIsNotFlv"))
             .into_response();
     }
     let Some(path) = task.file_path.as_ref().map(PathBuf::from) else {
-        return PlaybackHttpError::new(StatusCode::NOT_FOUND, "录制文件不存在").into_response();
+        return PlaybackHttpError::new(StatusCode::NOT_FOUND, crate::i18n::tr("recordingFileDoesNotExist")).into_response();
     };
     match build_ranged_file_response(&path, "video/x-flv", &headers).await {
         Ok(response) => response,
@@ -1086,11 +1086,11 @@ async fn serve_live_flv_stream(
         Err(error) => return error.into_response(),
     };
     if task.protocol != LiveProtocol::Flv {
-        return PlaybackHttpError::new(StatusCode::CONFLICT, "当前直播任务不是 FLV")
+        return PlaybackHttpError::new(StatusCode::CONFLICT, crate::i18n::tr("thisLiveRecordingIsNotFlv"))
             .into_response();
     }
     let Some(path) = task.file_path.as_ref().map(PathBuf::from) else {
-        return PlaybackHttpError::new(StatusCode::NOT_FOUND, "录制文件不存在").into_response();
+        return PlaybackHttpError::new(StatusCode::NOT_FOUND, crate::i18n::tr("recordingFileDoesNotExist")).into_response();
     };
     let file = match File::open(&path).await {
         Ok(file) => file,
@@ -1173,7 +1173,7 @@ async fn build_ranged_file_response(
     if file_size == 0 {
         return Err(PlaybackHttpError::new(
             StatusCode::NOT_FOUND,
-            "录制文件为空",
+            crate::i18n::tr("recordingFileIsEmpty"),
         ));
     }
 
@@ -1231,9 +1231,9 @@ async fn build_file_response(
         .len();
     if file_size == 0 {
         let message = if matches!(task.status, DownloadStatus::Completed) {
-            "下载完成文件为空"
+            crate::i18n::tr("downloadedFileIsEmpty")
         } else {
-            "当前任务尚未生成可播放数据"
+            crate::i18n::tr("thisTaskHasNoPlayableDataYet")
         };
         return Err(PlaybackHttpError::new(StatusCode::NOT_FOUND, message));
     }
@@ -1282,13 +1282,13 @@ fn playback_file_path_for_task(task: &DownloadTask) -> Result<PathBuf, PlaybackH
     match task.status {
         DownloadStatus::Completed => {
             let file_path = task.file_path.as_ref().ok_or_else(|| {
-                PlaybackHttpError::new(StatusCode::NOT_FOUND, "下载完成文件不存在")
+                PlaybackHttpError::new(StatusCode::NOT_FOUND, crate::i18n::tr("theDownloadedFileDoesNotExist"))
             })?;
             let path = PathBuf::from(file_path);
             if !path.is_file() {
                 return Err(PlaybackHttpError::new(
                     StatusCode::NOT_FOUND,
-                    "下载完成文件不存在",
+                    crate::i18n::tr("theDownloadedFileDoesNotExist"),
                 ));
             }
             Ok(path)
@@ -1301,13 +1301,13 @@ fn playback_file_path_for_task(task: &DownloadTask) -> Result<PathBuf, PlaybackH
                 &task.filename,
             )
             .ok_or_else(|| {
-                PlaybackHttpError::new(StatusCode::CONFLICT, "当前任务尚未生成可播放文件")
+                PlaybackHttpError::new(StatusCode::CONFLICT, crate::i18n::tr("thisTaskHasNoPlayableFileYet"))
             })?;
 
             if !partial_path.is_file() {
                 return Err(PlaybackHttpError::new(
                     StatusCode::NOT_FOUND,
-                    "当前任务尚未生成可播放文件",
+                    crate::i18n::tr("thisTaskHasNoPlayableFileYet"),
                 ));
             }
 
@@ -1315,11 +1315,11 @@ fn playback_file_path_for_task(task: &DownloadTask) -> Result<PathBuf, PlaybackH
         }
         DownloadStatus::Downloading | DownloadStatus::Paused => Err(PlaybackHttpError::new(
             StatusCode::CONFLICT,
-            "当前格式暂不支持边下边播",
+            crate::i18n::tr("thisFormatCannotBePlayedWhileDownloading"),
         )),
         _ => Err(PlaybackHttpError::new(
             StatusCode::CONFLICT,
-            "当前任务尚未生成最终播放文件",
+            crate::i18n::tr("thisTaskHasNoFinalPlaybackFileYet"),
         )),
     }
 }
@@ -1385,7 +1385,7 @@ async fn read_or_wait_for_segment(
                 ));
                 return Err(PlaybackHttpError::new(
                     StatusCode::NOT_FOUND,
-                    "播放会话已关闭",
+                    crate::i18n::tr("playbackSessionIsClosed"),
                 ));
             };
             if session.session_token != token {
@@ -1395,7 +1395,7 @@ async fn read_or_wait_for_segment(
                 ));
                 return Err(PlaybackHttpError::new(
                     StatusCode::FORBIDDEN,
-                    "播放会话已失效",
+                    crate::i18n::tr("playbackSessionHasExpired"),
                 ));
             }
         }
@@ -1408,7 +1408,7 @@ async fn read_or_wait_for_segment(
         let Some(task_state) = task_state else {
             return Err(PlaybackHttpError::new(
                 StatusCode::NOT_FOUND,
-                "下载任务不存在",
+                crate::i18n::tr("downloadTaskDoesNotExist"),
             ));
         };
 
@@ -1418,7 +1418,7 @@ async fn read_or_wait_for_segment(
                     "segment wait aborted because task cancelled task_id={} segment_index={}",
                     task.id, segment_index
                 ));
-                return Err(PlaybackHttpError::new(StatusCode::GONE, "下载任务已取消"));
+                return Err(PlaybackHttpError::new(StatusCode::GONE, crate::i18n::tr("downloadTaskCancelled")));
             }
             DownloadStatus::Failed(message) => {
                 playback_log(&format!(
@@ -1434,7 +1434,7 @@ async fn read_or_wait_for_segment(
                 ));
                 return Err(PlaybackHttpError::new(
                     StatusCode::NOT_FOUND,
-                    "目标切片不可用",
+                    crate::i18n::tr("requestedSegmentIsUnavailable"),
                 ));
             }
             _ => {}
@@ -1450,7 +1450,7 @@ async fn read_or_wait_for_segment(
             ));
             return Err(PlaybackHttpError::new(
                 StatusCode::GONE,
-                "目标切片多次下载失败，已跳过",
+                crate::i18n::tr("requestedSegmentRepeatedlyFailedToDownloadAndWasSkipped"),
             ));
         }
 
@@ -1508,13 +1508,13 @@ async fn read_or_wait_for_init_segment(
             let Some(session) = sessions.get(&task.id) else {
                 return Err(PlaybackHttpError::new(
                     StatusCode::NOT_FOUND,
-                    "播放会话已关闭",
+                    crate::i18n::tr("playbackSessionIsClosed"),
                 ));
             };
             if session.session_token != token {
                 return Err(PlaybackHttpError::new(
                     StatusCode::FORBIDDEN,
-                    "播放会话已失效",
+                    crate::i18n::tr("playbackSessionHasExpired"),
                 ));
             }
         }
@@ -1527,13 +1527,13 @@ async fn read_or_wait_for_init_segment(
         let Some(task_state) = task_state else {
             return Err(PlaybackHttpError::new(
                 StatusCode::NOT_FOUND,
-                "下载任务不存在",
+                crate::i18n::tr("downloadTaskDoesNotExist"),
             ));
         };
 
         match task_state.status {
             DownloadStatus::Cancelled => {
-                return Err(PlaybackHttpError::new(StatusCode::GONE, "下载任务已取消"));
+                return Err(PlaybackHttpError::new(StatusCode::GONE, crate::i18n::tr("downloadTaskCancelled")));
             }
             DownloadStatus::Failed(message) => {
                 return Err(PlaybackHttpError::new(StatusCode::CONFLICT, message));
@@ -1541,7 +1541,7 @@ async fn read_or_wait_for_init_segment(
             DownloadStatus::Completed => {
                 return Err(PlaybackHttpError::new(
                     StatusCode::NOT_FOUND,
-                    "目标初始化片段不可用",
+                    crate::i18n::tr("requestedInitializationSegmentIsUnavailable"),
                 ));
             }
             _ => {}
@@ -1566,7 +1566,7 @@ async fn acquire_session_task(
             ));
             return Err(PlaybackHttpError::new(
                 StatusCode::NOT_FOUND,
-                "播放会话不存在",
+                crate::i18n::tr("playbackSessionDoesNotExist"),
             ));
         };
 
@@ -1579,7 +1579,7 @@ async fn acquire_session_task(
             ));
             return Err(PlaybackHttpError::new(
                 StatusCode::FORBIDDEN,
-                "播放会话令牌无效",
+                crate::i18n::tr("invalidPlaybackSessionToken"),
             ));
         }
         if session.task_id != task_id {
@@ -1589,7 +1589,7 @@ async fn acquire_session_task(
             ));
             return Err(PlaybackHttpError::new(
                 StatusCode::FORBIDDEN,
-                "播放会话任务不匹配",
+                crate::i18n::tr("playbackSessionTaskDoesNotMatch"),
             ));
         }
 
@@ -1608,7 +1608,7 @@ async fn acquire_session_task(
             .get(task_id)
             .cloned()
             .or(Some(session_task))
-            .ok_or_else(|| PlaybackHttpError::new(StatusCode::NOT_FOUND, "下载任务不存在"))?
+            .ok_or_else(|| PlaybackHttpError::new(StatusCode::NOT_FOUND, crate::i18n::tr("downloadTaskDoesNotExist")))?
     };
 
     Ok((
@@ -1680,37 +1680,37 @@ fn parse_byte_range(
     let Some(range_value) = range_header.strip_prefix("bytes=") else {
         return Err(PlaybackHttpError::new(
             StatusCode::RANGE_NOT_SATISFIABLE,
-            "不支持的 Range 请求",
+            crate::i18n::tr("unsupportedRangeRequest"),
         ));
     };
     let Some((start_raw, end_raw)) = range_value.split_once('-') else {
         return Err(PlaybackHttpError::new(
             StatusCode::RANGE_NOT_SATISFIABLE,
-            "无效的 Range 请求",
+            crate::i18n::tr("invalidRangeRequest"),
         ));
     };
 
     let parsed = if start_raw.is_empty() {
         let suffix_length = end_raw.parse::<u64>().map_err(|_| {
-            PlaybackHttpError::new(StatusCode::RANGE_NOT_SATISFIABLE, "无效的 Range 请求")
+            PlaybackHttpError::new(StatusCode::RANGE_NOT_SATISFIABLE, crate::i18n::tr("invalidRangeRequest"))
         })?;
         if suffix_length == 0 {
             return Err(PlaybackHttpError::new(
                 StatusCode::RANGE_NOT_SATISFIABLE,
-                "无效的 Range 请求",
+                crate::i18n::tr("invalidRangeRequest"),
             ));
         }
         let start = file_size.saturating_sub(suffix_length);
         (start, file_size - 1)
     } else {
         let start = start_raw.parse::<u64>().map_err(|_| {
-            PlaybackHttpError::new(StatusCode::RANGE_NOT_SATISFIABLE, "无效的 Range 请求")
+            PlaybackHttpError::new(StatusCode::RANGE_NOT_SATISFIABLE, crate::i18n::tr("invalidRangeRequest"))
         })?;
         let end = if end_raw.is_empty() {
             file_size - 1
         } else {
             end_raw.parse::<u64>().map_err(|_| {
-                PlaybackHttpError::new(StatusCode::RANGE_NOT_SATISFIABLE, "无效的 Range 请求")
+                PlaybackHttpError::new(StatusCode::RANGE_NOT_SATISFIABLE, crate::i18n::tr("invalidRangeRequest"))
             })?
         };
         (start, end)
@@ -1720,14 +1720,14 @@ fn parse_byte_range(
     if start >= file_size {
         return Err(PlaybackHttpError::new(
             StatusCode::RANGE_NOT_SATISFIABLE,
-            "Range 超出文件大小",
+            crate::i18n::tr("rangeExceedsFileSize"),
         ));
     }
     end = end.min(file_size - 1);
     if end < start {
         return Err(PlaybackHttpError::new(
             StatusCode::RANGE_NOT_SATISFIABLE,
-            "Range 起止位置无效",
+            crate::i18n::tr("invalidRangeStartOrEnd"),
         ));
     }
 
@@ -2333,7 +2333,7 @@ mod tests {
         assert!(playback_file_path_for_task(&mkv_task)
             .expect_err("mkv should fail")
             .message
-            .contains("当前格式暂不支持边下边播"));
+            .contains(crate::i18n::tr("thisFormatCannotBePlayedWhileDownloading")));
 
         remove_temp_dir(&temp_root);
     }

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "../i18n";
 import { useEffect, useState } from "react";
 import {
   Button,
@@ -65,6 +66,7 @@ export function NewLiveRecordModal({
   initialOutputDir,
   resetKey,
 }: NewLiveRecordModalProps) {
+  useTranslation();
   const [form] = Form.useForm<FormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [outputDir, setOutputDir] = useState("");
@@ -136,7 +138,7 @@ export function NewLiveRecordModal({
       const values = await form.validateFields();
       const url = values.url.trim();
       if (!url) {
-        message.error("直播地址不能为空");
+        message.error(t("liveStreamUrlIsRequired"));
         return;
       }
 
@@ -145,7 +147,7 @@ export function NewLiveRecordModal({
         const sizeMb = values.split_size_mb ?? null;
         const durationMin = values.split_duration_min ?? null;
         if (!sizeMb && !durationMin) {
-          message.error("启用分段录制时，请至少设置按大小或按时长其中一项");
+          message.error(t("setAtLeastOneSizeOrDurationLimitForSplit"));
           return;
         }
         split = { size_mb: sizeMb, duration_min: durationMin };
@@ -173,11 +175,11 @@ export function NewLiveRecordModal({
       }
 
       await onSubmit(params);
-      message.success("直播录制已开始");
+      message.success(t("liveRecordingStarted"));
       onClose();
     } catch (e: unknown) {
       if (e && typeof e === "object" && "errorFields" in e) return;
-      message.error(`创建直播录制失败: ${formatError(e)}`);
+      message.error(t("failedToStartLiveRecording", { value0: formatError(e) }));
     } finally {
       setSubmitting(false);
     }
@@ -186,10 +188,10 @@ export function NewLiveRecordModal({
   const confirmSwitchToDownload = async (params: CreateLiveRecordParams) => {
     return await new Promise<boolean>((resolve) => {
       Modal.confirm({
-        title: "检测到非直播 HLS",
-        content: "当前地址看起来不是直播流，更适合普通下载。是否转到新建下载界面？",
-        okText: "转到下载",
-        cancelText: "继续录制",
+        title: t("nonLiveHlsDetected"),
+        content: t("thisUrlDoesNotAppearToBeLiveANormal"),
+        okText: t("switchToDownload"),
+        cancelText: t("continueRecording"),
         onOk: () => {
           onSwitchToDownload({
             url: params.url,
@@ -205,7 +207,7 @@ export function NewLiveRecordModal({
 
   return (
     <Modal
-      title="新建直播录制"
+      title={t("newLiveRecording")}
       open={isOpen}
       onCancel={onClose}
       footer={null}
@@ -219,9 +221,9 @@ export function NewLiveRecordModal({
         onFinish={() => void handleSubmit()}
       >
         <Form.Item
-          label="直播地址"
+          label={t("liveStreamUrl")}
           name="url"
-          rules={[{ required: true, message: "请输入直播地址" }]}
+          rules={[{ required: true, message: t("enterALiveStreamUrl") }]}
         >
           <Input
             placeholder="HTTP-FLV: https://example.com/live/stream.flv，HLS: https://example.com/live/index.m3u8"
@@ -229,7 +231,7 @@ export function NewLiveRecordModal({
             allowClear
           />
         </Form.Item>
-        <Form.Item label="协议" name="protocol">
+        <Form.Item label={t("protocol")} name="protocol">
           <Select
             options={[
               { value: "flv", label: "HTTP-FLV" },
@@ -237,25 +239,24 @@ export function NewLiveRecordModal({
             ]}
           />
         </Form.Item>
-        <Form.Item label="文件名（不含扩展名）" name="filename">
+        <Form.Item label={t("filenameWithoutExtension")} name="filename">
           <Input
-            placeholder="留空则根据 URL 自动推导"
+            placeholder={t("leaveBlankToDeriveTheNameFromTheUrl")}
             allowClear
             onChange={() => setFilenameTouched(true)}
           />
         </Form.Item>
-        <Form.Item label="保存目录">
+        <Form.Item label={t("saveTo")}>
           <Space.Compact style={{ width: "100%" }}>
             <Input value={outputDir} readOnly />
             <Button icon={<FolderOpenOutlined />} onClick={() => void handleSelectDir()}>
-              选择
-            </Button>
+              {t("browse")}</Button>
           </Space.Compact>
         </Form.Item>
-        <Form.Item label="分段录制（任一阈值先达到即切分，留空表示该维度不限制）">
+        <Form.Item label={t("splitRecordingSplitWhenEitherLimitIsReachedLeaveBlank")}>
           <Space align="center" wrap>
             <Form.Item name="split_enabled" valuePropName="checked" noStyle>
-              <Switch checkedChildren="开" unCheckedChildren="关" />
+              <Switch checkedChildren={t("on")} unCheckedChildren={t("off")} />
             </Form.Item>
             <Form.Item name="split_size_mb" noStyle>
               <InputNumber
@@ -263,7 +264,7 @@ export function NewLiveRecordModal({
                 step={100}
                 precision={0}
                 disabled={!splitEnabled}
-                placeholder="按大小"
+                placeholder={t("bySize")}
                 addonAfter="MB"
                 style={{ width: 160 }}
               />
@@ -274,25 +275,24 @@ export function NewLiveRecordModal({
                 step={10}
                 precision={0}
                 disabled={!splitEnabled}
-                placeholder="按时长"
-                addonAfter="分钟"
+                placeholder={t("byDuration")}
+                addonAfter={t("min")}
                 style={{ width: 160 }}
               />
             </Form.Item>
           </Space>
         </Form.Item>
-        <Form.Item label="附加 Header" name="extra_headers">
+        <Form.Item label={t("additionalHeaders")} name="extra_headers">
           <Input.TextArea
             rows={3}
-            placeholder={"每行一个，格式 name:value\n例如\nReferer:https://example.com\nUser-Agent:Mozilla/5.0"}
+            placeholder={t("onePerLineInNameValueFormatForExampleReferer")}
           />
         </Form.Item>
         <Form.Item style={{ marginBottom: 0 }}>
           <Space style={{ width: "100%", justifyContent: "flex-end" }}>
-            <Button onClick={onClose}>取消</Button>
+            <Button onClick={onClose}>{t("cancel")}</Button>
             <Button type="primary" htmlType="submit" loading={submitting}>
-              开始录制
-            </Button>
+              {t("startRecording")}</Button>
           </Space>
         </Form.Item>
       </Form>
@@ -301,7 +301,7 @@ export function NewLiveRecordModal({
 }
 
 function formatError(e: unknown): string {
-  if (!e) return "未知错误";
+  if (!e) return t("unknownError");
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
   return String(e);

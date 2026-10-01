@@ -1,3 +1,4 @@
+import { t, useTranslation } from "../i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { message } from "antd";
@@ -62,6 +63,7 @@ function patchPageItem(
 }
 
 export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
+  useTranslation();
   const [counts, setCounts] = useState<LiveRecordCounts>({
     active_count: 0,
     history_count: 0,
@@ -206,7 +208,7 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
         await api.pauseLiveRecord(id);
       } catch (error) {
         console.error("Failed to pause live record", error);
-        message.error(`暂停失败: ${error}`);
+        message.error(t("failedToPause", { value0: error }));
       }
     },
     []
@@ -220,7 +222,7 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
         await refreshGroup("active");
       } catch (error) {
         console.error("Failed to resume live record", error);
-        message.error(`恢复录制失败: ${error}`);
+        message.error(t("failedToResumeRecording", { value0: error }));
       }
     },
     [refreshCounts, refreshGroup]
@@ -232,7 +234,7 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
         await api.stopLiveRecord(id);
       } catch (error) {
         console.error("Failed to stop live record", error);
-        message.error(`停止失败: ${error}`);
+        message.error(t("failedToStop", { value0: error }));
       }
     },
     []
@@ -246,7 +248,7 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
         await Promise.all([refreshGroup("active"), refreshGroup("history")]);
       } catch (error) {
         console.error("Failed to cancel live record", error);
-        message.error(`取消失败: ${error}`);
+        message.error(t("failedToCancel", { value0: error }));
       }
     },
     [refreshCounts, refreshGroup]
@@ -260,7 +262,7 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
         await Promise.all([refreshGroup("active"), refreshGroup("history")]);
       } catch (error) {
         console.error("Failed to remove live record", error);
-        message.error(`删除任务失败: ${error}`);
+        message.error(t("failedToDeleteTask", { value0: error }));
       }
     },
     [refreshCounts, refreshGroup]
@@ -272,10 +274,10 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
       await api.clearLiveHistory();
       await refreshCounts();
       await refreshGroup("history", 1);
-      message.success("已清空录制完成列表");
+      message.success(t("completedRecordingsCleared"));
     } catch (error) {
       console.error("Failed to clear live history", error);
-      message.error(`清空列表失败: ${error}`);
+      message.error(t("failedToClearList", { value0: error }));
     }
   }, [counts.history_count, refreshCounts, refreshGroup]);
 

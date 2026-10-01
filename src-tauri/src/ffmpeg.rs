@@ -522,7 +522,7 @@ pub async fn analyze_media_file(
 ) -> Result<MediaAnalysisResult, AppError> {
     let raw_json = run_ffprobe_json(ffmpeg_path, input_path).await?;
     let parsed: FfprobeOutput = serde_json::from_str(&raw_json)
-        .map_err(|e| AppError::Conversion(format!("解析 ffprobe 输出失败: {}", e)))?;
+        .map_err(|e| AppError::Conversion(crate::localized!("failedToParseFfprobeOutput", e)))?;
 
     let mut video_streams = Vec::new();
     let mut audio_streams = Vec::new();
@@ -906,12 +906,11 @@ async fn run_ffprobe_preview_cancellable(
         .await
         .map_err(|e| match e {
             AppError::InvalidInput(_) => e,
-            _ => AppError::Conversion(format!("启动 ffprobe 失败: {}", e)),
+            _ => AppError::Conversion(crate::localized!("failedToStartFfprobe", e)),
         })?;
 
     if !output.status.success() {
-        return Err(AppError::Conversion(format!(
-            "ffprobe 退出码 {}",
+        return Err(AppError::Conversion(crate::localized!("ffprobeExitCode",
             output.status
         )));
     }
@@ -921,12 +920,12 @@ async fn run_ffprobe_preview_cancellable(
 
 fn parse_preview_media_info(json: &[u8]) -> Result<PreviewMediaInfo, AppError> {
     let output: FfprobeOutput = serde_json::from_slice(json)
-        .map_err(|e| AppError::Conversion(format!("解析预览媒体信息失败: {}", e)))?;
+        .map_err(|e| AppError::Conversion(crate::localized!("failedToParsePreviewMediaInformation", e)))?;
     let duration_secs = output.format
         .and_then(|format| format.duration)
         .and_then(|duration| duration.parse::<f64>().ok())
         .filter(|duration| duration.is_finite() && *duration > 0.0)
-        .ok_or_else(|| AppError::Conversion("ffprobe 未返回有效的时长".to_string()))?;
+        .ok_or_else(|| AppError::Conversion(crate::i18n::tr("ffprobeDidNotReturnAValidDuration").to_string()))?;
     let video = output.streams.into_iter().next().map(|stream| PreviewVideoInfo {
         frame_rate: stream.avg_frame_rate.as_deref().and_then(parse_preview_frame_rate)
             .or_else(|| stream.r_frame_rate.as_deref().and_then(parse_preview_frame_rate)),
@@ -975,12 +974,12 @@ async fn probe_duration_via_ffmpeg_cancellable(
         .await
         .map_err(|e| match e {
             AppError::InvalidInput(_) => e,
-            _ => AppError::Conversion(format!("启动 ffmpeg 失败: {}", e)),
+            _ => AppError::Conversion(crate::localized!("failedToStartFfmpeg", e)),
         })?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     parse_ffmpeg_duration_line(&stderr)
-        .ok_or_else(|| AppError::Conversion("无法识别视频时长".to_string()))
+        .ok_or_else(|| AppError::Conversion(crate::i18n::tr("cannotDetermineVideoDuration").to_string()))
 }
 
 fn parse_ffmpeg_duration_line(stderr: &str) -> Option<f64> {
@@ -1197,7 +1196,7 @@ pub async fn merge_video_files(
 ) -> Result<(), AppError> {
     if input_paths.len() < 2 {
         return Err(AppError::InvalidInput(
-            "请至少选择两个视频文件进行拼接".to_string(),
+            crate::i18n::tr("selectAtLeastTwoVideosToMerge").to_string(),
         ));
     }
 
@@ -1285,8 +1284,7 @@ fn build_media_convert_args(
                 args.extend(["-vn".to_string(), "-c:a".to_string(), "copy".to_string()])
             }
             _ => {
-                return Err(AppError::InvalidInput(format!(
-                    "暂不支持转换为 {} 格式",
+                return Err(AppError::InvalidInput(crate::localized!("conversionToIsNotSupported",
                     target_format
                 )))
             }
@@ -1334,15 +1332,13 @@ fn build_media_convert_args(
                 "pcm_s16le".to_string(),
             ]),
             _ => {
-                return Err(AppError::InvalidInput(format!(
-                    "暂不支持转换为 {} 格式",
+                return Err(AppError::InvalidInput(crate::localized!("conversionToIsNotSupported",
                     target_format
                 )))
             }
         },
         _ => {
-            return Err(AppError::InvalidInput(format!(
-                "暂不支持 {} 转换模式",
+            return Err(AppError::InvalidInput(crate::localized!("conversionModeIsNotSupported",
                 convert_mode
             )))
         }
@@ -1360,10 +1356,10 @@ fn build_clip_video_args(
     clip_mode: &str,
 ) -> Result<Vec<String>, AppError> {
     if !start_seconds.is_finite() || !end_seconds.is_finite() {
-        return Err(AppError::InvalidInput("剪辑起止时间无效".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("invalidClipStartOrEndTime").to_string()));
     }
     if start_seconds < 0.0 || end_seconds <= start_seconds {
-        return Err(AppError::InvalidInput("剪辑起止时间无效".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("invalidClipStartOrEndTime").to_string()));
     }
 
     let start = format!("{:.3}", start_seconds);
@@ -1409,8 +1405,7 @@ fn build_clip_video_args(
             ]);
         }
         _ => {
-            return Err(AppError::InvalidInput(format!(
-                "暂不支持 {} 剪辑模式",
+            return Err(AppError::InvalidInput(crate::localized!("clipModeIsNotSupported",
                 clip_mode
             )))
         }
@@ -1478,8 +1473,7 @@ fn build_media_transcode_args(
         ]),
         "copy" => args.extend(["-c:a".to_string(), "copy".to_string()]),
         _ => {
-            return Err(AppError::InvalidInput(format!(
-                "暂不支持 {} 音频编码",
+            return Err(AppError::InvalidInput(crate::localized!("audioCodecIsNotSupported",
                 audio_codec
             )))
         }
@@ -1499,8 +1493,7 @@ fn map_video_codec(video_codec: &str) -> Result<&'static str, AppError> {
         "h265" => Ok("libx265"),
         "vp9" => Ok("libvpx-vp9"),
         "copy" => Ok("copy"),
-        _ => Err(AppError::InvalidInput(format!(
-            "暂不支持 {} 视频编码",
+        _ => Err(AppError::InvalidInput(crate::localized!("videoCodecIsNotSupported",
             video_codec
         ))),
     }
@@ -1515,42 +1508,41 @@ fn validate_transcode_combination(
         "mp4" => {
             if !matches!(video_codec, "h264" | "h265" | "copy") {
                 return Err(AppError::InvalidInput(
-                    "MP4 仅支持 H.264、H.265 或复制视频编码".to_string(),
+                    crate::i18n::tr("mp4SupportsH264H265OrStreamCopyForVideo").to_string(),
                 ));
             }
             if !matches!(audio_codec, "aac" | "mp3" | "copy") {
                 return Err(AppError::InvalidInput(
-                    "MP4 仅支持 AAC、MP3 或复制音频编码".to_string(),
+                    crate::i18n::tr("mp4SupportsAacMp3OrStreamCopyForAudio").to_string(),
                 ));
             }
         }
         "mkv" => {
             if !matches!(video_codec, "h264" | "h265" | "vp9" | "copy") {
                 return Err(AppError::InvalidInput(
-                    "MKV 仅支持 H.264、H.265、VP9 或复制视频编码".to_string(),
+                    crate::i18n::tr("mkvSupportsH264H265Vp9OrStreamCopyForVideo").to_string(),
                 ));
             }
             if !matches!(audio_codec, "aac" | "mp3" | "opus" | "copy") {
                 return Err(AppError::InvalidInput(
-                    "MKV 仅支持 AAC、MP3、Opus 或复制音频编码".to_string(),
+                    crate::i18n::tr("mkvSupportsAacMp3OpusOrStreamCopyForAudio").to_string(),
                 ));
             }
         }
         "mov" => {
             if !matches!(video_codec, "h264" | "h265" | "copy") {
                 return Err(AppError::InvalidInput(
-                    "MOV 仅支持 H.264、H.265 或复制视频编码".to_string(),
+                    crate::i18n::tr("movSupportsH264H265OrStreamCopyForVideo").to_string(),
                 ));
             }
             if !matches!(audio_codec, "aac" | "copy") {
                 return Err(AppError::InvalidInput(
-                    "MOV 仅支持 AAC 或复制音频编码".to_string(),
+                    crate::i18n::tr("movSupportsAacOrStreamCopyForAudio").to_string(),
                 ));
             }
         }
         _ => {
-            return Err(AppError::InvalidInput(format!(
-                "暂不支持 {} 输出格式",
+            return Err(AppError::InvalidInput(crate::localized!("outputFormatIsNotSupported",
                 output_format
             )))
         }
@@ -1565,28 +1557,25 @@ async fn inspect_merge_video_input(
 ) -> Result<MergeVideoInputInfo, AppError> {
     let raw_json = run_ffprobe_json(ffmpeg_path, input_path).await?;
     let parsed: FfprobeOutput = serde_json::from_str(&raw_json)
-        .map_err(|e| AppError::Conversion(format!("解析 ffprobe 输出失败: {}", e)))?;
+        .map_err(|e| AppError::Conversion(crate::localized!("failedToParseFfprobeOutput", e)))?;
 
     let video_stream = parsed
         .streams
         .iter()
         .find(|stream| stream.codec_type.as_deref() == Some("video"))
         .ok_or_else(|| {
-            AppError::InvalidInput(format!(
-                "文件 {} 不包含视频轨",
+            AppError::InvalidInput(crate::localized!("fileHasNoVideoTrack",
                 input_path.to_string_lossy()
             ))
         })?;
 
     let width = video_stream.width.ok_or_else(|| {
-        AppError::InvalidInput(format!(
-            "无法识别文件 {} 的视频宽度",
+        AppError::InvalidInput(crate::localized!("cannotDetermineVideoWidthForFile",
             input_path.to_string_lossy()
         ))
     })?;
     let height = video_stream.height.ok_or_else(|| {
-        AppError::InvalidInput(format!(
-            "无法识别文件 {} 的视频高度",
+        AppError::InvalidInput(crate::localized!("cannotDetermineVideoHeightForFile",
             input_path.to_string_lossy()
         ))
     })?;
@@ -1616,17 +1605,17 @@ async fn inspect_merge_video_input(
 
 fn validate_fast_merge_inputs(input_infos: &[MergeVideoInputInfo]) -> Result<(), AppError> {
     let Some(first) = input_infos.first() else {
-        return Err(AppError::InvalidInput("请选择有效的视频文件".to_string()));
+        return Err(AppError::InvalidInput(crate::i18n::tr("selectAValidVideoFile").to_string()));
     };
 
     if !matches!(first.video_codec.as_deref(), Some("h264") | Some("hevc")) {
         return Err(AppError::InvalidInput(
-            "极速合并目前仅支持 H.264 或 H.265 视频，请改用兼容合并".to_string(),
+            crate::i18n::tr("fastMergeSupportsH264OrH265VideoOnlyUseCompatible").to_string(),
         ));
     }
     if first.has_audio && !matches!(first.audio_codec.as_deref(), Some("aac") | Some("mp3")) {
         return Err(AppError::InvalidInput(
-            "极速合并目前仅支持 AAC 或 MP3 音频，请改用兼容合并".to_string(),
+            crate::i18n::tr("fastMergeSupportsAacOrMp3AudioOnlyUseCompatibleMerge").to_string(),
         ));
     }
 
@@ -1641,7 +1630,7 @@ fn validate_fast_merge_inputs(input_infos: &[MergeVideoInputInfo]) -> Result<(),
             || info.audio_channels != first.audio_channels
         {
             return Err(AppError::InvalidInput(
-                "极速合并要求所有视频的分辨率、视频编码、帧率和音频轨规格一致；当前文件不一致，请改用兼容合并".to_string(),
+                crate::i18n::tr("fastMergeRequiresMatchingResolutionVideoCodecsFrameRatesAndAudioTracks").to_string(),
             ));
         }
     }
@@ -1656,12 +1645,12 @@ fn calculate_merge_video_output_size(
         .iter()
         .map(|item| item.width)
         .max()
-        .ok_or_else(|| AppError::InvalidInput("请选择有效的视频文件".to_string()))?;
+        .ok_or_else(|| AppError::InvalidInput(crate::i18n::tr("selectAValidVideoFile").to_string()))?;
     let max_height = input_infos
         .iter()
         .map(|item| item.height)
         .max()
-        .ok_or_else(|| AppError::InvalidInput("请选择有效的视频文件".to_string()))?;
+        .ok_or_else(|| AppError::InvalidInput(crate::i18n::tr("selectAValidVideoFile").to_string()))?;
 
     Ok((round_up_to_even(max_width), round_up_to_even(max_height)))
 }
@@ -1912,11 +1901,11 @@ async fn run_ffmpeg_command_cancellable(
             .collect::<Vec<_>>()
             .join(" | ");
         let detail = if tail.trim().is_empty() {
-            format!("FFmpeg 退出码 {}", output.status)
+            crate::localized!("ffmpegExitCode", output.status)
         } else {
             tail
         };
-        return Err(AppError::Conversion(format!("FFmpeg 处理失败: {}", detail)));
+        return Err(AppError::Conversion(crate::localized!("ffmpegProcessingFailed", detail)));
     }
 
     Ok(())
@@ -1941,7 +1930,7 @@ async fn run_ffmpeg_command_in_dir(
     let output = command
         .output()
         .await
-        .map_err(|e| AppError::Conversion(format!("启动 FFmpeg 失败: {}", e)))?;
+        .map_err(|e| AppError::Conversion(crate::localized!("failedToStartFfmpeg2", e)))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1955,11 +1944,11 @@ async fn run_ffmpeg_command_in_dir(
             .collect::<Vec<_>>()
             .join(" | ");
         let detail = if tail.trim().is_empty() {
-            format!("FFmpeg 退出码 {}", output.status)
+            crate::localized!("ffmpegExitCode", output.status)
         } else {
             tail
         };
-        return Err(AppError::Conversion(format!("FFmpeg 处理失败: {}", detail)));
+        return Err(AppError::Conversion(crate::localized!("ffmpegProcessingFailed", detail)));
     }
 
     Ok(())
@@ -1971,7 +1960,7 @@ async fn run_command_output_cancellable(
 ) -> Result<Output, AppError> {
     let mut child = command
         .spawn()
-        .map_err(|e| AppError::Conversion(format!("启动 FFmpeg 失败: {}", e)))?;
+        .map_err(|e| AppError::Conversion(crate::localized!("failedToStartFfmpeg2", e)))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let stdout_task = stdout.map(|mut stream| {
@@ -1991,12 +1980,12 @@ async fn run_command_output_cancellable(
 
     let status = tokio::select! {
         result = child.wait() => {
-            result.map_err(|e| AppError::Conversion(format!("等待 FFmpeg 结束失败: {}", e)))?
+            result.map_err(|e| AppError::Conversion(crate::localized!("failedToWaitForFfmpeg", e)))?
         }
         _ = cancel_token.cancelled() => {
             let _ = child.kill().await;
             let _ = child.wait().await;
-            return Err(AppError::InvalidInput("预览已取消".to_string()));
+            return Err(AppError::InvalidInput(crate::i18n::tr("previewCancelled").to_string()));
         }
     };
 
@@ -2066,29 +2055,29 @@ async fn run_ffprobe_json_command(
         .stdin(std::process::Stdio::null())
         .output()
         .await
-        .map_err(|e| AppError::Conversion(format!("启动 ffprobe 失败: {}", e)))?;
+        .map_err(|e| AppError::Conversion(crate::localized!("failedToStartFfprobe", e)))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr.trim();
         return Err(AppError::Conversion(if detail.is_empty() {
-            format!("ffprobe 退出码 {}", output.status)
+            crate::localized!("ffprobeExitCode", output.status)
         } else {
-            format!("ffprobe 处理失败: {}", detail)
+            crate::localized!("ffprobeProcessingFailed", detail)
         }));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if stdout.is_empty() {
         return Err(AppError::Conversion(
-            "ffprobe 未返回可用的媒体信息".to_string(),
+            crate::i18n::tr("ffprobeDidNotReturnUsableMediaInformation").to_string(),
         ));
     }
 
     let parsed: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| AppError::Conversion(format!("解析 ffprobe 输出失败: {}", e)))?;
+        .map_err(|e| AppError::Conversion(crate::localized!("failedToParseFfprobeOutput", e)))?;
     serde_json::to_string_pretty(&parsed)
-        .map_err(|e| AppError::Conversion(format!("格式化 ffprobe 输出失败: {}", e)))
+        .map_err(|e| AppError::Conversion(crate::localized!("failedToFormatFfprobeOutput", e)))
 }
 
 async fn run_ffprobe_dimensions(
@@ -2130,7 +2119,7 @@ async fn export_hls_subtitle_playlist_to_srt(
     let cues = collect_hls_subtitle_cues(subtitle_playlist).await?;
     if cues.is_empty() {
         return Err(AppError::Conversion(
-            "字幕内容为空，无法生成修正后的字幕文件".to_string(),
+            crate::i18n::tr("subtitleContentIsEmptyCannotGenerateCorrectedSubtitles").to_string(),
         ));
     }
 
@@ -2141,15 +2130,15 @@ async fn export_hls_subtitle_playlist_to_srt(
 async fn collect_hls_subtitle_cues(subtitle_playlist: &Path) -> Result<Vec<SubtitleCue>, AppError> {
     let playlist_content = tokio::fs::read(subtitle_playlist).await?;
     let playlist = m3u8_rs::parse_playlist_res(&playlist_content).map_err(|_| {
-        AppError::InvalidInput("字幕播放列表格式无效，无法重建字幕时间轴".to_string())
+        AppError::InvalidInput(crate::i18n::tr("invalidSubtitlePlaylistFormatCannotRebuildTheSubtitleTimeline").to_string())
     })?;
     let m3u8_rs::Playlist::MediaPlaylist(media_playlist) = playlist else {
         return Err(AppError::InvalidInput(
-            "字幕播放列表不是有效的媒体列表，无法重建字幕时间轴".to_string(),
+            crate::i18n::tr("subtitlePlaylistIsNotAValidMediaPlaylistCannotRebuildTheSubtitle").to_string(),
         ));
     };
     let parent_dir = subtitle_playlist.parent().ok_or_else(|| {
-        AppError::InvalidInput("字幕播放列表路径无效，无法重建字幕时间轴".to_string())
+        AppError::InvalidInput(crate::i18n::tr("invalidSubtitlePlaylistPathCannotRebuildTheSubtitleTimeline").to_string())
     })?;
 
     let mut cues = Vec::new();

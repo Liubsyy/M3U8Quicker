@@ -1,3 +1,4 @@
+import { currentLanguage, t, useTranslation } from "../i18n";
 import {
   Button,
   Dropdown,
@@ -89,7 +90,7 @@ function formatUpdatedAt(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
 
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(currentLanguage(), {
     timeZone: "Asia/Shanghai",
     year: "numeric",
     month: "2-digit",
@@ -165,15 +166,15 @@ function renderSegmentGrid(segmentState: DownloadTaskSegmentState) {
 }
 
 function getStatusTag(status: DownloadStatus) {
-  if (status === "Downloading") return <Tag color="processing">下载中</Tag>;
-  if (status === "Paused") return <Tag color="warning">已暂停</Tag>;
-  if (status === "Completed") return <Tag color="success">已完成</Tag>;
-  if (status === "Merging") return <Tag color="warning">合并中</Tag>;
-  if (status === "Converting") return <Tag color="warning">转换中</Tag>;
-  if (status === "Pending") return <Tag color="default">等待中</Tag>;
-  if (status === "Cancelled") return <Tag color="default">已取消</Tag>;
+  if (status === "Downloading") return <Tag color="processing">{t("downloading2")}</Tag>;
+  if (status === "Paused") return <Tag color="warning">{t("paused")}</Tag>;
+  if (status === "Completed") return <Tag color="success">{t("completed2")}</Tag>;
+  if (status === "Merging") return <Tag color="warning">{t("merging")}</Tag>;
+  if (status === "Converting") return <Tag color="warning">{t("converting")}</Tag>;
+  if (status === "Pending") return <Tag color="default">{t("pending")}</Tag>;
+  if (status === "Cancelled") return <Tag color="default">{t("cancelled")}</Tag>;
   if (typeof status === "object" && "Failed" in status)
-    return <Tag color="error">失败</Tag>;
+    return <Tag color="error">{t("failed")}</Tag>;
   return <Tag>{String(status)}</Tag>;
 }
 
@@ -199,6 +200,7 @@ export function DownloadList({
   cancelLabels,
   statusTagOverride,
 }: DownloadListProps) {
+  useTranslation();
   const [segmentStates, setSegmentStates] = useState<
     Record<string, DownloadTaskSegmentState>
   >({});
@@ -236,7 +238,7 @@ export function DownloadList({
       opGroup.push({
         key: "play",
         icon: <VideoCameraOutlined />,
-        label: "播放",
+        label: t("play"),
         disabled: !canOpenInProgressPlayback(record),
       });
     }
@@ -244,7 +246,7 @@ export function DownloadList({
       opGroup.push({
         key: "analyze",
         icon: <FileSearchOutlined />,
-        label: "分析视频",
+        label: t("analyzeVideo"),
         disabled: !record.file_path?.trim(),
       });
     }
@@ -252,14 +254,14 @@ export function DownloadList({
       opGroup.push({
         key: "pause",
         icon: <PauseCircleOutlined />,
-        label: "暂停",
+        label: t("pause"),
       });
     }
     if (showActions.includes("resume") && record.status === "Paused") {
       opGroup.push({
         key: "resume",
         icon: <CaretRightOutlined />,
-        label: record.is_live ? "继续录制" : "继续下载",
+        label: record.is_live ? t("continueRecording") : t("resumeDownload"),
       });
     }
     if (
@@ -270,14 +272,14 @@ export function DownloadList({
       opGroup.push({
         key: "stop",
         icon: <CheckCircleOutlined />,
-        label: "停止录制",
+        label: t("stopRecording"),
       });
     }
     if (record.failed_segment_count > 0 && !record.is_live) {
       opGroup.push({
         key: "retry",
         icon: <ReloadOutlined />,
-        label: "重试失败分片",
+        label: t("retryFailedSegments"),
       });
     }
 
@@ -288,7 +290,7 @@ export function DownloadList({
       dangerGroup.push({
         key: "cancel",
         icon: <CloseCircleOutlined />,
-        label: record.is_live ? "取消录制" : "取消下载",
+        label: record.is_live ? t("cancelRecording2") : t("cancelDownload"),
         danger: true,
       });
     }
@@ -296,7 +298,7 @@ export function DownloadList({
       dangerGroup.push({
         key: "remove",
         icon: <DeleteOutlined />,
-        label: "删除",
+        label: t("delete"),
         danger: true,
       });
     }
@@ -308,13 +310,13 @@ export function DownloadList({
       fileGroup.push({
         key: "open",
         icon: <FolderOpenOutlined />,
-        label: "打开文件夹",
+        label: t("openFolder"),
       });
     }
     fileGroup.push({
       key: "open-source",
       icon: <GlobalOutlined />,
-      label: "打开原网站",
+      label: t("openSourceWebsite"),
     });
 
     const items: NonNullable<MenuProps["items"]> = [];
@@ -369,13 +371,13 @@ export function DownloadList({
           try {
             const referer = (await getTaskReferer(record.id))?.trim();
             if (!referer) {
-              void message.warning("该任务没有 Referer，无法打开原网站");
+              void message.warning(t("thisTaskHasNoRefererSoTheSourceWebsiteCannot"));
               return;
             }
             await openUrl(referer);
           } catch (error) {
             console.error("Failed to open referer:", error);
-            void message.error(`打开原网站失败: ${error}`);
+            void message.error(t("failedToOpenSourceWebsite", { value0: error }));
           }
         })();
         return;
@@ -516,19 +518,17 @@ export function DownloadList({
         }}
       >
         <Space size={12} wrap style={{ display: "flex", marginBottom: 8 }}>
-          <Typography.Text strong>已下载切片</Typography.Text>
+          <Typography.Text strong>{t("downloadedSegments")}</Typography.Text>
           <Typography.Text type="secondary">
             {completedSegmentCount}/{totalSegments}
           </Typography.Text>
         </Space>
         <Space size={12} wrap style={{ display: "flex", marginBottom: 12 }}>
           <Tag color="success" style={{ marginInlineEnd: 0 }}>
-            已完成
-          </Tag>
+            {t("completed2")}</Tag>
           <Tag color="error" style={{ marginInlineEnd: 0 }}>
-            失败
-          </Tag>
-          <Tag style={{ marginInlineEnd: 0 }}>未完成</Tag>
+            {t("failed")}</Tag>
+          <Tag style={{ marginInlineEnd: 0 }}>{t("incomplete")}</Tag>
         </Space>
         {failedSegmentCount > 0 ? (
           <Button
@@ -538,8 +538,7 @@ export function DownloadList({
             style={{ paddingInline: 0, marginBottom: 8 }}
             onClick={() => onRetryFailed(record.id)}
           >
-            重试失败分片
-          </Button>
+            {t("retryFailedSegments")}</Button>
         ) : null}
         {loadingSegments && !segmentState ? <Spin size="small" /> : null}
         {segmentState ? renderSegmentGrid(segmentState) : null}
@@ -567,7 +566,7 @@ export function DownloadList({
 
   const columns: ColumnsType<DownloadTaskSummary> = [
     {
-      title: "文件名",
+      title: t("filename"),
       key: "filename",
       render: (_, record) => (
         (() => {
@@ -618,9 +617,9 @@ export function DownloadList({
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
                   }}
-                  title={`加密方式：${record.encryption_method}`}
+                  title={t("encryption", { value0: record.encryption_method })}
                 >
-                  加密方式：{record.encryption_method}
+                  {t("encryption2")}{record.encryption_method}
                 </Typography.Text>
               )}
             </div>
@@ -629,7 +628,7 @@ export function DownloadList({
       ),
     },
     {
-      title: "进度",
+      title: t("progress"),
       key: "progress",
       width: 280,
       render: (_, record) => (
@@ -657,12 +656,10 @@ export function DownloadList({
                 <Space size={4}>
                   {renderCompletedSegmentsPopover(record)}
                   <span>
-                    {record.completed_segments}/{record.total_segments} 片段
-                  </span>
+                    {record.completed_segments}/{record.total_segments} {t("segments")}</span>
                   {record.failed_segment_count > 0 ? (
                     <span style={{ color: "#cf1322" }}>
-                      失败 {record.failed_segment_count} 片
-                    </span>
+                      {t("failedSegmentCount", { count: record.failed_segment_count })}</span>
                   ) : null}
                 </Space>
                 {" | "}
@@ -676,7 +673,7 @@ export function DownloadList({
     ...(showSpeed
       ? [
           {
-            title: "速度",
+            title: t("speed"),
             key: "speed",
             width: 120,
             render: (_: unknown, record: DownloadTaskSummary) =>
@@ -687,7 +684,7 @@ export function DownloadList({
         ]
       : []),
     {
-      title: "状态",
+      title: t("status"),
       key: "status",
       width: 180,
       render: (_, record) => {
@@ -733,9 +730,9 @@ export function DownloadList({
             gap: 4,
           }}
         >
-          <span>操作</span>
+          <span>{t("actions")}</span>
           {actionsHeaderExtra ? (
-            <Tooltip title="清空列表">{actionsHeaderExtra}</Tooltip>
+            <Tooltip title={t("clearList")}>{actionsHeaderExtra}</Tooltip>
           ) : null}
         </div>
       ),
@@ -746,10 +743,10 @@ export function DownloadList({
           {(() => {
             const canPlay = canOpenInProgressPlayback(record);
             const playTooltip = canPlay
-              ? "播放"
+              ? t("play")
               : record.playback_available
-                ? "当前格式暂不支持边下边播"
-                : "多轨下载暂不支持播放";
+                ? t("thisFormatCannotBePlayedWhileDownloading")
+                : t("playbackIsNotSupportedForMultiTrackDownloads");
 
             return (
               showActions.includes("play") &&
@@ -771,7 +768,7 @@ export function DownloadList({
           })()}
           {showActions.includes("pause") &&
             record.status === "Downloading" && (
-              <Tooltip title="暂停">
+              <Tooltip title={t("pause")}>
                 <Button
                   type="text"
                   icon={<PauseCircleOutlined />}
@@ -782,7 +779,7 @@ export function DownloadList({
             )}
           {showActions.includes("resume") &&
             record.status === "Paused" && (
-              <Tooltip title="继续下载">
+              <Tooltip title={t("resumeDownload")}>
                 <Button
                   type="text"
                   icon={<CaretRightOutlined />}
@@ -794,7 +791,7 @@ export function DownloadList({
           {showActions.includes("stop") &&
             onStop &&
             (record.status === "Downloading" || record.status === "Paused") && (
-              <Tooltip title="停止录制">
+              <Tooltip title={t("stopRecording")}>
                 <Button
                   type="text"
                   icon={<CheckCircleOutlined />}
@@ -806,8 +803,8 @@ export function DownloadList({
           {showActions.includes("cancel") &&
             (record.status === "Downloading" || record.status === "Paused") && (
               <Popconfirm
-                title={cancelLabels?.title ?? "确认取消下载?"}
-                description={cancelLabels?.description ?? "已下载的临时切片会被清理。"}
+                title={cancelLabels?.title ?? t("cancelDownload2")}
+                description={cancelLabels?.description ?? t("downloadedTemporarySegmentsWillBeDeleted")}
                 open={cancelConfirmId === record.id}
                 onOpenChange={(open) =>
                   setCancelConfirmId(open ? record.id : null)
@@ -817,10 +814,10 @@ export function DownloadList({
                   setCancelConfirmId(null);
                 }}
                 onCancel={() => setCancelConfirmId(null)}
-                okText={cancelLabels?.okText ?? "确认取消"}
-                cancelText={cancelLabels?.cancelText ?? "继续下载"}
+                okText={cancelLabels?.okText ?? t("confirmCancellation")}
+                cancelText={cancelLabels?.cancelText ?? t("resumeDownload")}
               >
-                <Tooltip title={cancelLabels?.title ?? "取消下载"}>
+                <Tooltip title={cancelLabels?.title ?? t("cancelDownload")}>
                   <Button
                     type="text"
                     icon={<CloseCircleOutlined />}
@@ -832,8 +829,8 @@ export function DownloadList({
             )}
           {showActions.includes("remove") && (
             <Popconfirm
-              title="确认删除?"
-              description="是否同时删除文件?"
+              title={t("deleteThisTask")}
+              description={t("alsoDeleteItsFiles")}
               open={removeConfirmId === record.id}
               onOpenChange={(open) =>
                 setRemoveConfirmId(open ? record.id : null)
@@ -846,10 +843,10 @@ export function DownloadList({
                 onRemove(record.id, false);
                 setRemoveConfirmId(null);
               }}
-              okText="删除文件"
-              cancelText="仅移除记录"
+              okText={t("deleteFiles")}
+              cancelText={t("removeRecordOnly")}
             >
-              <Tooltip title="删除">
+              <Tooltip title={t("delete")}>
                 <Button
                   type="text"
                   icon={<DeleteOutlined />}
@@ -861,7 +858,7 @@ export function DownloadList({
           )}
           {showActions.includes("open") &&
             (record.file_path || record.output_dir) && (
-              <Tooltip title="打开文件夹">
+              <Tooltip title={t("openFolder")}>
                 <Button
                   type="text"
                   icon={<FolderOpenOutlined />}
@@ -895,7 +892,7 @@ export function DownloadList({
         }}
         size="middle"
         tableLayout="fixed"
-        locale={{ emptyText: "暂无下载任务" }}
+        locale={{ emptyText: t("noDownloadTasks") }}
         onRow={(record) => ({
           onContextMenu: (event) => {
             if (buildMenuItems(record).length === 0) return;

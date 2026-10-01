@@ -1,4 +1,5 @@
 export type ThemeMode = "light" | "dark";
+export type AppLanguage = "zh-CN" | "zh-TW" | "en" | "ja" | "ko" | "es" | "fr" | "de" | "pt-BR" | "ru";
 
 export const THEME_MODE_STORAGE_KEY = "m3u8quicker.themeMode";
 export const UPDATE_NOTIFICATIONS_STORAGE_KEY = "m3u8quicker.updateNotifications";
@@ -23,6 +24,7 @@ export interface ProxySettings {
 }
 
 export interface AppSettings {
+  language: AppLanguage;
   default_download_dir: string | null;
   proxy: ProxySettings;
   download_concurrency: number;

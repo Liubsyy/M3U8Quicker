@@ -1,7 +1,9 @@
+import { currentLanguage, renderMessage, translatedMessage, type TranslatedMessage, t, useTranslation } from "../i18n";
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { Alert, Spin } from "antd";
 import type Hls from "hls.js";
 import type Mpegts from "mpegts.js";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   DownloadProgressEvent,
@@ -32,6 +34,7 @@ interface PlaybackWindowQuery {
 }
 
 export function PlaybackWindow() {
+  const { i18n: { language } } = useTranslation();
   const query = useMemo(() => parsePlaybackWindowQuery(window.location.search), []);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -44,10 +47,17 @@ export function PlaybackWindow() {
     query?.initialStatus ?? null
   );
   const [loading, setLoading] = useState(true);
-  const [errorText, setErrorText] = useState<string | null>(
-    query ? null : "播放器参数不完整，无法打开当前任务。"
+  const [errorText, setErrorText] = useState<TranslatedMessage | null>(
+    query ? null : translatedMessage("playerParametersAreIncompleteThisTaskCannotBeOpened")
   );
-  const [noticeText, setNoticeText] = useState<string | null>(null);
+  const [noticeText, setNoticeText] = useState<TranslatedMessage | null>(null);
+
+  useEffect(() => {
+    if (!query) return;
+    const title = t("playing", { value0: query.filename });
+    document.title = title;
+    void getCurrentWebviewWindow().setTitle(title).catch(console.error);
+  }, [query, language]);
 
   const appendDebugLog = useEffectEvent((message: string) => {
     const line = `${formatDebugTime()} ${message}`;
@@ -97,8 +107,8 @@ export function PlaybackWindow() {
       return;
     }
 
-    document.title = `播放中 - ${query.filename}`;
-    appendDebugLog(`开始同步任务状态 filename=${query.filename}`);
+
+    appendDebugLog(t("startingTaskStatusSyncFilename", { value0: query.filename }));
 
     let disposed = false;
     let unlisten: UnlistenFn | undefined;
@@ -111,7 +121,7 @@ export function PlaybackWindow() {
         if (event.payload.id !== query.taskId) {
           return;
         }
-        appendDebugLog(`收到直播进度事件 status=${String(event.payload.status)}`);
+        appendDebugLog(t("liveProgressEventStatus", { value0: String(event.payload.status) }));
         setTaskStatus(liveRecordStatusToDownloadStatus(event.payload.status));
       }).then((fn) => {
         if (disposed) {
@@ -134,13 +144,13 @@ export function PlaybackWindow() {
           return;
         }
 
-        appendDebugLog(`同步任务状态成功 status=${formatStatus(task.status)}`);
+        appendDebugLog(t("taskStatusSyncedStatus", { value0: formatStatus(task.status) }));
         setTaskStatus(task.status);
       } catch (error) {
         if (!disposed) {
           console.error("Failed to sync playback task", error);
-          appendDebugLog(`同步任务状态异常: ${String(error)}`);
-          setErrorText("下载任务已删除，播放资源不可用。");
+          appendDebugLog(t("taskStatusSyncFailed", { value0: String(error) }));
+          setErrorText(translatedMessage("theDownloadTaskWasDeletedPlaybackResourcesAreUnavailable"));
         }
       } finally {
         if (!disposed) {
@@ -159,7 +169,7 @@ export function PlaybackWindow() {
         return;
       }
 
-      appendDebugLog(`收到下载进度事件 status=${formatStatus(event.payload.status)}`);
+      appendDebugLog(t("downloadProgressEventStatus", { value0: formatStatus(event.payload.status) }));
       setTaskStatus(event.payload.status);
       setLoading(false);
     }).then((fn) => {
@@ -188,14 +198,14 @@ export function PlaybackWindow() {
         return;
       }
       sessionClosedRef.current = true;
-      appendDebugLog("准备关闭播放会话");
+      appendDebugLog(t("closingPlaybackSession"));
       const closeSessionFn =
         query.scope === "live"
           ? closeLivePlaybackSession
           : closeDownloadPlaybackSession;
       void closeSessionFn(query.taskId, query.sessionToken).catch((error) => {
         console.debug("Failed to close playback session", error);
-        appendDebugLog(`关闭播放会话失败: ${String(error)}`);
+        appendDebugLog(t("failedToClosePlaybackSession", { value0: String(error) }));
       });
     };
 
@@ -245,11 +255,11 @@ export function PlaybackWindow() {
       };
 
       try {
-        appendDebugLog(`请求优先下载 currentTime=${currentPosition.toFixed(3)}`);
+        appendDebugLog(t("requestingPriorityDownloadCurrenttime", { value0: currentPosition.toFixed(3) }));
         await prioritizeDownloadPlaybackPosition(query.taskId, currentPosition);
       } catch (error) {
         console.debug("Failed to prioritize playback segment", error);
-        appendDebugLog(`优先下载请求失败: ${String(error)}`);
+        appendDebugLog(t("priorityDownloadRequestFailed", { value0: String(error) }));
       }
     };
 
@@ -260,7 +270,7 @@ export function PlaybackWindow() {
       appendDebugLog("video: playing");
       setNoticeText(null);
       setErrorText((current) => {
-        if (current === "视频流暂不可用，请稍后重试。") {
+        if (current?.key === "videoStreamUnavailablePleaseTryAgainLater") {
           return null;
         }
         return current;
@@ -289,7 +299,7 @@ export function PlaybackWindow() {
           if (bufferedEnd !== null && video.currentTime > bufferedEnd + 0.35) {
             const fallbackTime = Math.max(0, bufferedEnd - 0.1);
             suppressSeekGuardRef.current = true;
-            setNoticeText("尚未下载到该位置，请在已下载范围内播放");
+            setNoticeText(translatedMessage("thisPositionHasNotBeenDownloadedYetPlayWithinThe"));
             appendDebugLog(
               `video: seek blocked target=${video.currentTime.toFixed(3)} bufferedEnd=${bufferedEnd.toFixed(3)}`
             );
@@ -325,7 +335,7 @@ export function PlaybackWindow() {
       const mediaError = video.error;
       if (mediaError) {
         appendDebugLog(`video: error mediaCode=${mediaError.code}`);
-        setErrorText(`视频流暂不可用，请稍后重试。媒体错误码：${mediaError.code}`);
+        setErrorText(translatedMessage("videoStreamUnavailablePleaseTryAgainLaterMediaErrorCode", { value0: mediaError.code }));
       }
     };
     const handleVolumeChange = () => {
@@ -345,23 +355,23 @@ export function PlaybackWindow() {
     if (query.playbackKind === "flv" || query.playbackKind === "mpegts") {
       const mediaType = query.playbackKind === "mpegts" ? "mpegts" : "flv";
       void (async () => {
-        appendDebugLog(`准备按需加载 mpegts.js (type=${mediaType})`);
+        appendDebugLog(t("loadingMpegtsJsOnDemandType", { value0: mediaType }));
         const mpegtsModule = (await import("mpegts.js")).default;
         if (disposed) {
           return;
         }
 
         if (!mpegtsModule.isSupported()) {
-          appendDebugLog(`mpegts.js 报告当前环境不支持 ${mediaType}`);
+          appendDebugLog(t("mpegtsJsReportsThatIsUnsupported", { value0: mediaType }));
           setErrorText(
             mediaType === "mpegts"
-              ? "当前环境不支持该视频的软解码播放。"
-              : "当前环境不支持 FLV 播放。"
+              ? translatedMessage("softwareDecodingIsNotSupportedForThisVideoInThe")
+              : translatedMessage("flvPlaybackIsNotSupportedInTheCurrentEnvironment")
           );
           return;
         }
 
-        appendDebugLog(`mpegts.js 已加载，创建播放器 type=${mediaType} isLive=${query.isLive}`);
+        appendDebugLog(t("mpegtsJsLoadedCreatingPlayerTypeIslive", { value0: mediaType, value1: query.isLive }));
         const player = mpegtsModule.createPlayer(
           { type: mediaType, isLive: query.isLive, url: query.playbackUrl },
           { enableWorker: true, liveBufferLatencyChasing: query.isLive }
@@ -374,45 +384,45 @@ export function PlaybackWindow() {
             `mpegts: error type=${String(type)} detail=${String(detail)}`
           );
           setErrorText(
-            `视频流暂不可用，请稍后重试。(${String(detail ?? type)})`
+            translatedMessage("videoStreamUnavailablePleaseTryAgainLater2", { value0: String(detail ?? type) })
           );
         });
         player.load();
         setLoading(false);
       })().catch((error) => {
         console.error("Failed to load mpegts.js", error);
-        appendDebugLog(`加载 mpegts.js 失败: ${String(error)}`);
-        setErrorText("播放器初始化失败，请关闭后重试。");
+        appendDebugLog(t("failedToLoadMpegtsJs", { value0: String(error) }));
+        setErrorText(translatedMessage("failedToInitializePlayerCloseThisWindowAndTryAgain"));
       });
     } else if (query.playbackKind === "file") {
-      appendDebugLog("使用文件直连播放");
+      appendDebugLog(t("usingDirectFilePlayback"));
       video.src = query.playbackUrl;
       video.load();
       setLoading(false);
     } else if (!query.isLive && video.canPlayType("application/vnd.apple.mpegurl")) {
-      appendDebugLog("使用原生 HLS 播放");
+      appendDebugLog(t("usingNativeHlsPlayback"));
       video.src = query.playbackUrl;
       video.load();
       try {
         video.currentTime = 0;
       } catch (error) {
-        appendDebugLog(`原生 HLS 设置初始位置失败: ${String(error)}`);
+        appendDebugLog(t("failedToSetNativeHlsStartPosition", { value0: String(error) }));
       }
     } else {
       void (async () => {
-        appendDebugLog(query.isLive ? "直播 HLS 优先使用 hls.js" : "准备按需加载 hls.js");
+        appendDebugLog(query.isLive ? t("usingHlsJsForLiveHls") : t("loadingHlsJsOnDemand"));
         const { default: HlsConstructor } = await import("hls.js");
         if (disposed) {
           return;
         }
 
         if (!HlsConstructor.isSupported()) {
-          appendDebugLog("hls.js 报告当前环境不支持 HLS");
-          setErrorText("当前环境不支持 HLS 播放。");
+          appendDebugLog(t("hlsJsReportsThatHlsIsUnsupported"));
+          setErrorText(translatedMessage("hlsPlaybackIsNotSupportedInTheCurrentEnvironment"));
           return;
         }
 
-        appendDebugLog("hls.js 已加载，开始 attach media");
+        appendDebugLog(t("hlsJsLoadedAttachingMedia"));
         const hls = new HlsConstructor({
           enableWorker: true,
           startPosition: 0,
@@ -421,11 +431,11 @@ export function PlaybackWindow() {
         hls.loadSource(query.playbackUrl);
         hls.attachMedia(video);
         hls.on(HlsConstructor.Events.MANIFEST_PARSED, () => {
-          appendDebugLog("hls: manifest parsed，强制从 0 秒开始");
+          appendDebugLog(t("hlsManifestParsedStartingAt0Seconds"));
           try {
             video.currentTime = 0;
           } catch (error) {
-            appendDebugLog(`hls 设置初始位置失败: ${String(error)}`);
+            appendDebugLog(t("failedToSetHlsStartPosition", { value0: String(error) }));
           }
           setLoading(false);
         });
@@ -449,7 +459,7 @@ export function PlaybackWindow() {
 
           if (data.type === HlsConstructor.ErrorTypes.NETWORK_ERROR) {
             setErrorText(
-              `视频流网络请求失败：${data.details}${"response" in data && data.response?.code ? `（HTTP ${data.response.code}）` : ""}`
+              translatedMessage("videoStreamRequestFailed", { value0: data.details, value1: "response" in data && data.response?.code ? `（HTTP ${data.response.code}）` : "" })
             );
             appendDebugLog(
               `hls: network fatal details=${data.details}${"response" in data && data.response?.code ? ` http=${data.response.code}` : ""}`
@@ -459,17 +469,17 @@ export function PlaybackWindow() {
           }
 
           if (data.type === HlsConstructor.ErrorTypes.MEDIA_ERROR) {
-            appendDebugLog("hls: media error，尝试 recoverMediaError");
+            appendDebugLog(t("hlsMediaErrorTryingRecovermediaerror"));
             hls.recoverMediaError();
             return;
           }
 
-          setErrorText(`播放器初始化失败：${data.details}`);
+          setErrorText(translatedMessage("failedToInitializePlayer", { value0: data.details }));
         });
       })().catch((error) => {
         console.error("Failed to load hls.js", error);
-        appendDebugLog(`加载 hls.js 失败: ${String(error)}`);
-        setErrorText("播放器初始化失败，请关闭后重试。");
+        appendDebugLog(t("failedToLoadHlsJs", { value0: String(error) }));
+        setErrorText(translatedMessage("failedToInitializePlayerCloseThisWindowAndTryAgain"));
       });
     }
 
@@ -503,7 +513,7 @@ export function PlaybackWindow() {
   if (!query) {
     return (
       <div style={containerStyle}>
-        <Alert type="error" message={errorText} showIcon />
+        <Alert type="error" message={renderMessage(errorText)} showIcon />
       </div>
     );
   }
@@ -525,19 +535,19 @@ export function PlaybackWindow() {
 
         {loading ? (
           <div style={centerOverlayStyle}>
-            <Spin tip="正在加载播放器..." />
+            <Spin tip={t("loadingPlayer")} />
           </div>
         ) : null}
 
         <div style={alertsOverlayStyle}>
           {failedMessage ? (
-            <Alert type="error" showIcon message="下载失败" description={failedMessage} />
+            <Alert type="error" showIcon message={t("downloadFailed")} description={failedMessage} />
           ) : null}
           {taskStatus === "Cancelled" ? (
-            <Alert type="warning" showIcon message="下载已取消，播放器不会再补齐新切片。" />
+            <Alert type="warning" showIcon message={t("downloadCancelledNoMoreSegmentsWillBeDownloadedForPlayback")} />
           ) : null}
-          {noticeText ? <Alert type="warning" showIcon message={noticeText} /> : null}
-          {errorText ? <Alert type="error" showIcon message={errorText} /> : null}
+          {noticeText ? <Alert type="warning" showIcon message={renderMessage(noticeText)} /> : null}
+          {errorText ? <Alert type="error" showIcon message={renderMessage(errorText)} /> : null}
         </div>
       </div>
     </div>
@@ -550,7 +560,7 @@ function parsePlaybackWindowQuery(search: string): PlaybackWindowQuery | null {
   const playbackUrl = params.get("playbackUrl")?.trim() || "";
   const playbackKind = normalizePlaybackKind(params.get("playbackKind"));
   const sessionToken = params.get("sessionToken")?.trim() || "";
-  const filename = params.get("filename")?.trim() || "正在播放";
+  const filename = params.get("filename")?.trim() || t("playing2");
   const scope = params.get("scope")?.trim() === "live" ? "live" : "download";
   const isLive = params.get("isLive")?.trim() === "1";
   const initialStatus = parseStatusParam(params.get("status"));
@@ -623,7 +633,7 @@ function getPlayableBufferedEnd(video: HTMLVideoElement) {
 }
 
 function formatDebugTime() {
-  return new Date().toLocaleTimeString("zh-CN", {
+  return new Date().toLocaleTimeString(currentLanguage(), {
     hour12: false,
   });
 }

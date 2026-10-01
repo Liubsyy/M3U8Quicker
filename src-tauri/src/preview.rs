@@ -93,7 +93,7 @@ pub async fn create_session(
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| AppError::InvalidInput("DASH JSON 不能为空".to_string()))?;
+                .ok_or_else(|| AppError::InvalidInput(crate::i18n::tr("dashJsonCannotBeEmpty").to_string()))?;
             // Prefer handing ffmpeg the bare segment URL when the manifest is
             // a single self-contained segment (the bilibili case). That avoids
             // the local-playlist `-headers` propagation issue: when input is
@@ -137,20 +137,17 @@ pub async fn extract_thumbnails(
     force_refresh: bool,
 ) -> Result<Vec<PreviewThumbnail>, AppError> {
     if !(MIN_THUMBNAIL_COUNT..=MAX_THUMBNAIL_COUNT).contains(&count) {
-        return Err(AppError::InvalidInput(format!(
-            "缩略图数量必须在 {}~{} 之间",
+        return Err(AppError::InvalidInput(crate::localized!("thumbnailCountMustBeBetweenAnd2",
             MIN_THUMBNAIL_COUNT, MAX_THUMBNAIL_COUNT
         )));
     }
     if !(MIN_THUMBNAIL_WIDTH..=MAX_THUMBNAIL_WIDTH).contains(&target_width) {
-        return Err(AppError::InvalidInput(format!(
-            "预览图宽度必须在 {}~{} 之间",
+        return Err(AppError::InvalidInput(crate::localized!("thumbnailWidthMustBeBetweenAnd2",
             MIN_THUMBNAIL_WIDTH, MAX_THUMBNAIL_WIDTH
         )));
     }
     if !(MIN_JPEG_QUALITY..=MAX_JPEG_QUALITY).contains(&jpeg_quality) {
-        return Err(AppError::InvalidInput(format!(
-            "图片质量参数必须在 {}~{} 之间",
+        return Err(AppError::InvalidInput(crate::localized!("imageQualityMustBeBetweenAnd2",
             MIN_JPEG_QUALITY, MAX_JPEG_QUALITY
         )));
     }
@@ -160,19 +157,19 @@ pub async fn extract_thumbnails(
         sessions
             .get(token)
             .cloned()
-            .ok_or_else(|| AppError::InvalidInput("预览会话不存在或已关闭".to_string()))?
+            .ok_or_else(|| AppError::InvalidInput(crate::i18n::tr("previewSessionDoesNotExistOrHasBeenClosed").to_string()))?
     };
     let _operation_guard = session.operation_lock.write().await;
     {
         let mut cancelled_runs = session.cancelled_runs.lock().await;
         if cancelled_runs.remove(run_id) {
-            return Err(AppError::InvalidInput("预览已取消".to_string()));
+            return Err(AppError::InvalidInput(crate::i18n::tr("previewCancelled").to_string()));
         }
     }
 
     let ffmpeg_path = ffmpeg::resolve_ffmpeg_path(app_handle)
         .await
-        .ok_or_else(|| AppError::InvalidInput("请先在设置中开启并配置 FFmpeg".to_string()))?;
+        .ok_or_else(|| AppError::InvalidInput(crate::i18n::tr("enableAndConfigureFfmpegInSettingsFirst").to_string()))?;
     let cancel_token = {
         let mut guard = session.cancel_token.lock().await;
         if guard.is_cancelled() {
@@ -205,7 +202,7 @@ pub async fn extract_thumbnails(
             .await?;
             if !(value.duration_secs.is_finite() && value.duration_secs > 0.0) {
                 return Err(AppError::Conversion(
-                    "无法识别视频时长，无法生成预览".to_string(),
+                    crate::i18n::tr("cannotDetermineVideoDurationCannotGeneratePreview").to_string(),
                 ));
             }
             *guard = Some(value.clone());
@@ -239,7 +236,7 @@ pub async fn extract_thumbnails(
 
             async move {
                 if cancel_token.is_cancelled() {
-                    return Err(AppError::InvalidInput("预览已取消".to_string()));
+                    return Err(AppError::InvalidInput(crate::i18n::tr("previewCancelled").to_string()));
                 }
 
                 let time = duration_secs * (index as f64 + 0.5) / (count as f64);
@@ -307,7 +304,7 @@ pub async fn cancel_extraction(state: &AppState, token: &str, run_id: &str) -> R
         sessions
             .get(token)
             .cloned()
-            .ok_or_else(|| AppError::InvalidInput("预览会话不存在或已关闭".to_string()))?
+            .ok_or_else(|| AppError::InvalidInput(crate::i18n::tr("previewSessionDoesNotExistOrHasBeenClosed").to_string()))?
     };
 
     {
@@ -351,7 +348,7 @@ fn preview_root_dir(app_handle: &AppHandle) -> Result<PathBuf, AppError> {
     let cache_dir = app_handle
         .path()
         .app_cache_dir()
-        .map_err(|e| AppError::Internal(format!("无法获取应用缓存目录: {}", e)))?;
+        .map_err(|e| AppError::Internal(crate::localized!("cannotGetApplicationCacheFolder", e)))?;
     Ok(cache_dir.join("preview"))
 }
 

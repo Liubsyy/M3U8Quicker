@@ -1,3 +1,4 @@
+import { t, useTranslation } from "../i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -38,6 +39,7 @@ interface UpdateModalProps {
 }
 
 export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
+  useTranslation();
   const [phase, setPhase] = useState<Phase>("checking");
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [errorText, setErrorText] = useState("");
@@ -129,7 +131,7 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
     try {
       await openUrl(url);
     } catch (error) {
-      message.error(`打开发布页失败: ${formatError(error)}`);
+      message.error(t("failedToOpenReleasePage", { value0: formatError(error) }));
     }
   };
 
@@ -140,7 +142,7 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
       await openUpdateInstaller(installerPath);
     } catch (error) {
       setOpeningInstaller(false);
-      message.error(`打开安装包失败: ${formatError(error)}`);
+      message.error(t("failedToOpenInstaller", { value0: formatError(error) }));
     }
   };
 
@@ -149,7 +151,7 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
     try {
       await openFileLocation(installerPath);
     } catch (error) {
-      message.error(`打开目录失败: ${formatError(error)}`);
+      message.error(t("failedToOpenFolder", { value0: formatError(error) }));
     }
   };
 
@@ -158,7 +160,7 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
       return (
         <Space direction="vertical" align="center" style={{ width: "100%", padding: "24px 0" }}>
           <Spin />
-          <Typography.Text type="secondary">正在检查更新…</Typography.Text>
+          <Typography.Text type="secondary">{t("checkingForUpdates")}</Typography.Text>
         </Space>
       );
     }
@@ -169,8 +171,8 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
           <Alert
             type="success"
             showIcon
-            message="已经是最新版本"
-            description={`当前版本 v${info.current_version}`}
+            message={t("youAreUpToDate")}
+            description={t("currentVersionV", { value0: info.current_version })}
           />
         </Space>
       );
@@ -179,7 +181,7 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
     if (phase === "error") {
       return (
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
-          <Alert type="error" showIcon message="检查更新失败" description={errorText} />
+          <Alert type="error" showIcon message={t("failedToCheckForUpdates")} description={errorText} />
         </Space>
       );
     }
@@ -190,8 +192,8 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
           <Alert
             type="warning"
             showIcon
-            message={`发现新版本 v${info.latest_version}`}
-            description="未找到与当前平台匹配的安装包，请前往发布页手动下载。"
+            message={t("newVersionAvailableV", { value0: info.latest_version })}
+            description={t("noInstallerFoundForThisPlatformDownloadManuallyFromThe")}
           />
           {info.release_notes && (
             <ReleaseNotes notes={info.release_notes} />
@@ -206,11 +208,11 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
           <Alert
             type="info"
             showIcon
-            message={`发现新版本 v${info.latest_version}`}
-            description={`当前版本 v${info.current_version}`}
+            message={t("newVersionAvailableV", { value0: info.latest_version })}
+            description={t("currentVersionV", { value0: info.current_version })}
           />
           <div>
-            <Typography.Text strong>安装包：</Typography.Text>
+            <Typography.Text strong>{t("installer")}</Typography.Text>
             <Typography.Text>{info.asset.name}</Typography.Text>
             <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
               ({formatSize(info.asset.size)})
@@ -225,7 +227,7 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
     if (phase === "downloading" && info?.asset) {
       return (
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
-          <Typography.Text>正在下载 {info.asset.name}</Typography.Text>
+          <Typography.Text>{t("downloadingInstaller", { name: info.asset.name })}</Typography.Text>
           <Progress percent={progress} />
           <Typography.Text type="secondary">
             {formatSize(downloadedBytes)} / {formatSize(totalBytes || info.asset.size)}
@@ -240,7 +242,7 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
           <Alert
             type="success"
             showIcon
-            message="下载完成"
+            message={t("downloadComplete")}
             description={
               <Typography.Text style={{ wordBreak: "break-all" }}>
                 {installerPath}
@@ -263,57 +265,48 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
     if (phase === "no-update") {
       return [
         <Button key="close" type="primary" onClick={onClose}>
-          关闭
-        </Button>,
+          {t("close")}</Button>,
       ];
     }
 
     if (phase === "error") {
       return [
         <Button key="release" onClick={() => void handleOpenReleasePage()}>
-          前往发布页
-        </Button>,
+          {t("openReleasePage")}</Button>,
         <Button key="retry" type="primary" onClick={() => void runCheck()}>
-          重试
-        </Button>,
+          {t("retry")}</Button>,
       ];
     }
 
     if (phase === "no-asset") {
       return [
         <Button key="close" onClick={onClose}>
-          关闭
-        </Button>,
+          {t("close")}</Button>,
         <Button key="release" type="primary" onClick={() => void handleOpenReleasePage()}>
-          前往发布页
-        </Button>,
+          {t("openReleasePage")}</Button>,
       ];
     }
 
     if (phase === "has-update") {
       return [
         <Button key="release" onClick={() => void handleOpenReleasePage()}>
-          前往发布页
-        </Button>,
+          {t("openReleasePage")}</Button>,
         <Button key="download" type="primary" onClick={() => void handleDownload()}>
-          下载并安装
-        </Button>,
+          {t("downloadAndInstall")}</Button>,
       ];
     }
 
     if (phase === "downloaded") {
       return [
         <Button key="folder" onClick={() => void handleOpenInstallerFolder()}>
-          打开所在目录
-        </Button>,
+          {t("openContainingFolder")}</Button>,
         <Button
           key="install"
           type="primary"
           loading={openingInstaller}
           onClick={() => void handleOpenInstaller()}
         >
-          打开安装程序并退出
-        </Button>,
+          {t("openInstallerAndQuit")}</Button>,
       ];
     }
 
@@ -324,7 +317,7 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
 
   return (
     <Modal
-      title="检查更新"
+      title={t("checkForUpdates")}
       open={open}
       onCancel={() => {
         if (closable) onClose();
@@ -341,9 +334,10 @@ export function UpdateModal({ open, onClose, onChecked }: UpdateModalProps) {
 }
 
 function ReleaseNotes({ notes }: { notes: string }) {
+  useTranslation();
   return (
     <div>
-      <Typography.Text strong>更新内容：</Typography.Text>
+      <Typography.Text strong>{t("whatSNew")}</Typography.Text>
       <Typography.Paragraph
         style={{
           marginTop: 8,
@@ -361,21 +355,22 @@ function ReleaseNotes({ notes }: { notes: string }) {
 }
 
 function PlatformInstallTips() {
+  useTranslation();
   const platform = detectPlatform();
   const tip = (() => {
     switch (platform) {
       case "windows":
-        return "将启动安装程序，本应用会自动关闭，安装完成后请重新启动。";
+        return t("theInstallerWillLaunchAndThisAppWillCloseAutomatically");
       case "macos":
-        return "将打开 dmg 镜像，本应用会自动退出，请把新版应用拖到「应用程序」覆盖旧版本。";
+        return t("theDmgImageWillOpenAndThisAppWillQuit");
       case "linux":
-        return "本应用会自动退出，AppImage 可直接运行；.deb / .rpm 请使用包管理器安装。";
+        return t("thisAppWillQuitAutomaticallyRunAnAppimageDirectlyInstall");
       default:
-        return "本应用会在打开安装程序时自动退出，请按下载到的安装包类型继续安装。";
+        return t("thisAppWillQuitWhenTheInstallerOpensFollowThe");
     }
   })();
 
-  return <Alert type="info" showIcon message="安装提示" description={tip} />;
+  return <Alert type="info" showIcon message={t("installationInstructions")} description={tip} />;
 }
 
 function detectPlatform(): "windows" | "macos" | "linux" | "unknown" {
@@ -400,7 +395,7 @@ function formatSize(bytes: number): string {
 }
 
 function formatError(error: unknown): string {
-  if (!error) return "未知错误";
+  if (!error) return t("unknownError");
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   return String(error);

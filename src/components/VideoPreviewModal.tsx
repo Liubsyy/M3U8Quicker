@@ -1,3 +1,4 @@
+import { t, useTranslation } from "../i18n";
 import { useEffect, useState } from "react";
 import { Button, Form, Input, Modal, Typography, message } from "antd";
 import { PictureOutlined } from "@ant-design/icons";
@@ -20,6 +21,7 @@ export function VideoPreviewModal({
   onClose,
   onOpenFfmpegSettings,
 }: VideoPreviewModalProps) {
+  useTranslation();
   const [form] = Form.useForm();
   const [previewing, setPreviewing] = useState(false);
 
@@ -44,14 +46,13 @@ export function VideoPreviewModal({
 
     return await new Promise<boolean>((resolve) => {
       Modal.confirm({
-        title: "预览需要 FFmpeg",
+        title: t("ffmpegRequiredForPreviews"),
         content: (
           <Typography.Paragraph style={{ marginBottom: 0 }}>
-            视频预览需要 FFmpeg 抽帧，请先在设置中开启并配置 FFmpeg。
-          </Typography.Paragraph>
+            {t("videoPreviewsUseFfmpegToExtractFramesEnableAndConfigure")}</Typography.Paragraph>
         ),
-        okText: "前往设置",
-        cancelText: "取消",
+        okText: t("goToSettings"),
+        cancelText: t("cancel"),
         onOk: () => {
           onOpenFfmpegSettings();
           resolve(false);
@@ -93,7 +94,7 @@ export function VideoPreviewModal({
 
       const previewWindow = new WebviewWindow(label, {
         url: previewUrl,
-        title: "视频预览",
+        title: t("videoPreview2"),
         width: 960,
         height: 720,
         minWidth: 720,
@@ -108,13 +109,13 @@ export function VideoPreviewModal({
       previewWindow.once("tauri://error", (event) => {
         console.error("Failed to create preview window", event);
         void closePreviewSession(token);
-        message.error("打开预览窗口失败");
+        message.error(t("failedToOpenPreviewWindow"));
       });
 
       onClose();
     } catch (e: unknown) {
       if (e && typeof e === "object" && "errorFields" in e) return;
-      message.error(`生成预览失败: ${formatError(e)}`);
+      message.error(t("failedToGeneratePreview", { value0: formatError(e) }));
     } finally {
       setPreviewing(false);
     }
@@ -122,7 +123,7 @@ export function VideoPreviewModal({
 
   return (
     <Modal
-      title="视频预览图"
+      title={t("videoThumbnails")}
       open={open}
       onCancel={() => {
         if (previewing) return;
@@ -131,8 +132,7 @@ export function VideoPreviewModal({
       maskClosable={!previewing}
       footer={[
         <Button key="cancel" onClick={onClose} disabled={previewing}>
-          取消
-        </Button>,
+          {t("cancel")}</Button>,
         <Button
           key="submit"
           type="primary"
@@ -140,30 +140,29 @@ export function VideoPreviewModal({
           loading={previewing}
           onClick={handleSubmit}
         >
-          打开预览
-        </Button>,
+          {t("openPreview")}</Button>,
       ]}
       width={640}
       destroyOnHidden
     >
       <Form form={form} layout="vertical" preserve={false}>
         <Form.Item
-          label="视频地址"
+          label={t("videoUrl")}
           name="url"
-          rules={[{ required: true, message: "请输入视频地址" }]}
-          extra="支持 m3u8、mpd、直链或 m3u8quicker-dash-v1 JSON"
+          rules={[{ required: true, message: t("enterAVideoUrl") }]}
+          extra={t("supportsM3u8MpdDirectUrlsAndM3u8quickerDashV1Json")}
         >
           <Input.TextArea
             placeholder={
-              "https://example.com/video/playlist.m3u8\nhttps://example.com/video/manifest.mpd\n或粘贴 m3u8quicker-dash-v1 JSON"
+              t("httpsExampleComVideoPlaylistM3u8HttpsExampleComVideo")
             }
             autoSize={{ minRows: 3, maxRows: 6 }}
           />
         </Form.Item>
         <Form.Item
-          label="附加 Header"
+          label={t("additionalHeaders")}
           name="extra_headers"
-          extra="每行一个，例如：Referer: https://example.com"
+          extra={t("onePerLineEGRefererHttpsExampleCom")}
         >
           <Input.TextArea
             placeholder={"Referer: https://example.com\nUser-Agent: Mozilla/5.0"}
@@ -176,7 +175,7 @@ export function VideoPreviewModal({
 }
 
 function formatError(error: unknown): string {
-  if (!error) return "未知错误";
+  if (!error) return t("unknownError");
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   return String(error);

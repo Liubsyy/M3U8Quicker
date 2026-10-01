@@ -3,6 +3,7 @@ mod downloader;
 mod error;
 mod ffmpeg;
 mod fix_path;
+mod i18n;
 mod live_recorder;
 mod models;
 mod persistence;
@@ -140,23 +141,24 @@ pub fn run() {
             });
         })
         .setup(|app| {
+            tauri::async_runtime::block_on(i18n::initialize(app.handle()));
             #[cfg(any(windows, target_os = "linux"))]
             app.deep_link().register_all()?;
 
             let new_download_item =
-                MenuItemBuilder::with_id("tray_new_download", "新建下载").build(app)?;
+                MenuItemBuilder::with_id("tray_new_download", i18n::tr("trayNewDownload")).build(app)?;
             let live_record_item =
-                MenuItemBuilder::with_id("tray_live_record", "直播录制").build(app)?;
+                MenuItemBuilder::with_id("tray_live_record", i18n::tr("trayLiveRecording")).build(app)?;
             let video_preview_item =
-                MenuItemBuilder::with_id("tray_video_preview", "视频预览图").build(app)?;
+                MenuItemBuilder::with_id("tray_video_preview", i18n::tr("trayVideoThumbnails")).build(app)?;
             let install_chrome_item =
-                MenuItemBuilder::with_id("tray_install_chrome", "Chrome 扩展").build(app)?;
+                MenuItemBuilder::with_id("tray_install_chrome", i18n::tr("trayChromeExtension")).build(app)?;
             let install_edge_item =
-                MenuItemBuilder::with_id("tray_install_edge", "Microsoft Edge 扩展")
+                MenuItemBuilder::with_id("tray_install_edge", i18n::tr("trayMicrosoftEdgeExtension"))
                     .build(app)?;
             let install_firefox_item =
-                MenuItemBuilder::with_id("tray_install_firefox", "Firefox 扩展").build(app)?;
-            let install_extension_submenu = SubmenuBuilder::new(app, "安装浏览器扩展")
+                MenuItemBuilder::with_id("tray_install_firefox", i18n::tr("trayFirefoxExtension")).build(app)?;
+            let install_extension_submenu = SubmenuBuilder::with_id(app, "tray_extensions", i18n::tr("trayInstallBrowserExtension"))
                 .items(&[
                     &install_chrome_item,
                     &install_edge_item,
@@ -164,17 +166,17 @@ pub fn run() {
                 ])
                 .build()?;
             let proxy_enabled_item =
-                CheckMenuItemBuilder::with_id("tray_proxy_enabled", "启用代理").build(app)?;
+                CheckMenuItemBuilder::with_id("tray_proxy_enabled", i18n::tr("trayEnableProxy")).build(app)?;
             let proxy_settings_item =
-                MenuItemBuilder::with_id("tray_proxy_settings", "设置代理").build(app)?;
-            let proxy_submenu = SubmenuBuilder::new(app, "代理")
+                MenuItemBuilder::with_id("tray_proxy_settings", i18n::tr("trayProxySettings")).build(app)?;
+            let proxy_submenu = SubmenuBuilder::with_id(app, "tray_proxy", i18n::tr("trayProxy"))
                 .items(&[&proxy_enabled_item, &proxy_settings_item])
                 .build()?;
             app.manage(TrayProxyMenuState {
                 enabled_item: proxy_enabled_item,
             });
-            let settings_item = MenuItemBuilder::with_id("tray_settings", "设置").build(app)?;
-            let quit_item = MenuItemBuilder::with_id("tray_quit", "退出").build(app)?;
+            let settings_item = MenuItemBuilder::with_id("tray_settings", i18n::tr("traySettings")).build(app)?;
+            let quit_item = MenuItemBuilder::with_id("tray_quit", i18n::tr("trayQuit")).build(app)?;
             let tray_menu = MenuBuilder::new(app)
                 .items(&[
                     &new_download_item,
@@ -187,6 +189,8 @@ pub fn run() {
                 .separator()
                 .items(&[&quit_item])
                 .build()?;
+
+            app.manage(TrayMenuState { menu: tray_menu.clone() });
 
             let mut tray_builder = TrayIconBuilder::with_id("main-tray")
                 .tooltip("M3U8 Quicker")
@@ -413,6 +417,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            i18n::get_app_language,
+            i18n::set_app_language,
             commands::inspect_hls_tracks,
             commands::inspect_dash_tracks,
             commands::create_download,
@@ -520,4 +526,41 @@ pub(crate) fn set_tray_proxy_enabled(app: &AppHandle, enabled: bool) {
 fn emit_tray_action(app: &AppHandle, action: &str) {
     show_main_window(app);
     let _ = app.emit("tray-action", action);
+}
+
+struct TrayMenuState { menu: tauri::menu::Menu<tauri::Wry> }
+
+pub(crate) fn set_tray_language(app: &AppHandle) {
+    use tauri::menu::MenuItemKind;
+    fn update(menu: &[MenuItemKind<tauri::Wry>]) {
+        for item in menu {
+            let label = match item.id().as_ref() {
+                "tray_new_download" => Some(i18n::tr("trayNewDownload")),
+                "tray_live_record" => Some(i18n::tr("trayLiveRecording")),
+                "tray_video_preview" => Some(i18n::tr("trayVideoThumbnails")),
+                "tray_install_chrome" => Some(i18n::tr("trayChromeExtension")),
+                "tray_install_edge" => Some(i18n::tr("trayMicrosoftEdgeExtension")),
+                "tray_install_firefox" => Some(i18n::tr("trayFirefoxExtension")),
+                "tray_proxy_enabled" => Some(i18n::tr("trayEnableProxy")),
+                "tray_proxy_settings" => Some(i18n::tr("trayProxySettings")),
+                "tray_settings" => Some(i18n::tr("traySettings")),
+                "tray_quit" => Some(i18n::tr("trayQuit")),
+                "tray_extensions" => Some(i18n::tr("trayInstallBrowserExtension")),
+                "tray_proxy" => Some(i18n::tr("trayProxy")),
+                _ => None,
+            };
+            match item {
+                MenuItemKind::MenuItem(item) => { if let Some(label) = label { let _ = item.set_text(label); } }
+                MenuItemKind::Check(item) => { if let Some(label) = label { let _ = item.set_text(label); } }
+                MenuItemKind::Submenu(item) => {
+                    if let Some(label) = label { let _ = item.set_text(label); }
+                    if let Ok(children) = item.items() { update(&children); }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(state) = app.try_state::<TrayMenuState>() {
+        if let Ok(items) = state.menu.items() { update(&items); }
+    }
 }

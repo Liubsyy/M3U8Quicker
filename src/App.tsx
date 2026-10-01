@@ -1,3 +1,4 @@
+import { t, useTranslation } from "./i18n";
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import {
   Button,
@@ -109,17 +110,17 @@ const CHROMIUM_BROWSER_META: Record<
   }
 > = {
   chrome: {
-    title: "安装 Chrome 扩展",
+    get title() { return t("installChromeExtension"); },
     name: "Chrome",
     shortName: "Chrome",
-    openButtonText: "打开Chrome",
+    get openButtonText() { return t("openChrome"); },
     accentColor: "#4285f4",
   },
   edge: {
-    title: "安装 Microsoft Edge 扩展",
+    get title() { return t("installMicrosoftEdgeExtension"); },
     name: "Microsoft Edge",
     shortName: "Edge",
-    openButtonText: "打开Edge",
+    get openButtonText() { return t("openEdge"); },
     accentColor: "#0f6cbd",
   },
 };
@@ -130,6 +131,7 @@ function App({
   zoomFactor,
   onZoomChange,
 }: AppProps) {
+  useTranslation();
   const [modalOpen, setModalOpen] = useState(false);
   const [liveRecordModalOpen, setLiveRecordModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -349,7 +351,7 @@ function App({
       isDirectFileType(task.file_type) &&
       !canOpenInProgressPlayback(task)
     ) {
-      message.warning("当前格式暂不支持边下边播，请等待下载完成后再播放");
+      message.warning(t("thisFormatCannotBePlayedWhileDownloadingPleaseWaitFor"));
       return;
     }
 
@@ -375,7 +377,7 @@ function App({
 
       const playerWindow = new WebviewWindow(session.window_label, {
         url,
-        title: `播放中 - ${session.filename}`,
+        title: t("playing", { value0: session.filename }),
         width: 960,
         height: 640,
         minWidth: 720,
@@ -389,11 +391,11 @@ function App({
       });
       playerWindow.once("tauri://error", (event) => {
         console.error("Failed to create playback window", event);
-        message.error("打开播放器窗口失败");
+        message.error(t("failedToOpenPlayerWindow"));
       });
     } catch (error) {
       console.error("Failed to open playback window", error);
-      message.error(`打开播放器失败: ${error}`);
+      message.error(t("failedToOpenPlayer", { value0: error }));
     }
   };
 
@@ -422,7 +424,7 @@ function App({
 
       const playerWindow = new WebviewWindow(session.window_label, {
         url,
-        title: `播放中 - ${session.filename}`,
+        title: t("playing", { value0: session.filename }),
         width: 960,
         height: 640,
         minWidth: 720,
@@ -436,11 +438,11 @@ function App({
       });
       playerWindow.once("tauri://error", (event) => {
         console.error("Failed to create live playback window", event);
-        message.error("打开播放器窗口失败");
+        message.error(t("failedToOpenPlayerWindow"));
       });
     } catch (error) {
       console.error("Failed to open live playback window", error);
-      message.error(`打开播放器失败: ${error}`);
+      message.error(t("failedToOpenPlayer", { value0: error }));
     }
   };
 
@@ -479,7 +481,7 @@ function App({
     try {
       message.loading({
         key: messageKey,
-        content: `录制完成后将转换 ${filename} 为 MP4...`,
+        content: t("willConvertToMp4WhenRecordingFinishes", { value0: filename }),
         duration: 0,
       });
       await recordedPromise;
@@ -489,13 +491,13 @@ function App({
         key: messageKey,
         content:
           finalPaths.length === 1
-            ? `已转换为 MP4：${finalPaths[0]}`
-            : `已转换 ${finalPaths.length} 个分段为 MP4：${finalPaths[0]?.replace(/[^\\/]+$/, "")}`,
+            ? t("convertedToMp4", { value0: finalPaths[0] })
+            : t("convertedSegmentsToMp4", { value0: finalPaths.length, value1: finalPaths[0]?.replace(/[^\\/]+$/, "") }),
       });
     } catch (err) {
       message.error({
         key: messageKey,
-        content: `转换为 MP4 失败: ${formatLiveStopError(err)}`,
+        content: t("failedToConvertToMp4", { value0: formatLiveStopError(err) }),
       });
     }
   };
@@ -506,7 +508,7 @@ function App({
       setChromiumInstallGuide({ browser, guide });
     } catch (error) {
       console.error("Failed to open chromium extension installer", error);
-      message.error(`打开安装引导失败: ${error}`);
+      message.error(t("failedToOpenInstallationGuide", { value0: error }));
     }
   };
 
@@ -516,11 +518,11 @@ function App({
     try {
       const opened = await openChromiumExtensionsPage(browser);
       if (!opened) {
-        message.warning(`未找到 ${browserName}，请手动打开扩展页面`);
+        message.warning(t("wasNotFoundPleaseOpenTheExtensionsPageManually", { value0: browserName }));
       }
     } catch (error) {
       console.error("Failed to open chromium extensions page", error);
-      message.error(`打开 ${browserName} 扩展页失败: ${error}`);
+      message.error(t("failedToOpenExtensionsPage", { value0: browserName, value1: error }));
     }
   };
 
@@ -529,10 +531,10 @@ function App({
 
     try {
       await openFileLocation(chromiumInstallGuide.guide.extension_path);
-      message.success("扩展目录已打开");
+      message.success(t("extensionFolderOpened"));
     } catch (error) {
       console.error("Failed to open chromium extension folder", error);
-      message.error(`打开扩展目录失败: ${error}`);
+      message.error(t("failedToOpenExtensionFolder", { value0: error }));
     }
   };
 
@@ -542,7 +544,7 @@ function App({
       setFirefoxInstallGuide(result);
     } catch (error) {
       console.error("Failed to open firefox extension installer", error);
-      message.error(`打开安装引导失败: ${error}`);
+      message.error(t("failedToOpenInstallationGuide", { value0: error }));
     }
   };
 
@@ -550,11 +552,11 @@ function App({
     try {
       const opened = await openFirefoxAddonsPage();
       if (!opened) {
-        message.warning("未找到 Firefox，请手动打开附加组件页面");
+        message.warning(t("firefoxWasNotFoundPleaseOpenTheAddOnsPage"));
       }
     } catch (error) {
       console.error("Failed to open firefox addons page", error);
-      message.error(`打开 Firefox 附加组件页失败: ${error}`);
+      message.error(t("failedToOpenFirefoxAddOnsPage", { value0: error }));
     }
   };
 
@@ -563,10 +565,10 @@ function App({
 
     try {
       await openFileLocation(firefoxInstallGuide.extension_path);
-      message.success("扩展目录已打开");
+      message.success(t("extensionFolderOpened"));
     } catch (error) {
       console.error("Failed to open firefox extension folder", error);
-      message.error(`打开扩展目录失败: ${error}`);
+      message.error(t("failedToOpenExtensionFolder", { value0: error }));
     }
   };
 
@@ -577,9 +579,9 @@ function App({
         await setProxySettings({ ...settings.proxy, enabled });
       }
       setProxyEnabled(enabled);
-      message.success(enabled ? "代理已开启" : "代理已关闭");
+      message.success(enabled ? t("proxyEnabled") : t("proxyDisabled"));
     } catch (error) {
-      message.error(`切换代理失败：${String(error)}`);
+      message.error(t("failedToToggleProxy", { value0: String(error) }));
       void getAppSettings()
         .then((settings) => setProxyEnabled(settings.proxy.enabled))
         .catch(() => {});
@@ -639,7 +641,7 @@ function App({
       });
 
     void listen<string>("proxy-settings-error", (event) => {
-      message.error(`保存代理设置失败：${event.payload}`);
+      message.error(t("failedToSaveProxySettings", { value0: event.payload }));
     })
       .then((fn) => {
         if (cancelled) {
@@ -686,12 +688,12 @@ function App({
   const liveRecordedItems = liveRecorded.map(liveRecordToDownloadSummary);
 
   const liveStatusTagOverride = (status: DownloadStatus) => {
-    if (status === "Downloading") return <Tag color="processing">录制中</Tag>;
-    if (status === "Paused") return <Tag color="warning">已暂停</Tag>;
-    if (status === "Completed") return <Tag color="success">已录制</Tag>;
-    if (status === "Cancelled") return <Tag color="default">已取消</Tag>;
+    if (status === "Downloading") return <Tag color="processing">{t("recording")}</Tag>;
+    if (status === "Paused") return <Tag color="warning">{t("paused")}</Tag>;
+    if (status === "Completed") return <Tag color="success">{t("recorded")}</Tag>;
+    if (status === "Cancelled") return <Tag color="default">{t("cancelled")}</Tag>;
     if (typeof status === "object" && "Failed" in status)
-      return <Tag color="error">失败</Tag>;
+      return <Tag color="error">{t("failed")}</Tag>;
     return undefined;
   };
 
@@ -706,7 +708,7 @@ function App({
   const tabItems = [
     {
       key: "downloading",
-      label: `下载中 (${counts.active_count})`,
+      label: t("downloading", { value0: counts.active_count }),
       children: (
         <DownloadList
           downloads={downloading}
@@ -732,7 +734,7 @@ function App({
     },
     {
       key: "completed",
-      label: `下载完成 (${counts.history_count})`,
+      label: t("completed", { value0: counts.history_count }),
       children: (
         <DownloadList
           downloads={completed}
@@ -761,11 +763,11 @@ function App({
           showSpeed={false}
           actionsHeaderExtra={
             <Popconfirm
-              title="确认清空列表?"
-              description="只删除已完成列表记录，不删除本地文件。"
+              title={t("clearThisList")}
+              description={t("onlyCompletedRecordsWillBeRemovedLocalFilesWillBe")}
               onConfirm={() => void clearCompleted()}
-              okText="清空列表"
-              cancelText="取消"
+              okText={t("clearList")}
+              cancelText={t("cancel")}
               disabled={counts.history_count === 0}
             >
               <Button
@@ -773,7 +775,7 @@ function App({
                 size="small"
                 danger
                 icon={<ClearOutlined />}
-                aria-label="清空列表"
+                aria-label={t("clearList")}
                 disabled={counts.history_count === 0}
               />
             </Popconfirm>
@@ -783,7 +785,7 @@ function App({
     },
     {
       key: "live-recording",
-      label: `直播录制中 (${liveCounts.active_count})`,
+      label: t("liveRecordings", { value0: liveCounts.active_count }),
       children: (
         <DownloadList
           downloads={liveRecordingItems}
@@ -807,17 +809,17 @@ function App({
           showActions={["play", "pause", "resume", "stop", "cancel", "open"]}
           statusTagOverride={liveStatusTagOverride}
           cancelLabels={{
-            title: "确认取消录制?",
-            description: "取消后会删除已录制的文件，无法恢复。",
-            okText: "取消并删除",
-            cancelText: "继续录制",
+            title: t("cancelRecording"),
+            description: t("recordedFilesWillBePermanentlyDeleted"),
+            okText: t("cancelAndDelete"),
+            cancelText: t("continueRecording"),
           }}
         />
       ),
     },
     {
       key: "live-recorded",
-      label: `录制完成 (${liveCounts.history_count})`,
+      label: t("recorded2", { value0: liveCounts.history_count }),
       children: (
         <DownloadList
           downloads={liveRecordedItems}
@@ -842,11 +844,11 @@ function App({
           statusTagOverride={liveStatusTagOverride}
           actionsHeaderExtra={
             <Popconfirm
-              title="确认清空列表?"
-              description="只删除录制完成列表记录，不删除本地文件。"
+              title={t("clearThisList")}
+              description={t("onlyCompletedRecordingRecordsWillBeRemovedLocalFilesWill")}
               onConfirm={() => void clearLiveCompleted()}
-              okText="清空列表"
-              cancelText="取消"
+              okText={t("clearList")}
+              cancelText={t("cancel")}
               disabled={liveCounts.history_count === 0}
             >
               <Button
@@ -854,7 +856,7 @@ function App({
                 size="small"
                 danger
                 icon={<ClearOutlined />}
-                aria-label="清空列表"
+                aria-label={t("clearList")}
                 disabled={liveCounts.history_count === 0}
               />
             </Popconfirm>
@@ -1025,28 +1027,26 @@ function App({
         resetKey={liveRecordDraft?.nonce ?? 0}
       />
       <Modal
-        title="停止录制"
+        title={t("stopRecording")}
         open={Boolean(liveStopTarget)}
         onCancel={() => setLiveStopTarget(null)}
         footer={
           <Space>
-            <Button onClick={() => setLiveStopTarget(null)}>取消</Button>
-            <Button onClick={() => void performStopLive(false)}>仅停止</Button>
+            <Button onClick={() => setLiveStopTarget(null)}>{t("cancel")}</Button>
+            <Button onClick={() => void performStopLive(false)}>{t("stopOnly")}</Button>
             <Button type="primary" onClick={() => void performStopLive(true)}>
-              是，转成 MP4
-            </Button>
+              {t("yesConvertToMp4")}</Button>
           </Space>
         }
       >
         <Typography.Paragraph style={{ marginBottom: 0 }}>
           {liveStopTarget?.protocol === "hls"
-            ? "是否将录制好的 HLS 分片合并为 MP4？分片 + 本地 m3u8 保留在任务目录的 m3u8 子目录中，MP4 输出到 mp4 子目录，可以随时重新合并。"
-            : "是否将录制好的 FLV 转成 MP4？转换后浏览器、微信等场景都能直接播放，原 FLV 文件保留在任务目录的 flv 子目录中，MP4 输出到 mp4 子目录。"}
+            ? t("mergeTheRecordedHlsSegmentsIntoMp4SegmentsAndLocal")
+            : t("convertTheRecordedFlvToMp4ForPlaybackInBrowsers")}
         </Typography.Paragraph>
         {liveStopTarget?.isSplit ? (
           <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0 }}>
-            该任务启用了分段录制，转 MP4 时将逐段转换，每段各生成一个 MP4 文件。
-          </Typography.Paragraph>
+            {t("splitRecordingIsEnabledEachSegmentWillBeConvertedInto")}</Typography.Paragraph>
         ) : null}
         {liveStopTarget?.filename ? (
           <Typography.Paragraph
@@ -1054,12 +1054,10 @@ function App({
             style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}
           >
             {liveStopTarget.protocol === "hls"
-              ? `录制目录：${liveStopTarget.filename}/（m3u8 分片 + mp4 输出）`
-              : `录制目录：${liveStopTarget.filename}/（flv/${
-                  liveStopTarget.isSplit
-                    ? `${liveStopTarget.filename}_part001.flv 等分段`
-                    : `${liveStopTarget.filename}.flv`
-                }）`}
+              ? t("recordingFolderM3u8SegmentsMp4Output", { value0: liveStopTarget.filename })
+              : t("recordingFolderFlv", { value0: liveStopTarget.filename, value1: liveStopTarget.isSplit
+                    ? t("part001FlvAndOtherSegments", { value0: liveStopTarget.filename })
+                    : `${liveStopTarget.filename}.flv` })}
           </Typography.Paragraph>
         ) : null}
       </Modal>
@@ -1102,8 +1100,7 @@ function App({
                 </div>
                 <div>
                   <Typography.Title level={5} style={{ margin: 0 }}>
-                    请按以下 3 步完成 {chromiumBrowserMeta.name} 扩展安装
-                  </Typography.Title>
+                    {t("installBrowserSteps", { browser: chromiumBrowserMeta.name })}</Typography.Title>
                 </div>
               </Space>
             </div>
@@ -1146,14 +1143,12 @@ function App({
                     </div>
                     <div>
                       <Typography.Text strong>
-                        打开 {chromiumBrowserMeta.name} 浏览器，在地址栏输入下面的地址并回车
-                      </Typography.Text>
+                        {t("openBrowserAddress", { browser: chromiumBrowserMeta.name })}</Typography.Text>
                       <Typography.Paragraph
                         type="secondary"
                         style={{ margin: "6px 0 0" }}
                       >
-                        打开后会进入 {chromiumBrowserMeta.name} 的扩展管理页。
-                      </Typography.Paragraph>
+                        {t("browserExtensionsPage", { browser: chromiumBrowserMeta.name })}</Typography.Paragraph>
                       <div style={{ marginTop: 10 }}>
                         <Typography.Text
                           code
@@ -1174,7 +1169,7 @@ function App({
                         <ChromeOutlined />
                       )
                     }
-                    aria-label={`打开 ${chromiumBrowserMeta.name} 扩展页`}
+                    aria-label={t("openExtensionsPage", { value0: chromiumBrowserMeta.name })}
                     onClick={() =>
                       void handleOpenChromiumExtensionsPage(chromiumInstallGuide.browser)
                     }
@@ -1215,13 +1210,12 @@ function App({
                     2
                   </div>
                   <div>
-                    <Typography.Text strong>打开右上角“开发者模式”开关</Typography.Text>
+                    <Typography.Text strong>{t("turnOnDeveloperModeInTheTopRightCorner")}</Typography.Text>
                     <Typography.Paragraph
                       type="secondary"
                       style={{ margin: "6px 0 0" }}
                     >
-                      开启后，浏览器会显示用于加载本地扩展的按钮。
-                    </Typography.Paragraph>
+                      {t("theBrowserWillThenShowTheButtonForLoadingLocal")}</Typography.Paragraph>
                   </div>
                 </Space>
               </div>
@@ -1252,14 +1246,12 @@ function App({
                   </div>
                   <div style={{ minWidth: 0 }}>
                     <Typography.Text strong>
-                      点击“加载未打包的扩展程序”，然后选择下面展示的目录
-                    </Typography.Text>
+                      {t("clickLoadUnpackedAndSelectTheFolderShownBelow")}</Typography.Text>
                     <Typography.Paragraph
                       type="secondary"
                       style={{ margin: "6px 0 0" }}
                     >
-                      这是 Chromium 通用扩展目录，Chrome 和 Microsoft Edge 都可以直接使用。
-                    </Typography.Paragraph>
+                      {t("thisChromiumExtensionFolderWorksWithBothChromeAndMicrosoft")}</Typography.Paragraph>
                     <div
                       style={{
                         marginTop: 10,
@@ -1291,7 +1283,7 @@ function App({
         )}
       </Modal>
       <Modal
-        title="安装 Firefox 扩展"
+        title={t("installFirefoxExtension")}
         open={Boolean(firefoxInstallGuide)}
         onCancel={() => setFirefoxInstallGuide(null)}
         footer={null}
@@ -1325,8 +1317,7 @@ function App({
                 </div>
                 <div>
                   <Typography.Title level={5} style={{ margin: 0 }}>
-                    请按以下 3 步完成 Firefox 扩展安装
-                  </Typography.Title>
+                    {t("followThese3StepsToInstallTheFirefoxExtension")}</Typography.Title>
                 </div>
               </Space>
             </div>
@@ -1368,13 +1359,12 @@ function App({
                       1
                     </div>
                     <div>
-                      <Typography.Text strong>打开 Firefox 浏览器，在地址栏输入下面的地址并回车</Typography.Text>
+                      <Typography.Text strong>{t("openFirefoxAndEnterTheFollowingAddressInTheAddress")}</Typography.Text>
                       <Typography.Paragraph
                         type="secondary"
                         style={{ margin: "6px 0 0" }}
                       >
-                        打开后会进入 Firefox 的临时附加组件调试页。
-                      </Typography.Paragraph>
+                        {t("thisOpensFirefoxSTemporaryAddOnDebuggingPage")}</Typography.Paragraph>
                       <div style={{ marginTop: 10 }}>
                         <Typography.Text
                           code
@@ -1389,12 +1379,11 @@ function App({
                     type="primary"
                     size="middle"
                     icon={<FirefoxIcon />}
-                    aria-label="打开 Firefox 附加组件页"
+                    aria-label={t("openFirefoxAddOnsPage")}
                     onClick={() => void handleOpenFirefoxAddonsPage()}
                     style={{ height: 40, paddingInline: 18, background: "#ff7139", borderColor: "#ff7139" }}
                   >
-                    打开Firefox
-                  </Button>
+                    {t("openFirefox")}</Button>
                 </Space>
               </div>
               <div
@@ -1423,13 +1412,12 @@ function App({
                     2
                   </div>
                   <div>
-                    <Typography.Text strong>点击"加载临时附加组件..."按钮</Typography.Text>
+                    <Typography.Text strong>{t("clickLoadTemporaryAddOn")}</Typography.Text>
                     <Typography.Paragraph
                       type="secondary"
                       style={{ margin: "6px 0 0" }}
                     >
-                      在页面中找到"临时扩展"区域，点击"加载临时附加组件..."。
-                    </Typography.Paragraph>
+                      {t("findTheTemporaryExtensionsSectionAndClickLoadTemporaryAdd")}</Typography.Paragraph>
                   </div>
                 </Space>
               </div>
@@ -1460,14 +1448,12 @@ function App({
                   </div>
                   <div style={{ minWidth: 0 }}>
                     <Typography.Text strong>
-                      在弹出的文件选择器中，选择下面目录中的 manifest.json 文件
-                    </Typography.Text>
+                      {t("inTheFilePickerSelectManifestJsonInTheFolder")}</Typography.Text>
                     <Typography.Paragraph
                       type="secondary"
                       style={{ margin: "6px 0 0" }}
                     >
-                      与 Chrome 不同，Firefox 需要选择目录中的 manifest.json 文件而非目录本身。
-                    </Typography.Paragraph>
+                      {t("firefoxRequiresSelectingTheManifestJsonFileInsideTheFolder")}</Typography.Paragraph>
                     <div
                       style={{
                         marginTop: 10,
@@ -1652,14 +1638,13 @@ async function ensureFfmpegReadyForPreview(
 
   return await new Promise<boolean>((resolve) => {
     Modal.confirm({
-      title: "预览需要 FFmpeg",
+      title: t("ffmpegRequiredForPreviews"),
       content: (
         <Typography.Paragraph style={{ marginBottom: 0 }}>
-          视频预览需要 FFmpeg 抽帧，请先在设置中开启并配置 FFmpeg。
-        </Typography.Paragraph>
+          {t("videoPreviewsUseFfmpegToExtractFramesEnableAndConfigure")}</Typography.Paragraph>
       ),
-      okText: "前往设置",
-      cancelText: "取消",
+      okText: t("goToSettings"),
+      cancelText: t("cancel"),
       onOk: () => {
         onOpenFfmpegSettings();
         resolve(false);
@@ -1702,7 +1687,7 @@ async function openPreviewWindowFromDeepLink(
 
     const previewWindow = new WebviewWindow(session.window_label, {
       url: previewUrl,
-      title: title ? `视频预览 - ${title}` : "视频预览",
+      title: title ? t("videoPreview", { value0: title }) : t("videoPreview2"),
       width: 960,
       height: 720,
       minWidth: 720,
@@ -1719,14 +1704,14 @@ async function openPreviewWindowFromDeepLink(
       if (token) {
         void closePreviewSession(token);
       }
-      message.error("打开预览窗口失败");
+      message.error(t("failedToOpenPreviewWindow"));
     });
   } catch (error) {
     if (token) {
       void closePreviewSession(token);
     }
     console.error("[m3u8quicker] failed to open preview window", error);
-    message.error(`生成预览失败: ${formatPreviewError(error)}`);
+    message.error(t("failedToGeneratePreview", { value0: formatPreviewError(error) }));
   }
 }
 
@@ -1744,7 +1729,7 @@ function waitForLiveRecorded(id: string, timeoutMs = 60000): Promise<void> {
     };
 
     const timer = setTimeout(() => {
-      finish(() => reject(new Error("等待录制完成超时")));
+      finish(() => reject(new Error(t("timedOutWaitingForRecordingToFinish"))));
     }, timeoutMs);
 
     listen<LiveProgressEvent>("live-progress", (event) => {
@@ -1758,7 +1743,7 @@ function waitForLiveRecorded(id: string, timeoutMs = 60000): Promise<void> {
         payload.status === "Cancelled" ||
         (typeof payload.status === "object" && "Failed" in payload.status)
       ) {
-        finish(() => reject(new Error("录制未正常结束，无法转换")));
+        finish(() => reject(new Error(t("recordingDidNotFinishSuccessfullyAndCannotBeConverted"))));
       }
     })
       .then((fn) => {
@@ -1775,14 +1760,14 @@ function waitForLiveRecorded(id: string, timeoutMs = 60000): Promise<void> {
 }
 
 function formatLiveStopError(error: unknown): string {
-  if (!error) return "未知错误";
+  if (!error) return t("unknownError");
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   return String(error);
 }
 
 function formatPreviewError(error: unknown): string {
-  if (!error) return "未知错误";
+  if (!error) return t("unknownError");
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   return String(error);

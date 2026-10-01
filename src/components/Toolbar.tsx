@@ -1,3 +1,4 @@
+import { t, useTranslation } from "../i18n";
 import { Badge, Button, Dropdown, Space, Tooltip, Typography, theme } from "antd";
 import {
   ApartmentOutlined,
@@ -49,38 +50,39 @@ export function Toolbar({
   onProxyEnabledChange,
   updateAvailable = false,
 }: ToolbarProps) {
+  useTranslation();
   const { token } = theme.useToken();
   const newDownloadItems: MenuProps["items"] = [
     {
       key: "batch-download",
-      label: "批量下载",
+      label: t("batchDownload"),
       icon: <PlusSquareOutlined />,
     },
     {
       key: "live-record",
-      label: "直播录制",
+      label: t("liveRecording"),
       icon: <VideoCameraOutlined />,
     },
     {
       key: "video-preview",
-      label: "视频预览图",
+      label: t("videoThumbnails"),
       icon: <PictureOutlined />,
     },
   ];
   const toolItems: MenuProps["items"] = [
     {
       key: "merge-ts",
-      label: "合并 ts",
+      label: t("mergeTs"),
       icon: <MergeCellsOutlined />,
     },
     {
       key: "ts-to-mp4",
-      label: "ts 转 mp4",
+      label: t("tsToMp4"),
       icon: <SwapOutlined />,
     },
     {
       key: "local-m3u8-to-mp4",
-      label: "本地 m3u8 转 mp4",
+      label: t("localM3u8ToMp4"),
       icon: <FileSyncOutlined />,
     },
     {
@@ -90,54 +92,54 @@ export function Toolbar({
       children: [
         {
           key: "analyze-media",
-          label: "分析视频",
+          label: t("analyzeVideo"),
           icon: <FileSearchOutlined />,
         },
         {
           key: "format-convert",
-          label: "格式转换",
+          label: t("convertFormat"),
           icon: <SwapOutlined />,
         },
         {
           key: "codec-convert",
-          label: "编码转换",
+          label: t("transcode"),
           icon: <RetweetOutlined />,
         },
         {
           key: "merge-video",
-          label: "合并视频",
+          label: t("mergeVideos"),
           icon: <MergeCellsOutlined />,
         },
         {
           key: "clip-video",
-          label: "剪辑视频",
+          label: t("clipVideo"),
           icon: <ScissorOutlined />,
         },
         {
           key: "multi-track-hls-to-mp4",
-          label: "多轨 HLS 转 mp4",
+          label: t("multiTrackHlsToMp4"),
           icon: <ApartmentOutlined />,
         },
       ],
     },
     {
       key: "install-browser-extension",
-      label: "安装浏览器扩展",
+      label: t("installBrowserExtension"),
       icon: <GlobalOutlined />,
       children: [
         {
           key: "install-chrome-extension",
-          label: "Chrome 扩展",
+          label: t("chromeExtension"),
           icon: <ChromeOutlined />,
         },
         {
           key: "install-edge-extension",
-          label: "Microsoft Edge 扩展",
+          label: t("microsoftEdgeExtension"),
           icon: <EdgeIcon />,
         },
         {
           key: "install-firefox-extension",
-          label: "Firefox 扩展",
+          label: t("firefoxExtension"),
           icon: <FirefoxIcon />,
         },
       ],
@@ -146,12 +148,12 @@ export function Toolbar({
   const proxyItems: MenuProps["items"] = [
     {
       key: "enable-proxy",
-      label: "开启代理",
+      label: t("enableProxy2"),
       disabled: proxyEnabled,
     },
     {
       key: "disable-proxy",
-      label: "关闭代理",
+      label: t("disableProxy"),
       disabled: !proxyEnabled,
     },
   ];
@@ -166,7 +168,7 @@ export function Toolbar({
       }}
     >
       <Space>
-        <Tooltip title={proxyEnabled ? "已开启代理" : "未开启代理"}>
+        <Tooltip title={proxyEnabled ? t("proxyEnabled2") : t("proxyDisabled2")}>
           <Dropdown
             menu={{
               items: proxyItems,
@@ -177,7 +179,7 @@ export function Toolbar({
             <span
               role="button"
               tabIndex={0}
-              aria-label={proxyEnabled ? "代理已开启，打开网络设置" : "代理未开启，打开网络设置"}
+              aria-label={proxyEnabled ? t("proxyEnabledOpenNetworkSettings") : t("proxyDisabledOpenNetworkSettings")}
               onClick={onOpenProxySettings}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
@@ -227,11 +229,10 @@ export function Toolbar({
               }}
               className="toolbar-download-main-btn"
             >
-              新建下载
-            </Button>
+              {t("newDownload")}</Button>
             <Button
               type="primary"
-              aria-label="更多下载方式"
+              aria-label={t("moreDownloadTypes")}
               className="toolbar-download-caret-btn"
             >
               <DownOutlined style={{ fontSize: 12 }} />
@@ -246,8 +247,7 @@ export function Toolbar({
           trigger={["click"]}
         >
           <Button icon={<ToolOutlined />}>
-            工具
-            <DownOutlined style={{ fontSize: 12 }} />
+            {t("tools")}<DownOutlined style={{ fontSize: 12 }} />
           </Button>
         </Dropdown>
         <Button
@@ -258,8 +258,7 @@ export function Toolbar({
           }
           onClick={onOpenSettings}
         >
-          设置
-        </Button>
+          {t("settings")}</Button>
       </Space>
     </div>
   );
