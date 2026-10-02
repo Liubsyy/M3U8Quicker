@@ -57,7 +57,38 @@ http://127.0.0.1:7878
 - 首页打开或下载对应的各类 `index*.m3u8`
 - `/dash` 页面打开或下载 `manifest.mpd`，并查看 `manifest.json`
 
-## 说明
+## MP4 自动重试复现用例
+
+启动服务后打开 [复现页面](http://127.0.0.1:7878/mp4/retry-test)，复制页面生成的独立下载地址。
+也可手动使用 `http://127.0.0.1:7878/mp4/retry-test/case-001/video.mp4`，每轮更换 `case-001` 即可重新触发故障。
+
+1. 在应用中新建 MP4 下载任务，名称填 `retry-test.mp4`，保存到空目录。
+2. 等待自动重试，不要手动暂停/继续，不要打开播放器或提前在浏览器访问下载地址。
+3. 首次下载约 2 秒后断开；按当前应用逻辑约 5 秒后自动重试。
+4. 缺陷存在时，目录留下约 2 MiB 的 `retry-test.mp4.partial`，并生成完整 8 MiB 的 `retry-test (1).mp4`。
+5. 修复后的预期是复用原临时文件，发送 `Range: bytes=2097152-`，最终只生成 `retry-test.mp4`。
+
+服务行为：
+
+- 模拟数据固定为 8 MiB，字节内容为绝对偏移量 `% 251`；扩展名和 Content-Type 为 MP4，但**内容不是可播放视频**。
+- 无需准备本地 MP4，也不调用 FFmpeg；不影响原 `/mp4/local-file.mp4` 地址。
+- 每个用例 ID 的首次无 Range GET 声明完整 Content-Length，但只发送 2 MiB，然后以响应体错误断开连接。
+- 后续普通 GET 正常返回 200 和完整内容；合法的单段 Range 返回 206、Content-Range 和对应数据；无效或越界 Range 返回 416。
+- HEAD 返回元信息，不消耗故障机会；Range 请求也不消耗首次无 Range GET 的故障机会。
+- 传输约 1 MiB/s；终端输出用例 ID、请求序号、Range、响应状态及主动中断/完成信息。
+- 用例状态在内存中，重启服务会重置。每轮测试应使用新用例 ID 和空保存目录；一个用例地址只交给一个下载任务。
+
+典型缺陷日志：
+
+```text
+[mp4-retry case-001 #1] GET Range=<none> -> 200 ... inject_failure=true
+[mp4-retry case-001 #1] 故意中断：已发送 2097152/8388608 字节
+[mp4-retry case-001 #2] GET Range=<none> -> 200 ... inject_failure=false
+```
+
+正确续传时，第二次请求应为 `Range=bytes=2097152- -> 206 start=2097152 Content-Length=6291456`。
+
+## 其他说明
 
 - 该服务不会被主项目自动打包进去。
 - 当前实现依赖系统 `ffmpeg` 完成切片。

@@ -25,6 +25,8 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+mod mp4_retry;
+
 type Aes128CbcEnc = cbc::Encryptor<Aes128>;
 type Aes192CbcEnc = cbc::Encryptor<Aes192>;
 type Aes256CbcEnc = cbc::Encryptor<Aes256>;
@@ -35,6 +37,7 @@ struct AppState {
     data_dir: PathBuf,
     temp_dir: PathBuf,
     mp4_source_path: Arc<Mutex<Option<PathBuf>>>,
+    mp4_retry_cases: Arc<Mutex<HashMap<String, mp4_retry::RetryCase>>>,
     live_source_path: Arc<Mutex<Option<PathBuf>>>,
     live_jobs: Arc<Mutex<HashMap<String, Arc<LiveJob>>>>,
 }
@@ -238,6 +241,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mp4_source_path: Arc::new(Mutex::new(
             std::env::var_os("TEST_HLS_SERVER_MP4_PATH").map(PathBuf::from),
         )),
+        mp4_retry_cases: Arc::new(Mutex::new(HashMap::new())),
         live_source_path: Arc::new(Mutex::new(
             std::env::var_os("TEST_HLS_SERVER_LIVE_PATH").map(PathBuf::from),
         )),
@@ -269,6 +273,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/hls/{job_id}/{*file}", get(serve_hls_file))
         .route("/dash-test/{job_id}/{*file}", get(serve_dash_file))
         .route("/mp4/local-file.mp4", get(serve_mp4_test_file))
+        .route("/mp4/retry-test", get(mp4_retry::index))
+        .route("/mp4/retry-test/{case_id}/video.mp4", get(mp4_retry::serve))
         .route("/live", get(live_index).post(set_live_source))
         .route("/live/pick", post(pick_live_source))
         .route("/generate/live", post(generate_live_from_local_file))
@@ -281,6 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Direct MP4 playback page: http://{}/mp4", addr);
     println!("HLS Live simulation page: http://{}/live", addr);
     println!("Direct MP4 test URL: http://{}/mp4/local-file.mp4", addr);
+    println!("MP4 retry reproduction page: http://{}/mp4/retry-test", addr);
     println!(
         "DASH test MPD URL template: http://{}/dash-test/<job_id>/manifest.mpd",
         addr
@@ -2122,6 +2129,7 @@ fn render_mp4_page(mp4_url: &str, root_dir: &Path, current_path: Option<&Path>) 
              <section class=\"hero\">\
                <h1>Direct MP4 Playback Test</h1>\
                <p>把本机 MP4 文件通过这个测试服务器端口暴露成 HTTP 地址，不上传、不转码。</p>\
+               <p><a href=\"/mp4/retry-test\">打开 MP4 自动重试复现用例</a></p>\
                <p>MP4 地址：<code>{}</code></p>\
                <p>服务根目录：<code>{}</code></p>\
                {}\

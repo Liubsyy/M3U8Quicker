@@ -1,6 +1,6 @@
 [package]
 name = "m3u8quicker"
-version = "1.2.8"
+version = "1.2.9"
 edition = "2021"
 rust-version = "1.88"
 
@@ -43,6 +43,9 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 
 [profile.release]
 codegen-units = 1

@@ -2904,8 +2904,8 @@ async fn sync_task_progress(
     }
 }
 
-async fn emit_progress(
-    app_handle: &AppHandle,
+async fn emit_progress<R: tauri::Runtime>(
+    app_handle: &AppHandle<R>,
     downloads: &Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
     mut snapshot: RuntimeProgressSnapshot,
 ) {
@@ -4891,8 +4891,8 @@ pub async fn check_mp4_resume(
     }
 }
 
-pub async fn run_mp4_download(
-    app_handle: AppHandle,
+pub async fn run_mp4_download<R: tauri::Runtime>(
+    app_handle: AppHandle<R>,
     downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
     client: Arc<RwLock<reqwest::Client>>,
     rate_limiter: Arc<DownloadRateLimiter>,
@@ -4906,7 +4906,8 @@ pub async fn run_mp4_download(
     cancel_token: CancellationToken,
 ) -> Result<DownloadRunOutcome, AppError> {
     let deadline = Instant::now() + mp4_timeout();
-    let (_, partial_path) =
+    // Resolve collisions once. Retries belong to this download and must keep its paths.
+    let (mp4_path, partial_path) =
         resolve_mp4_output_paths(&output_dir, &filename, resume_existing_partial);
     let mut attempt = 0u32;
 
@@ -4919,9 +4920,8 @@ pub async fn run_mp4_download(
             task_id.clone(),
             url.clone(),
             headers.clone(),
-            output_dir.clone(),
-            filename.clone(),
-            resume_existing_partial,
+            &mp4_path,
+            &partial_path,
             restart_confirmed,
             cancel_token.clone(),
             deadline,
@@ -4955,23 +4955,20 @@ pub async fn run_mp4_download(
     }
 }
 
-async fn run_mp4_download_attempt(
-    app_handle: AppHandle,
+async fn run_mp4_download_attempt<R: tauri::Runtime>(
+    app_handle: AppHandle<R>,
     downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
     client: Arc<RwLock<reqwest::Client>>,
     rate_limiter: Arc<DownloadRateLimiter>,
     task_id: DownloadId,
     url: String,
     headers: Arc<RequestHeaders>,
-    output_dir: PathBuf,
-    filename: String,
-    resume_existing_partial: bool,
+    mp4_path: &Path,
+    partial_path: &Path,
     restart_confirmed: bool,
     cancel_token: CancellationToken,
     deadline: Instant,
 ) -> Result<DownloadRunOutcome, AppError> {
-    let (mp4_path, partial_path) =
-        resolve_mp4_output_paths(&output_dir, &filename, resume_existing_partial);
     let client = client.read().await.clone();
     let existing_bytes = file_len_if_exists(&partial_path).await?;
     let mut downloaded = 0u64;
@@ -5090,11 +5087,11 @@ async fn run_mp4_download_attempt(
     drop(file);
     tokio::fs::rename(&partial_path, &mp4_path).await?;
 
-    Ok(DownloadRunOutcome::Completed(mp4_path))
+    Ok(DownloadRunOutcome::Completed(mp4_path.to_path_buf()))
 }
 
-async fn emit_mp4_progress(
-    app_handle: &AppHandle,
+async fn emit_mp4_progress<R: tauri::Runtime>(
+    app_handle: &AppHandle<R>,
     downloads: &Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
     task_id: &str,
     downloaded: u64,
@@ -5126,8 +5123,8 @@ async fn emit_mp4_progress(
     .await;
 }
 
-async fn emit_mp4_retry_wait_progress(
-    app_handle: &AppHandle,
+async fn emit_mp4_retry_wait_progress<R: tauri::Runtime>(
+    app_handle: &AppHandle<R>,
     downloads: &Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
     task_id: &str,
     downloaded: u64,
@@ -5341,6 +5338,114 @@ mod tests {
             direct_download_retry_delay(3, Duration::from_secs(5)),
             Duration::from_secs(5)
         );
+    }
+
+    async fn assert_mp4_automatic_retry_resumes(occupied_names: bool) {
+        use tokio::io::AsyncReadExt;
+
+        let temp_root = unique_temp_path("mp4-automatic-retry");
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        if occupied_names {
+            fs::write(temp_root.join("video.mp4"), b"existing video").unwrap();
+            fs::write(temp_root.join("video (1).mp4.partial"), b"other task").unwrap();
+        }
+        let expected_name = if occupied_names { "video (2).mp4" } else { "video.mp4" };
+        let payload: Vec<u8> = (0..64 * 1024).map(|offset| (offset % 251) as u8).collect();
+        let prefix_len = 16 * 1024;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/video.mp4", listener.local_addr().unwrap());
+        let server_payload = payload.clone();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                    assert!(request.len() < 16 * 1024, "unexpected request size");
+                }
+                let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                let range = request.lines().find_map(|line| line.strip_prefix("range: "));
+                let offset = range.map(|value| {
+                    value.strip_prefix("bytes=").unwrap()
+                        .strip_suffix('-').unwrap().parse::<usize>().unwrap()
+                }).unwrap_or(0);
+                let headers = if range.is_some() {
+                    format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\n",
+                        offset, server_payload.len() - 1, server_payload.len()
+                    )
+                } else {
+                    "HTTP/1.1 200 OK\r\n".to_string()
+                };
+                let headers = format!(
+                    "{}Content-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                    headers, server_payload.len() - offset
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                let end = if attempt == 0 { prefix_len } else { server_payload.len() };
+                stream.write_all(&server_payload[offset..end]).await.unwrap();
+                stream.flush().await.unwrap();
+                if attempt == 0 {
+                    // Deliver a real partial body before closing the first connection early.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                stream.shutdown().await.unwrap();
+                requests.push(request);
+            }
+            requests
+        });
+
+        let app = tauri::test::mock_app();
+        let result = tokio::time::timeout(Duration::from_secs(20), run_mp4_download(
+            app.handle().clone(),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(RwLock::new(reqwest::Client::builder().no_proxy().build().unwrap())),
+            Arc::new(DownloadRateLimiter::new(0)),
+            "mp4-retry-test".to_string(),
+            url,
+            Arc::new(RequestHeaders::new()),
+            temp_root.clone(),
+            "video.mp4".to_string(),
+            false,
+            false,
+            CancellationToken::new(),
+        )).await;
+        if result.is_err() {
+            server.abort();
+        }
+        let outcome = result.expect("automatic retry timed out").expect("download succeeds");
+        let requests = server.await.expect("HTTP fixture completes");
+        assert!(!requests[0].contains("\r\nrange:"));
+        assert!(requests[1].contains(&format!("\r\nrange: bytes={prefix_len}-\r\n")));
+        match outcome {
+            DownloadRunOutcome::Completed(path) => assert_eq!(path, temp_root.join(expected_name)),
+            DownloadRunOutcome::Incomplete => panic!("download did not complete"),
+        }
+        assert_eq!(fs::read(temp_root.join(expected_name)).unwrap(), payload);
+        let mut names: Vec<_> = fs::read_dir(&temp_root).unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        let mut expected_names = vec![expected_name.to_string()];
+        if occupied_names {
+            assert_eq!(fs::read(temp_root.join("video.mp4")).unwrap(), b"existing video");
+            assert_eq!(fs::read(temp_root.join("video (1).mp4.partial")).unwrap(), b"other task");
+            expected_names.extend(["video.mp4".to_string(), "video (1).mp4.partial".to_string()]);
+        }
+        expected_names.sort();
+        assert_eq!(names, expected_names, "retry must not leave extra files");
+        remove_temp_dir(&temp_root);
+    }
+
+    #[tokio::test]
+    async fn mp4_automatic_retry_resumes_the_same_partial() {
+        assert_mp4_automatic_retry_resumes(false).await;
+    }
+
+    #[tokio::test]
+    async fn mp4_automatic_retry_keeps_initial_collision_choice() {
+        assert_mp4_automatic_retry_resumes(true).await;
     }
 
     #[test]
