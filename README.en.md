@@ -21,11 +21,11 @@
 
 **M3U8 Quicker** is a desktop application built with `Tauri + Rust + React + TypeScript` for downloading HLS, DASH, and MP4 videos and recording live streams. It supports Windows, macOS, and Linux.
 
-![Download manager](./doc/img/download_main.png)
+![Download manager](./doc/img/download_main_en.png)
 
 The application includes an optional **browser extension (Chrome/Firefox/Edge)** that automatically detects videos on web pages and lets you create download or live recording tasks with the required information filled in.
 
-![Browser extension demo](./doc/img/demo.gif)
+![Browser extension demo](./doc/img/demo_en.gif)
 
 ## Features
 
@@ -61,9 +61,9 @@ Download the desktop installer or release archive for your system from [GitHub R
 
 | System | Files | Which to choose |
 | :--- | :--- | :--- |
-| <img src="./doc/img/icons/windows.svg" width="18" height="18" alt="Windows" /> **Windows** | **x64**: [Installer](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.7_windows_x64_setup.exe) \| [Portable](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.7_windows_x64.zip)<br>**x86**: [Installer](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.7_windows_x86_setup.exe) \| [Portable](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.7_windows_x86.zip) | Choose x64 for most PCs.<br>Choose x86 for 32-bit systems. |
-| <img src="./doc/img/icons/macos.svg" width="18" height="18" alt="macOS" /> **macOS** | **Apple Silicon**: [Installer](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.7_macos_aarch64.dmg) \| [App archive](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.7_macos_aarch64.app.tar.gz)<br>**Intel**: [Installer](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.7_macos_x64.dmg) \| [App archive](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.7_macos_x64.app.tar.gz) | Choose Apple Silicon for M-series chips.<br>Choose Intel for Intel-based Macs. |
-| <img src="./doc/img/icons/linux.svg" width="18" height="18" alt="Linux" /> **Linux** | **Packages**: [deb](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.7_linux_amd64.deb) \| [rpm](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.7_linux_x86_64.rpm)<br>**Portable**: [AppImage](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.7_linux_amd64.AppImage) | Choose deb for Ubuntu, Debian, or Linux Mint.<br>Choose rpm for Fedora, RHEL, CentOS, or openSUSE. |
+| <img src="./doc/img/icons/windows.svg" width="18" height="18" alt="Windows" /> **Windows** | **x64**: [Installer](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.8_windows_x64_setup.exe) \| [Portable](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.8_windows_x64.zip)<br>**x86**: [Installer](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.8_windows_x86_setup.exe) \| [Portable](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.8_windows_x86.zip) | Choose x64 for most PCs.<br>Choose x86 for 32-bit systems. |
+| <img src="./doc/img/icons/macos.svg" width="18" height="18" alt="macOS" /> **macOS** | **Apple Silicon**: [Installer](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.8_macos_aarch64.dmg) \| [App archive](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.8_macos_aarch64.app.tar.gz)<br>**Intel**: [Installer](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.8_macos_x64.dmg) \| [App archive](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.8_macos_x64.app.tar.gz) | Choose Apple Silicon for M-series chips.<br>Choose Intel for Intel-based Macs. |
+| <img src="./doc/img/icons/linux.svg" width="18" height="18" alt="Linux" /> **Linux** | **Packages**: [deb](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.8_linux_amd64.deb) \| [rpm](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.8_linux_x86_64.rpm)<br>**Portable**: [AppImage](https://github.com/Liubsyy/M3U8Quicker/releases/latest/download/M3U8.Quicker_1.2.8_linux_amd64.AppImage) | Choose deb for Ubuntu, Debian, or Linux Mint.<br>Choose rpm for Fedora, RHEL, CentOS, or openSUSE. |
 
 If macOS displays a message such as “cannot be opened” or “app is damaged” when you first install the application:
 
@@ -98,7 +98,7 @@ origin:http://127.0.0.1:7878
 user-agent:Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)
 ```
 
-![New download](./doc/img/newtask.png)
+![New download](./doc/img/newtask_en.png)
 
 You can preview video thumbnails before downloading.
 
@@ -114,7 +114,7 @@ New tasks appear in the download list. While downloading, you can:
 
 The download list displays task status, progress, and download speed so you can track each task.
 
-![Download progress](./doc/img/download_ts.png)
+![Download progress](./doc/img/download_ts_en.png)
 
 ### Playback
 

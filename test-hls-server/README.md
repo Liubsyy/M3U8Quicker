@@ -37,7 +37,7 @@ ffmpeg -version
 启动服务：
 
 ```bash
-cargo run --manifest-path test-hls-server/Cargo.toml
+cargo run --manifest-path Cargo.toml
 ```
 
 默认地址：
