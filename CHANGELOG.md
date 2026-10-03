@@ -3,10 +3,12 @@
 ## 1.2.9
 
 - 修复 MP4 等直链视频下载中断后，自动重试重新创建带编号文件并遗留 `.partial` 临时文件的问题；重试复用本次下载的文件路径，并在服务器支持时从已下载位置继续。
+- 升级tauri-apps/cli修复AppImage的.DirIcon问题
 
 **English**
 
 - Fixed automatic retries for MP4 and other direct video downloads creating numbered files and leaving abandoned `.partial` files after an interruption. Retries now reuse the current download's file paths and resume from the downloaded offset when supported by the server.
+- Upgraded `@tauri-apps/cli` to fix the `.DirIcon` issue in AppImage builds.
 
 ## 1.2.8
 
