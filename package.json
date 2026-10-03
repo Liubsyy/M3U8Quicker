@@ -15,7 +15,7 @@
   "dependencies": {
     "@ant-design/icons": "^6.1.1",
     "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/cli": "^2.10.1",
+    "@tauri-apps/cli": "2.11.4",
     "@tauri-apps/plugin-deep-link": "^2.4.7",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "antd": "^6.3.4",
