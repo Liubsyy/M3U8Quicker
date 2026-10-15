@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::error::Error;
 
 use serde::Serialize;
 
@@ -56,6 +57,12 @@ fn format_reqwest_error(error: &reqwest::Error) -> String {
         return format!("request timed out for {}", url);
     }
 
+    if error.url().is_some_and(|url| url.scheme() == "https")
+        && has_certificate_validation_error(error)
+    {
+        return crate::localized!("httpsCertificateValidationFailed", url);
+    }
+
     if error.is_connect() {
         return format!("failed to connect to {}", url);
     }
@@ -77,6 +84,60 @@ fn format_reqwest_error(error: &reqwest::Error) -> String {
     }
 
     error.to_string()
+}
+
+fn has_certificate_validation_error(error: &reqwest::Error) -> bool {
+    // Only inspect the actual TLS error, never request URLs or HTTP response text.
+    let mut source = error.source();
+    while let Some(cause) = source {
+        if let Some(tls_error) = cause.downcast_ref::<native_tls::Error>() {
+            return is_certificate_validation_failure(
+                &tls_error.to_string(),
+                &format!("{tls_error:?}"),
+            );
+        }
+        source = cause.source();
+    }
+    false
+}
+
+fn is_certificate_validation_failure(message: &str, debug: &str) -> bool {
+    // Secure Transport and Schannel expose OS status codes in Debug even when
+    // their human-readable error messages are localized by the operating system.
+    let code = debug
+        .split_once("code: ")
+        .and_then(|(_, value)| value.split([',', '}']).next()?.trim().parse::<i64>().ok());
+    if matches!(
+        code,
+        Some(
+            // macOS: chain, hostname, expiry, revocation, trust and lifetime errors.
+            -25318 | -67602 | -67818 | -67819 | -67820 | -67843 | -67901
+            | -9807 | -9808 | -9812 | -9813 | -9814 | -9815 | -9843
+            // Windows: CERT_E_EXPIRED / UNTRUSTEDROOT / CHAINING / REVOKED /
+            // CN_NO_MATCH and SEC_E_CERT_EXPIRED / UNTRUSTED_ROOT / WRONG_PRINCIPAL.
+            | -2146762495 | -2146762487 | -2146762486 | -2146762484 | -2146762481
+            | -2146893016 | -2146893019 | -2146893022
+        )
+    ) {
+        return true;
+    }
+
+    // OpenSSL reports certificate validation separately from TLS protocol errors.
+    let message = message.to_ascii_lowercase();
+    [
+        "certificate verify failed",
+        "certificate_verify_failed",
+        "certificate verification failed",
+        "certificate has expired",
+        "certificate is not yet valid",
+        "certificate was not trusted",
+        "self-signed certificate",
+        "self signed certificate",
+        "unable to get local issuer certificate",
+        "hostname mismatch",
+    ]
+    .iter()
+    .any(|pattern| message.contains(pattern))
 }
 
 fn shorten_url_for_error(url: &str) -> Cow<'_, str> {
@@ -104,6 +165,153 @@ impl Serialize for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn certificate_errors_are_recognized_across_native_tls_backends() {
+        for message in [
+            "error:0A000086:SSL routines:tls_post_process_server_certificate:certificate verify failed (certificate has expired)",
+            "self-signed certificate in certificate chain",
+            "unable to get local issuer certificate",
+            "hostname mismatch",
+        ] {
+            assert!(is_certificate_validation_failure(message, ""), "{message}");
+        }
+        // OS status codes work independently of the language of system messages.
+        for code in [
+            -67818,
+            -67843,
+            -67602,
+            -9814,
+            -2146762495,
+            -2146762487,
+            -2146762481,
+            -2146893016,
+        ] {
+            assert!(is_certificate_validation_failure(
+                "localized OS message",
+                &format!("Error {{ code: {code}, message: localized }}")
+            ));
+        }
+        for message in [
+            "connection refused",
+            "unexpected EOF",
+            "wrong version number",
+            "TLS protocol version unsupported",
+            "tlsv13 alert certificate required",
+        ] {
+            assert!(
+                !is_certificate_validation_failure(message, "Error { code: -9806 }"),
+                "{message}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_failure_keeps_existing_message_even_with_certificate_words_in_url() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "https://{}/certificate_verify_failed",
+            listener.local_addr().unwrap()
+        );
+        drop(listener);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let error = client.get(&url).send().await.unwrap_err();
+        assert_eq!(
+            format_reqwest_error(&error),
+            format!("failed to connect to {url}")
+        );
+    }
+
+    #[tokio::test]
+    async fn http_status_failure_keeps_existing_message() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/certificate_verify_failed",
+            listener.local_addr().unwrap()
+        );
+        let worker = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 1024];
+            stream.read(&mut buffer).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(&url)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap_err();
+        assert_eq!(format_reqwest_error(&error), format!("HTTP 403 for {url}"));
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn https_timeout_keeps_existing_message() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("https://{}/video.m3u8", listener.local_addr().unwrap());
+        let worker = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(200))
+            .build()
+            .unwrap()
+            .get(&url)
+            .send()
+            .await
+            .unwrap_err();
+        worker.abort();
+        assert_eq!(
+            format_reqwest_error(&error),
+            format!("request timed out for {url}")
+        );
+    }
+
+    #[tokio::test]
+    async fn tls_protocol_failure_keeps_existing_connection_message() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("https://{}/video.m3u8", listener.local_addr().unwrap());
+        let worker = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            // Speak plain HTTP to a TLS client: this is a protocol error, not a bad certificate.
+            let mut buffer = [0; 4096];
+            stream.read(&mut buffer).await.unwrap();
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        });
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(&url)
+            .send()
+            .await
+            .unwrap_err();
+        assert_eq!(
+            format_reqwest_error(&error),
+            format!("failed to connect to {url}")
+        );
+        worker.await.unwrap();
+    }
 
     #[test]
     fn shorten_url_for_error_keeps_short_urls_intact() {

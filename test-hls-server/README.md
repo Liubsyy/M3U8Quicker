@@ -6,6 +6,7 @@
 
 - 独立目录，不接入主应用打包
 - 使用 Rust 编写 HTTP 服务
+- 同时监听 HTTP `7878` 和使用过期证书的 HTTPS `7879`，仅允许本机访问
 - 提供网页，可上传视频或直接选择本地视频文件
 - 首页生成 HLS 输出，包含普通流、AES-128、AES-192、AES-256 四套播放列表
 - `/dash` 页面单独生成 DASH 输出
@@ -56,6 +57,46 @@ http://127.0.0.1:7878
 - 查看已生成任务
 - 首页打开或下载对应的各类 `index*.m3u8`
 - `/dash` 页面打开或下载 `manifest.mpd`，并查看 `manifest.json`
+
+## HTTPS 过期证书测试
+
+从仓库根目录启动：
+
+```bash
+cargo run --manifest-path test-hls-server/Cargo.toml
+```
+
+打开 [过期证书测试页面](http://127.0.0.1:7878/tls-test)，复制下面的地址到桌面应用：
+
+```text
+https://localhost:7879/tls-test/index.m3u8
+```
+
+- 内置 2 秒 H.264 彩条视频，首次请求时调用 FFmpeg 生成，无需上传视频。
+- 播放列表与 `segment.ts` 使用同一 HTTPS 地址，不会降级为 HTTP。
+- 关闭「设置 → 网络 → 忽略 HTTPS 证书错误」时，新建任务应失败；开启后新建任务应成功下载，下载结果可播放；再次关闭后新建任务应失败。
+- 修改 Rust 后应先重启桌面调试应用，让新开关的后端命令生效。每次新建任务，避免已有分片影响结果。
+- HTTP 对照地址：`http://127.0.0.1:7878/tls-test/index.m3u8`。
+- 原来的 HLS、DASH、MP4 和直播路由也可通过 `https://localhost:7879` 访问。
+
+每次启动生成一套临时测试证书：CA 当前有效，服务器证书在启动前两天已过期，域名包含 `localhost` 和 `127.0.0.1`。CA 写入 `tmp/expired-https-ca.pem`，无需导入系统信任库。
+
+从仓库根目录用 curl 验证：
+
+```bash
+# 仅信任本次测试 CA，仍应报 certificate has expired（退出码 60）
+curl --noproxy '*' --cacert test-hls-server/tmp/expired-https-ca.pem https://localhost:7879/tls-test/index.m3u8
+
+# 跳过证书校验后应返回 M3U8
+curl --noproxy '*' -k https://localhost:7879/tls-test/index.m3u8
+
+# 同样可以获取视频分片
+curl --noproxy '*' -k -o /tmp/tls-test.ts https://localhost:7879/tls-test/segment.ts
+```
+
+浏览器直接打开 HTTPS 地址会显示证书拦截页，使用 HTTP 测试页面复制地址即可。两个监听端口均仅绑定本机回环地址。原 HTTP 服务继续使用 `7878`；若端口被占用，先退出旧的测试服务器后重启。
+
+自动化验证：`cargo test --manifest-path test-hls-server/Cargo.toml`，其中会在信任测试 CA 的前提下验证 TLS 握手因证书过期而被拒绝。
 
 ## MP4 自动重试复现用例
 

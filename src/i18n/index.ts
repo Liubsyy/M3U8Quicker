@@ -25,7 +25,8 @@ await i18n.use(initReactI18next).init({
     ja: { translation: ja }, ko: { translation: ko }, es: { translation: es },
     fr: { translation: fr }, de: { translation: de }, "pt-BR": { translation: ptBR }, ru: { translation: ru },
   },
-  lng: "en",
+  // Locale updates re-evaluate this module during Vite HMR; keep the active language.
+  lng: i18n.isInitialized ? i18n.language : "en",
   fallbackLng: "en",
   supportedLngs: LANGUAGE_OPTIONS.map((option) => option.value),
   interpolation: { escapeValue: false },

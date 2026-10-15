@@ -572,5 +572,9 @@
   "browserExtensionsPage": "Cela ouvre la page des extensions {{browser}}.",
   "failedSegmentCount": "En échec : {{count}} segments",
   "previewLoadedCount": "{{loaded}}/{{total}} images chargées",
-  "downloadingInstaller": "Téléchargement de {{name}}"
+  "downloadingInstaller": "Téléchargement de {{name}}",
+  "ignoreHttpsCertificateErrors": "Ignorer les erreurs de certificat HTTPS",
+  "ignoreHttpsCertificateErrorsDescription": "Ignore la validation du certificat et du nom d’hôte pour accéder aux ressources avec un certificat expiré ou autosigné. Cela réduit la sécurité de la connexion ; utilisez uniquement des sources fiables. Mettez en pause puis reprenez les tâches en cours pour appliquer ce réglage.",
+  "httpsCertificateSettingsSaved": "Paramètres de certificat HTTPS enregistrés",
+  "failedToSaveHttpsCertificateSettings": "Échec de l’enregistrement des paramètres de certificat HTTPS : {{value0}}"
 }

@@ -291,6 +291,8 @@ pub fn run() {
                     let mut user_agent = state.user_agent.lock().await;
                     *user_agent = settings.user_agent.clone();
                 }
+                *state.ignore_https_certificate_errors.lock().await =
+                    settings.ignore_https_certificate_errors;
                 downloader::set_timeouts_secs(
                     settings.metadata_timeout_secs,
                     settings.segment_timeout_secs,
@@ -308,9 +310,17 @@ pub fn run() {
                     let proxy = state.proxy_settings.lock().await;
                     let proxy_url = proxy.url.trim();
                     let next_client = if proxy.enabled && !proxy_url.is_empty() {
-                        downloader::build_http_client(Some(proxy_url), &settings.user_agent)
+                        downloader::build_http_client(
+                            Some(proxy_url),
+                            &settings.user_agent,
+                            settings.ignore_https_certificate_errors,
+                        )
                     } else {
-                        downloader::build_http_client(None, &settings.user_agent)
+                        downloader::build_http_client(
+                            None,
+                            &settings.user_agent,
+                            settings.ignore_https_certificate_errors,
+                        )
                     };
                     match next_client {
                         Ok(client) => {
@@ -439,6 +449,7 @@ pub fn run() {
             commands::get_app_settings,
             commands::set_proxy_settings,
             commands::set_user_agent,
+            commands::set_ignore_https_certificate_errors,
             commands::set_timeout_settings,
             commands::set_live_record_settings,
             commands::set_download_concurrency,

@@ -572,5 +572,9 @@
   "browserExtensionsPage": "Dies öffnet die Erweiterungsseite {{browser}}.",
   "failedSegmentCount": "Fehlgeschlagen: {{count}} Segmente",
   "previewLoadedCount": "{{loaded}}/{{total}} Bilder geladen",
-  "downloadingInstaller": "{{name}} wird heruntergeladen"
+  "downloadingInstaller": "{{name}} wird heruntergeladen",
+  "ignoreHttpsCertificateErrors": "HTTPS-Zertifikatsfehler ignorieren",
+  "ignoreHttpsCertificateErrorsDescription": "Überspringt die Zertifikats- und Hostnamenprüfung, um auf Ressourcen mit abgelaufenen oder selbstsignierten Zertifikaten zuzugreifen. Dies verringert die Verbindungssicherheit; nur für vertrauenswürdige Quellen verwenden. Laufende Aufgaben pausieren und fortsetzen, um die Einstellung anzuwenden.",
+  "httpsCertificateSettingsSaved": "HTTPS-Zertifikatseinstellungen gespeichert",
+  "failedToSaveHttpsCertificateSettings": "HTTPS-Zertifikatseinstellungen konnten nicht gespeichert werden: {{value0}}"
 }

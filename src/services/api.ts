@@ -166,6 +166,10 @@ export async function setUserAgent(userAgent: string): Promise<void> {
   return invoke("set_user_agent", { userAgent });
 }
 
+export async function setIgnoreHttpsCertificateErrors(enabled: boolean): Promise<void> {
+  return invoke("set_ignore_https_certificate_errors", { enabled });
+}
+
 export async function setTimeoutSettings(
   metadataTimeoutSecs: number,
   segmentTimeoutSecs: number,

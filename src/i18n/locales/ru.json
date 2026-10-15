@@ -572,5 +572,9 @@
   "browserExtensionsPage": "Это открывает страницу расширений {{browser}}.",
   "failedSegmentCount": "Сбой: {{count}} сегментов",
   "previewLoadedCount": "Загружено {{loaded}}/{{total}} изображений",
-  "downloadingInstaller": "Загрузка {{name}}"
+  "downloadingInstaller": "Загрузка {{name}}",
+  "ignoreHttpsCertificateErrors": "Игнорировать ошибки сертификатов HTTPS",
+  "ignoreHttpsCertificateErrorsDescription": "Отключает проверку сертификата и имени хоста для доступа к ресурсам с просроченными или самоподписанными сертификатами. Это снижает безопасность соединения; используйте только доверенные источники. Приостановите и возобновите текущие задачи для применения настройки.",
+  "httpsCertificateSettingsSaved": "Настройки сертификатов HTTPS сохранены",
+  "failedToSaveHttpsCertificateSettings": "Не удалось сохранить настройки сертификатов HTTPS: {{value0}}"
 }

@@ -572,5 +572,9 @@
   "browserExtensionsPage": "Esto abre la página de extensiones {{browser}}.",
   "failedSegmentCount": "Fallidos: {{count}} segmentos",
   "previewLoadedCount": "Cargadas {{loaded}}/{{total}} imágenes",
-  "downloadingInstaller": "Descargando {{name}}"
+  "downloadingInstaller": "Descargando {{name}}",
+  "ignoreHttpsCertificateErrors": "Ignorar errores de certificados HTTPS",
+  "ignoreHttpsCertificateErrorsDescription": "Omite la validación del certificado y del nombre de host para acceder a recursos con certificados caducados o autofirmados. Reduce la seguridad de la conexión; úsalo solo con fuentes de confianza. Pausa y reanuda las tareas en curso para aplicarlo.",
+  "httpsCertificateSettingsSaved": "Configuración de certificados HTTPS guardada",
+  "failedToSaveHttpsCertificateSettings": "No se pudo guardar la configuración de certificados HTTPS: {{value0}}"
 }

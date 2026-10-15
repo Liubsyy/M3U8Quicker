@@ -443,6 +443,7 @@ pub struct AppSettings {
     pub ffmpeg_path: Option<String>,
     #[serde(default = "default_user_agent_owned")]
     pub user_agent: String,
+    pub ignore_https_certificate_errors: bool,
     #[serde(default = "default_metadata_timeout_secs")]
     pub metadata_timeout_secs: u64,
     #[serde(default = "default_segment_timeout_secs")]
@@ -490,6 +491,7 @@ impl Default for AppSettings {
             ffmpeg_enabled: true,
             ffmpeg_path: None,
             user_agent: default_user_agent().to_string(),
+            ignore_https_certificate_errors: false,
             metadata_timeout_secs: DEFAULT_METADATA_TIMEOUT_SECS,
             segment_timeout_secs: DEFAULT_SEGMENT_TIMEOUT_SECS,
             mp4_timeout_secs: DEFAULT_MP4_TIMEOUT_SECS,
@@ -973,6 +975,14 @@ pub struct LiveRecordPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn https_certificate_errors_are_not_ignored_by_default_or_legacy_settings() {
+        assert!(!AppSettings::default().ignore_https_certificate_errors);
+        let legacy: AppSettings = serde_json::from_str(r#"{"user_agent":"legacy-agent"}"#).unwrap();
+        assert!(!legacy.ignore_https_certificate_errors);
+        assert_eq!(legacy.user_agent, "legacy-agent");
+    }
 
     #[test]
     fn app_settings_defaults_download_speed_limit_to_unlimited() {

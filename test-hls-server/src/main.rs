@@ -25,6 +25,7 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+mod expired_https;
 mod mp4_retry;
 
 type Aes128CbcEnc = cbc::Encryptor<Aes128>;
@@ -279,7 +280,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/live/pick", post(pick_live_source))
         .route("/generate/live", post(generate_live_from_local_file))
         .route("/live-test/{job_id}/{flavor}/{file}", get(serve_live_file))
-        .with_state(state);
+        .with_state(state.clone())
+        .merge(expired_https::sample_routes(state.data_dir.clone()));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 7878));
     println!("Test HLS server listening at http://{}", addr);
@@ -298,7 +300,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    let tls_listener = expired_https::bind(&state.temp_dir).await?;
+    let tls_app = app.clone().layer(axum::middleware::map_request(
+        |mut request: axum::extract::Request| async move {
+            request
+                .headers_mut()
+                .insert("x-forwarded-proto", HeaderValue::from_static("https"));
+            request
+        },
+    ));
+    println!("过期证书测试页面: http://127.0.0.1:7878/tls-test");
+    println!("过期证书 HLS 地址: https://localhost:7879/tls-test/index.m3u8");
+    tokio::try_join!(
+        async { axum::serve(listener, app).await },
+        async { axum::serve(tls_listener, tls_app).await },
+    )?;
     Ok(())
 }
 
@@ -1902,7 +1918,7 @@ fn render_index_page(
                </div>\
                <p>服务根目录：<code>{}</code></p>\
                <p>生成后的文件会放在 <code>{}</code>。</p>\
-               <p><a href=\"/dash\">打开 DASH 独立测试页面</a> · <a href=\"/mp4\">打开 Direct MP4 播放测试页</a></p>\
+               <p><a href=\"/dash\">打开 DASH 独立测试页面</a> · <a href=\"/mp4\">打开 Direct MP4 播放测试页</a> · <a href=\"/tls-test\">HTTPS 过期证书测试</a></p>\
              </section>\
              <section class=\"grid\">\
                <form class=\"panel\" action=\"/generate/upload\" method=\"post\" enctype=\"multipart/form-data\">\
@@ -2265,7 +2281,16 @@ fn request_base_url(headers: &HeaderMap) -> String {
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("127.0.0.1:7878");
-    format!("http://{}", host)
+    let scheme = if headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        == Some("https")
+    {
+        "https"
+    } else {
+        "http"
+    };
+    format!("{}://{}", scheme, host)
 }
 
 fn sanitize_relative_hls_path(path: &str) -> Option<PathBuf> {

@@ -1221,6 +1221,7 @@ pub async fn get_app_settings(
         ffmpeg_enabled: *state.ffmpeg_enabled.lock().await,
         ffmpeg_path: state.ffmpeg_path.lock().await.clone(),
         user_agent: state.user_agent.lock().await.clone(),
+        ignore_https_certificate_errors: *state.ignore_https_certificate_errors.lock().await,
         metadata_timeout_secs,
         segment_timeout_secs,
         mp4_timeout_secs,
@@ -1240,19 +1241,42 @@ pub async fn get_app_settings(
     })
 }
 
-/// 按当前 state 中的代理与 User-Agent 重建共享 HTTP 客户端。
-/// 代理、UA、分片超时任一变更后都应调用它，确保新客户端配置一致。
+/// 按当前代理、User-Agent、证书校验与超时设置重建共享 HTTP 客户端。
 async fn rebuild_http_client(state: &AppState) -> Result<(), AppError> {
+    let ignore_https_certificate_errors = *state.ignore_https_certificate_errors.lock().await;
+    let client = build_current_http_client(state, ignore_https_certificate_errors).await?;
+    let mut current_client = state.http_client.write().await;
+    *current_client = client;
+    Ok(())
+}
+
+async fn build_current_http_client(
+    state: &AppState,
+    ignore_https_certificate_errors: bool,
+) -> Result<reqwest::Client, AppError> {
     let proxy = state.proxy_settings.lock().await.clone();
     let user_agent = state.user_agent.lock().await.clone();
     let proxy_url = proxy.url.trim();
-    let client = if proxy.enabled && !proxy_url.is_empty() {
-        downloader::build_http_client(Some(proxy_url), &user_agent)?
+    if proxy.enabled && !proxy_url.is_empty() {
+        downloader::build_http_client(Some(proxy_url), &user_agent, ignore_https_certificate_errors)
     } else {
-        downloader::build_http_client(None, &user_agent)?
-    };
-    let mut current_client = state.http_client.write().await;
-    *current_client = client;
+        downloader::build_http_client(None, &user_agent, ignore_https_certificate_errors)
+    }
+}
+
+#[tauri::command]
+pub async fn set_ignore_https_certificate_errors(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), AppError> {
+    let client = build_current_http_client(&state, enabled).await?;
+    persistence::try_update_settings(&app_handle, |settings| {
+        settings.ignore_https_certificate_errors = enabled;
+    })
+    .await?;
+    *state.ignore_https_certificate_errors.lock().await = enabled;
+    *state.http_client.write().await = client;
     Ok(())
 }
 
@@ -1278,7 +1302,12 @@ pub(crate) async fn apply_proxy_settings(
     // 在写入 state 前先校验代理地址，避免把无效代理持久化进去。
     if proxy.enabled {
         let user_agent = state.user_agent.lock().await.clone();
-        let _ = downloader::build_http_client(Some(proxy_url), &user_agent)?;
+        let ignore_https_certificate_errors = *state.ignore_https_certificate_errors.lock().await;
+        let _ = downloader::build_http_client(
+            Some(proxy_url),
+            &user_agent,
+            ignore_https_certificate_errors,
+        )?;
     }
 
     {
@@ -4697,6 +4726,29 @@ pub async fn close_live_playback_session(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[tokio::test]
+    async fn rebuilding_http_client_preserves_https_certificate_setting_and_user_agent() {
+        let server = downloader::tls_tests::HttpsFixture::expired();
+        let state = AppState::new(std::env::temp_dir().to_string_lossy().into_owned());
+        assert!(!*state.ignore_https_certificate_errors.lock().await);
+        // A disabled proxy must stay disabled when the certificate setting changes.
+        state.proxy_settings.lock().await.url = "invalid-proxy".to_string();
+        for (attempt, enabled) in [true, false, true].into_iter().enumerate() {
+            let user_agent = format!("tls-rebuild-agent-{attempt}");
+            *state.user_agent.lock().await = user_agent.clone();
+            *state.ignore_https_certificate_errors.lock().await = enabled;
+            rebuild_http_client(&state).await.unwrap();
+            let client = state.http_client.read().await.clone();
+            let response = client.get(server.url("/user-agent")).send().await;
+            if enabled {
+                assert_eq!(response.unwrap().text().await.unwrap(), user_agent);
+            } else {
+                let error = response.unwrap_err();
+                assert!(!error.is_timeout(), "expected certificate rejection: {error}");
+            }
+        }
+    }
 
     fn build_task(segment_uris: Vec<&str>) -> DownloadTask {
         let total_segments = segment_uris.len();

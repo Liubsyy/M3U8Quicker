@@ -2506,5 +2506,17 @@
     "de": "Beenden",
     "pt-BR": "Sair",
     "ru": "Выход"
+  },
+  "httpsCertificateValidationFailed": {
+    "zh-CN": "HTTPS 证书校验失败（证书可能已过期、不受信任或域名不匹配）。确认来源可信后，可在「设置 → 网络」开启「忽略 HTTPS 证书错误」并重试。地址：{}",
+    "zh-TW": "HTTPS 憑證驗證失敗（憑證可能已過期、不受信任或網域不符）。確認來源可信後，可在「設定 → 網路」開啟「忽略 HTTPS 憑證錯誤」後重試。位址：{}",
+    "en": "HTTPS certificate validation failed (the certificate may be expired, untrusted, or for a different hostname). If you trust the source, enable “Ignore HTTPS certificate errors” in Settings → Network and retry. URL: {}",
+    "ja": "HTTPS 証明書の検証に失敗しました（期限切れ、信頼されていない証明書、またはホスト名の不一致の可能性があります）。配信元を信頼できる場合は、設定 → ネットワークで「HTTPS 証明書エラーを無視」を有効にして再試行してください。URL: {}",
+    "ko": "HTTPS 인증서 검증에 실패했습니다(만료, 신뢰할 수 없는 인증서 또는 호스트 이름 불일치일 수 있습니다). 출처를 신뢰할 수 있다면 설정 → 네트워크에서 “HTTPS 인증서 오류 무시”를 켜고 다시 시도하세요. URL: {}",
+    "es": "Error al validar el certificado HTTPS (puede haber caducado, no ser de confianza o pertenecer a otro host). Si confías en la fuente, activa «Ignorar errores de certificados HTTPS» en Configuración → Red e inténtalo de nuevo. URL: {}",
+    "fr": "Échec de la validation du certificat HTTPS (certificat expiré, non fiable ou nom d’hôte incorrect). Si la source est fiable, activez « Ignorer les erreurs de certificat HTTPS » dans Paramètres → Réseau, puis réessayez. URL : {}",
+    "de": "HTTPS-Zertifikatsprüfung fehlgeschlagen (das Zertifikat ist möglicherweise abgelaufen, nicht vertrauenswürdig oder für einen anderen Hostnamen ausgestellt). Bei einer vertrauenswürdigen Quelle „HTTPS-Zertifikatsfehler ignorieren“ unter Einstellungen → Netzwerk aktivieren und erneut versuchen. URL: {}",
+    "pt-BR": "Falha na validação do certificado HTTPS (ele pode estar expirado, não ser confiável ou pertencer a outro host). Se confiar na fonte, ative “Ignorar erros de certificado HTTPS” em Configurações → Rede e tente novamente. URL: {}",
+    "ru": "Не удалось проверить сертификат HTTPS (он может быть просрочен, не заслуживать доверия или не соответствовать имени хоста). Если вы доверяете источнику, включите «Игнорировать ошибки сертификатов HTTPS» в разделе Настройки → Сеть и повторите попытку. URL: {}"
   }
 }

@@ -55,6 +55,7 @@ import {
   setFfmpegEnabled,
   setFfmpegPath,
   setHistoryPageSize,
+  setIgnoreHttpsCertificateErrors,
   setLiveRecordSettings,
   setProxySettings,
   setTimeoutSettings,
@@ -235,6 +236,8 @@ export function SettingsModal({
   const [convertToMp4, setConvertToMp4] = useState(true);
   const [loading, setLoading] = useState(false);
   const [savingProxy, setSavingProxy] = useState(false);
+  const [ignoreHttpsCertificateErrors, setIgnoreHttpsCertificateErrorsState] = useState(false);
+  const [savingCertificateSettings, setSavingCertificateSettings] = useState(false);
   const [savingConcurrency, setSavingConcurrency] = useState(false);
   const [savingSpeedLimit, setSavingSpeedLimit] = useState(false);
   const [savingDownloadOutput, setSavingDownloadOutput] = useState(false);
@@ -293,6 +296,7 @@ export function SettingsModal({
     getAppSettings()
       .then((settings) => {
         setProxySettingsState(settings.proxy);
+        setIgnoreHttpsCertificateErrorsState(settings.ignore_https_certificate_errors);
         setDownloadConcurrencyState(settings.download_concurrency);
         setSavedDownloadConcurrency(settings.download_concurrency);
         setSavedDownloadSpeedLimitKbps(settings.download_speed_limit_kbps);
@@ -525,6 +529,19 @@ export function SettingsModal({
       message.success(t("defaultDownloadFolderSaved"));
     } catch (error) {
       message.error(t("failedToSaveDefaultDownloadFolder", { value0: formatSettingsError(error) }));
+    }
+  };
+
+  const saveIgnoreHttpsCertificateErrors = async (enabled: boolean) => {
+    setSavingCertificateSettings(true);
+    try {
+      await setIgnoreHttpsCertificateErrors(enabled);
+      setIgnoreHttpsCertificateErrorsState(enabled);
+      message.success(t("httpsCertificateSettingsSaved"));
+    } catch (error) {
+      message.error(t("failedToSaveHttpsCertificateSettings", { value0: formatSettingsError(error) }));
+    } finally {
+      setSavingCertificateSettings(false);
     }
   };
 
@@ -932,6 +949,21 @@ export function SettingsModal({
                 })
               }
             />
+          </Space>
+
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <Space style={{ width: "100%", justifyContent: "space-between" }}>
+              <SectionTitle>{t("ignoreHttpsCertificateErrors")}</SectionTitle>
+              <Switch
+                checked={ignoreHttpsCertificateErrors}
+                loading={loading || savingCertificateSettings}
+                disabled={loading || savingCertificateSettings}
+                onChange={(checked) => void saveIgnoreHttpsCertificateErrors(checked)}
+              />
+            </Space>
+            <Typography.Text type="warning" style={{ fontSize: 12 }}>
+              {t("ignoreHttpsCertificateErrorsDescription")}
+            </Typography.Text>
           </Space>
 
           <Space direction="vertical" size={8} style={{ width: "100%" }}>

@@ -572,5 +572,9 @@
   "browserExtensionsPage": "{{browser}} 확장 페이지가 열립니다.",
   "failedSegmentCount": "실패: {{count}}개 조각",
   "previewLoadedCount": "{{loaded}}/{{total}}장 불러옴",
-  "downloadingInstaller": "다운로드 중: {{name}}"
+  "downloadingInstaller": "다운로드 중: {{name}}",
+  "ignoreHttpsCertificateErrors": "HTTPS 인증서 오류 무시",
+  "ignoreHttpsCertificateErrorsDescription": "인증서 및 호스트 이름 검증을 건너뛰어 만료되었거나 자체 서명된 인증서의 리소스에 접근합니다. 연결 보안이 약화되므로 신뢰할 수 있는 출처에만 사용하세요. 실행 중인 작업은 일시 중지 후 다시 시작하세요.",
+  "httpsCertificateSettingsSaved": "HTTPS 인증서 설정이 저장되었습니다",
+  "failedToSaveHttpsCertificateSettings": "HTTPS 인증서 설정 저장 실패: {{value0}}"
 }

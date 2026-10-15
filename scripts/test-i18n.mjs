@@ -71,6 +71,41 @@ test("missing translations fall back to English and user content is preserved", 
   assert.equal(instance.t("playing", { value0: filename }), `Playing - ${filename}`);
 });
 
+test("reloading the frontend i18n module preserves the selected language", async () => {
+  const asModule = (source) => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
+  const modules = {
+    "i18next": import.meta.resolve("i18next"),
+    "react-i18next": import.meta.resolve("react-i18next"),
+    "@tauri-apps/api/core": asModule("export const isTauri = () => false;"),
+    "@tauri-apps/api/event": asModule("export const listen = async () => () => {};"),
+    "../services/api": asModule("export const getAppLanguage = async () => 'zh-CN'; export const setAppLanguage = async value => value;"),
+    "./languages": asModule(languageModule),
+  };
+  for (const language of languages) {
+    modules[`./locales/${language}.json`] = asModule(`export default ${read(`src/i18n/locales/${language}.json`)};`);
+  }
+  const source = ts.transpileModule(read("src/i18n/index.ts"), {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2023 },
+  }).outputText.replace(/from "([^"]+)"/g, (_, name) => {
+    assert.ok(modules[name], `Unexpected frontend import: ${name}`);
+    return `from ${JSON.stringify(modules[name])}`;
+  });
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { lang: "" } } });
+  try {
+    const first = await import(asModule(source) + "#initial");
+    await first.changeAppLanguage("zh-CN");
+    assert.equal(first.t("settings"), zh.settings);
+    // Vite re-evaluates this module when its imported locale JSON files change.
+    const reloaded = await import(asModule(source) + "#hot-update");
+    assert.equal(reloaded.currentLanguage(), "zh-CN");
+    assert.equal(reloaded.t("settings"), zh.settings);
+  } finally {
+    if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+    else delete globalThis.document;
+  }
+});
+
 test("native resources have all languages and matching parameter counts", () => {
   for (const [key, message] of Object.entries(native)) {
     for (const language of languages) {

@@ -26,6 +26,7 @@ pub struct AppState {
     pub live_stop_signals: Arc<Mutex<HashMap<DownloadId, Arc<LiveStopSignal>>>>,
     pub http_client: Arc<RwLock<reqwest::Client>>,
     pub user_agent: Arc<Mutex<String>>,
+    pub ignore_https_certificate_errors: Arc<Mutex<bool>>,
     pub default_download_dir: Arc<Mutex<String>>,
     pub proxy_settings: Arc<Mutex<ProxySettings>>,
     pub max_concurrent_segments: Arc<Mutex<usize>>,
@@ -49,7 +50,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(download_dir: String) -> Self {
-        let client = downloader::build_http_client(None, default_user_agent())
+        let client = downloader::build_http_client(None, default_user_agent(), false)
             .expect("Failed to create HTTP client");
 
         Self {
@@ -61,6 +62,7 @@ impl AppState {
             live_stop_signals: Arc::new(Mutex::new(HashMap::new())),
             http_client: Arc::new(RwLock::new(client)),
             user_agent: Arc::new(Mutex::new(default_user_agent().to_string())),
+            ignore_https_certificate_errors: Arc::new(Mutex::new(false)),
             default_download_dir: Arc::new(Mutex::new(download_dir)),
             proxy_settings: Arc::new(Mutex::new(ProxySettings::default())),
             max_concurrent_segments: Arc::new(Mutex::new(DEFAULT_DOWNLOAD_CONCURRENCY)),

@@ -18,6 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "default-tls", "stream", "system-proxy"] }
+native-tls = "0.2"
 axum = { version = "0.8", default-features = false, features = ["http1", "query", "tokio"] }
 m3u8-rs = "6"
 quick-xml = "0.38"
@@ -45,6 +46,8 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 tauri = { version = "2", features = ["test"] }
 
 [profile.release]

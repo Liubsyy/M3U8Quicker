@@ -629,6 +629,28 @@ mod settings_tests {
     use crate::i18n::AppLanguage;
 
     #[tokio::test]
+    async fn https_certificate_setting_persists_both_values_without_changing_other_settings() {
+        let root = std::env::temp_dir().join(format!("m3u8quicker-tls-settings-{}", uuid::Uuid::new_v4()));
+        let path = root.join("settings.json");
+        let mut settings = AppSettings {
+            user_agent: "test-agent".to_string(),
+            proxy: crate::models::ProxySettings { enabled: true, url: "http://localhost:8080".to_string() },
+            ..AppSettings::default()
+        };
+        for enabled in [true, false] {
+            settings.ignore_https_certificate_errors = enabled;
+            save_settings_at(&path, &settings).await.unwrap();
+            let mut restored: AppSettings = serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+            restored.sanitize();
+            assert_eq!(restored.ignore_https_certificate_errors, enabled);
+            assert_eq!(restored.user_agent, "test-agent");
+            assert!(restored.proxy.enabled);
+            assert_eq!(restored.proxy.url, "http://localhost:8080");
+        }
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn language_save_preserves_settings_and_failed_write_preserves_original() {
         let root = std::env::temp_dir().join(format!("m3u8quicker-language-{}", uuid::Uuid::new_v4()));
         let path = root.join("settings.json");

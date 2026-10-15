@@ -572,5 +572,9 @@
   "browserExtensionsPage": "開啟後會進入 {{browser}} 的擴充套件管理頁。",
   "failedSegmentCount": "失敗 {{count}} 片",
   "previewLoadedCount": "已載入 {{loaded}}/{{total}} 張",
-  "downloadingInstaller": "正在下載 {{name}}"
+  "downloadingInstaller": "正在下載 {{name}}",
+  "ignoreHttpsCertificateErrors": "忽略 HTTPS 憑證錯誤",
+  "ignoreHttpsCertificateErrorsDescription": "略過憑證與網域驗證，可存取憑證過期或自簽憑證的資源，但會降低連線安全性，僅適用於可信來源。執行中的工作請暫停後繼續。",
+  "httpsCertificateSettingsSaved": "HTTPS 憑證設定已儲存",
+  "failedToSaveHttpsCertificateSettings": "儲存 HTTPS 憑證設定失敗：{{value0}}"
 }

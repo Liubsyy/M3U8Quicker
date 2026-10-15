@@ -572,5 +572,9 @@
   "browserExtensionsPage": "{{browser}} 拡張子のページを開きます。",
   "failedSegmentCount": "失敗：{{count}} セグメント",
   "previewLoadedCount": "{{loaded}}/{{total}} 枚読み込み済み",
-  "downloadingInstaller": "ダウンロード中：{{name}}"
+  "downloadingInstaller": "ダウンロード中：{{name}}",
+  "ignoreHttpsCertificateErrors": "HTTPS 証明書エラーを無視",
+  "ignoreHttpsCertificateErrorsDescription": "証明書とホスト名の検証を省略し、期限切れや自己署名の証明書を使用するリソースにアクセスします。接続の安全性が低下するため、信頼できる配信元にのみ使用してください。実行中のタスクは一時停止して再開してください。",
+  "httpsCertificateSettingsSaved": "HTTPS 証明書の設定を保存しました",
+  "failedToSaveHttpsCertificateSettings": "HTTPS 証明書の設定を保存できませんでした：{{value0}}"
 }

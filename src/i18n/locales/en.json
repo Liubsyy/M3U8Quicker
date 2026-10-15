@@ -572,5 +572,9 @@
   "browserExtensionsPage": "This opens the {{browser}} extensions page.",
   "failedSegmentCount": "Failed: {{count}} segments",
   "previewLoadedCount": "Loaded {{loaded}}/{{total}} images",
-  "downloadingInstaller": "Downloading {{name}}"
+  "downloadingInstaller": "Downloading {{name}}",
+  "ignoreHttpsCertificateErrors": "Ignore HTTPS certificate errors",
+  "ignoreHttpsCertificateErrorsDescription": "Skip certificate and hostname validation to access resources with expired or self-signed certificates. This reduces connection security; use only with trusted sources. Pause and resume running tasks to apply.",
+  "httpsCertificateSettingsSaved": "HTTPS certificate settings saved",
+  "failedToSaveHttpsCertificateSettings": "Failed to save HTTPS certificate settings: {{value0}}"
 }

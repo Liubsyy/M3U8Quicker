@@ -572,5 +572,9 @@
   "browserExtensionsPage": "打开后会进入 {{browser}} 的扩展管理页。",
   "failedSegmentCount": "失败 {{count}} 片",
   "previewLoadedCount": "已加载 {{loaded}}/{{total}} 张",
-  "downloadingInstaller": "正在下载 {{name}}"
+  "downloadingInstaller": "正在下载 {{name}}",
+  "ignoreHttpsCertificateErrors": "忽略 HTTPS 证书错误",
+  "ignoreHttpsCertificateErrorsDescription": "跳过证书和域名校验，可访问过期或自签名证书的资源，但会降低连接安全性，仅用于可信来源。已运行任务请暂停后继续。",
+  "httpsCertificateSettingsSaved": "HTTPS 证书设置已保存",
+  "failedToSaveHttpsCertificateSettings": "保存 HTTPS 证书设置失败：{{value0}}"
 }

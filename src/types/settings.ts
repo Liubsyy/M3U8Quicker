@@ -38,6 +38,7 @@ export interface AppSettings {
   ffmpeg_enabled: boolean;
   ffmpeg_path: string | null;
   user_agent: string;
+  ignore_https_certificate_errors: boolean;
   metadata_timeout_secs: number;
   segment_timeout_secs: number;
   mp4_timeout_secs: number;
