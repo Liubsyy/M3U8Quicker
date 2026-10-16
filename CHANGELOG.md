@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0
+
+- 新增「忽略 HTTPS 证书错误」网络设置，并优化证书校验失败时的多语言错误提示。
+- 优化视频预览布局：默认 9 张缩略图随窗口高度自适应，完整保留画面比例，减少滚动。
+
+**English**
+
+- Added an “Ignore HTTPS certificate errors” option in network settings and improved multilingual certificate validation error messages.
+- Improved the video preview layout: the default nine thumbnails now adapt to the window height while preserving their aspect ratios and reducing scrolling.
+
 ## 1.2.9
 
 - 修复 MP4 等直链视频下载中断后，自动重试重新创建带编号文件并遗留 `.partial` 临时文件的问题；重试复用本次下载的文件路径，并在服务器支持时从已下载位置继续。
