@@ -172,6 +172,7 @@ export function PreviewWindow() {
     []
   );
   const loading = Boolean(token) && previewStatus === "loading";
+  const fitThumbnailsToWindow = count === MIN_COUNT;
   const loadedCount = previewStatus === "done" ? count : thumbnails.length;
   const firstThumbnail = thumbnails.find((thumbnail) => thumbnail.index === 0);
   const videoInfo = firstThumbnail?.video_info;
@@ -348,6 +349,7 @@ export function PreviewWindow() {
         height: "100vh",
         display: "flex",
         flexDirection: "column",
+        overflow: "hidden",
         background: themeToken.colorBgLayout,
         color: themeToken.colorText,
       }}
@@ -361,6 +363,7 @@ export function PreviewWindow() {
           justifyContent: "space-between",
           gap: 12,
           flexWrap: "wrap",
+          flexShrink: 0,
           background: themeToken.colorBgContainer,
         }}
       >
@@ -494,9 +497,20 @@ export function PreviewWindow() {
         </Space>
       </div>
 
-      <div style={{ flex: 1, overflow: "auto", padding: 16, position: "relative" }}>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          overflow: "auto",
+          padding: 16,
+          position: "relative",
+        }}
+      >
         {errorText ? (
-          <Alert type="error" showIcon message={t("previewFailed")} description={!token ? t("previewParametersAreMissingThisWindowCannotBeOpened") : errorText} />
+          <Alert style={{ flexShrink: 0 }} type="error" showIcon message={t("previewFailed")} description={!token ? t("previewParametersAreMissingThisWindowCannotBeOpened") : errorText} />
         ) : null}
         {loading && thumbnails.length === 0 ? (
           <div
@@ -514,7 +528,7 @@ export function PreviewWindow() {
           <Empty description={t("noThumbnails")} />
         ) : null}
         {thumbnails.length > 0 ? (
-          <div style={{ position: "relative" }}>
+          <div style={{ position: "relative", flex: fitThumbnailsToWindow ? 1 : "0 0 auto", minHeight: 0 }}>
             <Image.PreviewGroup
               items={thumbnails.map((thumb) => convertFileSrc(thumb.path))}
               preview={{
@@ -526,11 +540,15 @@ export function PreviewWindow() {
                 style={{
                   display: "grid",
                   gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                  gridTemplateRows: fitThumbnailsToWindow
+                    ? `repeat(${Math.ceil(count / columns)}, minmax(0, 1fr))`
+                    : undefined,
+                  height: fitThumbnailsToWindow ? "100%" : undefined,
                   gap: 12,
                 }}
               >
                 {thumbnails.map((thumb) => (
-                  <ThumbnailCard key={thumb.index} thumb={thumb} />
+                  <ThumbnailCard key={thumb.index} thumb={thumb} fitToCell={fitThumbnailsToWindow} />
                 ))}
               </div>
             </Image.PreviewGroup>
@@ -675,13 +693,17 @@ function CompactSelectControl({
   );
 }
 
-function ThumbnailCard({ thumb }: { thumb: PreviewThumbnail }) {
+function ThumbnailCard({ thumb, fitToCell }: { thumb: PreviewThumbnail; fitToCell: boolean }) {
   useTranslation();
   const { token } = theme.useToken();
   const [aspectRatio, setAspectRatio] = useState<string>("16 / 9");
   return (
     <div
       style={{
+        display: "flex",
+        flexDirection: "column",
+        minWidth: 0,
+        minHeight: 0,
         background: token.colorBgContainer,
         border: `1px solid ${token.colorBorderSecondary}`,
         borderRadius: 8,
@@ -692,7 +714,13 @@ function ThumbnailCard({ thumb }: { thumb: PreviewThumbnail }) {
       <Image
         src={convertFileSrc(thumb.path)}
         alt={`thumbnail-${thumb.index}`}
-        wrapperStyle={{ width: "100%", display: "block" }}
+        wrapperStyle={{
+          width: "100%",
+          display: "block",
+          flex: fitToCell ? 1 : undefined,
+          minHeight: 0,
+          overflow: "hidden",
+        }}
         onLoad={(event) => {
           const target = event.currentTarget as HTMLImageElement;
           if (target.naturalWidth > 0 && target.naturalHeight > 0) {
@@ -701,8 +729,9 @@ function ThumbnailCard({ thumb }: { thumb: PreviewThumbnail }) {
         }}
         style={{
           width: "100%",
+          height: fitToCell ? "100%" : undefined,
           display: "block",
-          aspectRatio,
+          aspectRatio: fitToCell ? undefined : aspectRatio,
           objectFit: "contain",
           background: "#000",
           cursor: "zoom-in",
@@ -711,6 +740,7 @@ function ThumbnailCard({ thumb }: { thumb: PreviewThumbnail }) {
       <div
         style={{
           padding: "6px 10px",
+          flexShrink: 0,
           display: "flex",
           justifyContent: "space-between",
           fontSize: 12,
