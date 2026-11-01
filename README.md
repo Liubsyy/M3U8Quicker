@@ -70,7 +70,7 @@ MacOS 首次安装时如果遇到“无法打开”或“应用已损坏”之�
 xattr -rd com.apple.quarantine /Applications/M3U8\ Quicker.app
 ```
 
-**浏览器扩展(可选)：**
+**浏览器扩展(可选)**
 
 打开`M3U8 Quicker`-> `工具` -> `安装浏览器扩展`，按引导可安装Chrome扩展/Firefox扩展/Microsoft Edge扩展。
 
