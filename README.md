@@ -75,7 +75,7 @@ xattr -rd com.apple.quarantine /Applications/M3U8\ Quicker.app
 打开`M3U8 Quicker`-> `工具` -> `安装浏览器扩展`，按引导可安装Chrome扩展/Firefox扩展/Microsoft Edge扩展。
 
 
-### FFmpeg 下载
+**FFmpeg 下载**
 
 FFmpeg 可用于转码、合并和视频预览，可在应用「设置 → FFmpeg」中下载或手动配置，也可点击下方链接下载对应平台的工具包：
 

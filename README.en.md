@@ -78,7 +78,7 @@ xattr -rd com.apple.quarantine /Applications/M3U8\ Quicker.app
 
 Open `M3U8 Quicker` → `Tools` → `Install Browser Extension` and follow the instructions for Chrome, Firefox, or Microsoft Edge.
 
-### FFmpeg downloads
+**FFmpeg downloads**
 
 FFmpeg is used for transcoding, merging, and video previews. Download or configure it under **Settings → FFmpeg**, or use the direct links for your platform below:
 
