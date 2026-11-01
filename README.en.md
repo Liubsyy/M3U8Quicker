@@ -78,6 +78,21 @@ xattr -rd com.apple.quarantine /Applications/M3U8\ Quicker.app
 
 Open `M3U8 Quicker` → `Tools` → `Install Browser Extension` and follow the instructions for Chrome, Firefox, or Microsoft Edge.
 
+### FFmpeg downloads
+
+FFmpeg is used for transcoding, merging, and video previews. Download or configure it under **Settings → FFmpeg**, or use the direct links for your platform below:
+
+| Platform | Architecture | Download |
+| --- | --- | --- |
+| Windows | x64 | [ffmpeg-windows-x64.zip](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-windows-x64.zip) |
+| Windows | x86 (32-bit) | [ffmpeg-windows-x86.zip](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-windows-x86.zip) |
+| Linux | x64 | [ffmpeg-linux-x64.tar.xz](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-linux-x64.tar.xz) |
+| Linux | ARM64 | [ffmpeg-linux-arm64.tar.xz](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-linux-arm64.tar.xz) |
+| macOS | Intel x64 | [ffmpeg-macos-x64.zip](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-macos-x64.zip) |
+| macOS | Apple Silicon | [ffmpeg-macos-arm64.zip](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-macos-arm64.zip) |
+
+All packages include FFmpeg and FFprobe. After extracting, select `ffmpeg.exe` (Windows) or `ffmpeg` (macOS/Linux) under **Settings → FFmpeg**, and keep `ffprobe.exe` or `ffprobe` in the same directory.
+
 ### Create a download
 
 #### Option 1: Use the browser extension (recommended)

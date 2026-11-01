@@ -75,6 +75,22 @@ xattr -rd com.apple.quarantine /Applications/M3U8\ Quicker.app
 打开`M3U8 Quicker`-> `工具` -> `安装浏览器扩展`，按引导可安装Chrome扩展/Firefox扩展/Microsoft Edge扩展。
 
 
+### FFmpeg 下载
+
+FFmpeg 可用于转码、合并和视频预览，可在应用「设置 → FFmpeg」中下载或手动配置，也可点击下方链接下载对应平台的工具包：
+
+| 平台 | 架构 | 下载 |
+| --- | --- | --- |
+| Windows | x64 | [ffmpeg-windows-x64.zip](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-windows-x64.zip) |
+| Windows | x86（32 位） | [ffmpeg-windows-x86.zip](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-windows-x86.zip) |
+| Linux | x64 | [ffmpeg-linux-x64.tar.xz](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-linux-x64.tar.xz) |
+| Linux | ARM64 | [ffmpeg-linux-arm64.tar.xz](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-linux-arm64.tar.xz) |
+| macOS | Intel x64 | [ffmpeg-macos-x64.zip](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-macos-x64.zip) |
+| macOS | Apple Silicon | [ffmpeg-macos-arm64.zip](https://github.com/Liubsyy/M3U8Quicker/releases/download/ffmpeg-2026-11-01/ffmpeg-macos-arm64.zip) |
+
+所有包均包含 FFmpeg 和 FFprobe，解压后，在「设置 → FFmpeg」中选择 `ffmpeg.exe`（Windows）或 `ffmpeg`（macOS、Linux），并保留同目录的 `ffprobe.exe` 或 `ffprobe`。
+
+
 ### 新建下载
 
 #### 方式一：浏览器扩展一键下载（强烈推荐）
