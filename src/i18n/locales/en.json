@@ -576,5 +576,6 @@
   "ignoreHttpsCertificateErrors": "Ignore HTTPS certificate errors",
   "ignoreHttpsCertificateErrorsDescription": "Skip certificate and hostname validation to access resources with expired or self-signed certificates. This reduces connection security; use only with trusted sources. Pause and resume running tasks to apply.",
   "httpsCertificateSettingsSaved": "HTTPS certificate settings saved",
-  "failedToSaveHttpsCertificateSettings": "Failed to save HTTPS certificate settings: {{value0}}"
+  "failedToSaveHttpsCertificateSettings": "Failed to save HTTPS certificate settings: {{value0}}",
+  "segmentRangeSummary": "Showing segments {{value0}}–{{value1}} of {{value2}}"
 }
