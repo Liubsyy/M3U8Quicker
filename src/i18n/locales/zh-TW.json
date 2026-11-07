@@ -576,5 +576,6 @@
   "ignoreHttpsCertificateErrors": "忽略 HTTPS 憑證錯誤",
   "ignoreHttpsCertificateErrorsDescription": "略過憑證與網域驗證，可存取憑證過期或自簽憑證的資源，但會降低連線安全性，僅適用於可信來源。執行中的工作請暫停後繼續。",
   "httpsCertificateSettingsSaved": "HTTPS 憑證設定已儲存",
-  "failedToSaveHttpsCertificateSettings": "儲存 HTTPS 憑證設定失敗：{{value0}}"
+  "failedToSaveHttpsCertificateSettings": "儲存 HTTPS 憑證設定失敗：{{value0}}",
+  "segmentRangeSummary": "顯示第 {{value0}}–{{value1}} 個分片，共 {{value2}} 個"
 }

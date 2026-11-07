@@ -1019,11 +1019,13 @@ pub async fn get_download_segment_state(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<DownloadTaskSegmentState, AppError> {
-    if let Some(task) = {
+    if let Some(segment_state) = {
         let downloads = state.downloads.lock().await;
-        downloads.get(&id).cloned()
+        downloads
+            .get(&id)
+            .map(persistence::task_to_segment_state)
     } {
-        return Ok(persistence::task_to_segment_state(&task));
+        return Ok(segment_state);
     }
 
     persistence::load_download_segment_state(&app_handle, &id)
@@ -1037,11 +1039,11 @@ pub async fn get_download_summary(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<DownloadTaskSummary, AppError> {
-    if let Some(task) = {
+    if let Some(summary) = {
         let downloads = state.downloads.lock().await;
-        downloads.get(&id).cloned()
+        downloads.get(&id).map(persistence::task_to_summary)
     } {
-        return Ok(persistence::task_to_summary(&task));
+        return Ok(summary);
     }
 
     persistence::load_download_summary(&app_handle, &id)

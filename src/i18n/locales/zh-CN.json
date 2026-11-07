@@ -576,5 +576,6 @@
   "ignoreHttpsCertificateErrors": "忽略 HTTPS 证书错误",
   "ignoreHttpsCertificateErrorsDescription": "跳过证书和域名校验，可访问过期或自签名证书的资源，但会降低连接安全性，仅用于可信来源。已运行任务请暂停后继续。",
   "httpsCertificateSettingsSaved": "HTTPS 证书设置已保存",
-  "failedToSaveHttpsCertificateSettings": "保存 HTTPS 证书设置失败：{{value0}}"
+  "failedToSaveHttpsCertificateSettings": "保存 HTTPS 证书设置失败：{{value0}}",
+  "segmentRangeSummary": "显示第 {{value0}}–{{value1}} 个分片，共 {{value2}} 个"
 }

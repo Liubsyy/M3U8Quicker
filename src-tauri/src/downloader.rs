@@ -3308,7 +3308,6 @@ pub async fn run_download(
             segments.clone(),
             completed.clone(),
             total_bytes.clone(),
-            speed_bytes_per_sec.clone(),
             completed_segment_indices.clone(),
             failed_segment_indices.clone(),
             downloads.clone(),
@@ -3741,7 +3740,6 @@ pub async fn run_hls_bundle_download(
             next_pending.clone(),
             completed.clone(),
             total_bytes.clone(),
-            speed_bytes_per_sec.clone(),
             completed_segment_indices.clone(),
             failed_segment_indices.clone(),
             downloads.clone(),
@@ -3877,7 +3875,6 @@ async fn bundle_download_worker_loop(
     next_pending: Arc<AtomicUsize>,
     completed: Arc<AtomicUsize>,
     total_bytes: Arc<AtomicU64>,
-    speed_bytes_per_sec: Arc<AtomicU64>,
     completed_segment_indices: Arc<Mutex<BTreeSet<usize>>>,
     failed_segment_indices: Arc<Mutex<BTreeSet<usize>>>,
     downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
@@ -3944,28 +3941,7 @@ async fn bundle_download_worker_loop(
                     .lock()
                     .await
                     .remove(&(entry.index + 1));
-                let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                let downloaded_bytes = total_bytes.load(Ordering::Relaxed);
-                let speed = speed_bytes_per_sec.load(Ordering::Relaxed);
-                let completed_segments_list = snapshot_segments(&completed_segment_indices).await;
-                let failed_segments_list = snapshot_segments(&failed_segment_indices).await;
-
-                emit_progress(
-                    &app_handle,
-                    &downloads,
-                    RuntimeProgressSnapshot {
-                        id: task_id.clone(),
-                        status: DownloadStatus::Downloading,
-                        completed_segments: done,
-                        total_segments,
-                        completed_segment_indices: completed_segments_list,
-                        failed_segment_indices: failed_segments_list,
-                        total_bytes: downloaded_bytes,
-                        speed_bytes_per_sec: speed,
-                        updated_at: Utc::now().to_rfc3339(),
-                    },
-                )
-                .await;
+                completed.fetch_add(1, Ordering::Relaxed);
                 maybe_persist_task_progress(
                     &app_handle,
                     &downloads,
@@ -4048,7 +4024,6 @@ async fn download_worker_loop(
     segments: Arc<Vec<SegmentInfo>>,
     completed: Arc<AtomicUsize>,
     total_bytes: Arc<AtomicU64>,
-    speed_bytes_per_sec: Arc<AtomicU64>,
     completed_segment_indices: Arc<Mutex<BTreeSet<usize>>>,
     failed_segment_indices: Arc<Mutex<BTreeSet<usize>>>,
     downloads: Arc<Mutex<HashMap<DownloadId, DownloadTask>>>,
@@ -4117,28 +4092,7 @@ async fn download_worker_loop(
                     .lock()
                     .await
                     .remove(&(segment.index + 1));
-                let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                let downloaded_bytes = total_bytes.load(Ordering::Relaxed);
-                let speed = speed_bytes_per_sec.load(Ordering::Relaxed);
-                let completed_segments_list = snapshot_segments(&completed_segment_indices).await;
-                let failed_segments_list = snapshot_segments(&failed_segment_indices).await;
-
-                emit_progress(
-                    &app_handle,
-                    &downloads,
-                    RuntimeProgressSnapshot {
-                        id: task_id.clone(),
-                        status: DownloadStatus::Downloading,
-                        completed_segments: done,
-                        total_segments,
-                        completed_segment_indices: completed_segments_list,
-                        failed_segment_indices: failed_segments_list,
-                        total_bytes: downloaded_bytes,
-                        speed_bytes_per_sec: speed,
-                        updated_at: Utc::now().to_rfc3339(),
-                    },
-                )
-                .await;
+                completed.fetch_add(1, Ordering::Relaxed);
                 maybe_persist_task_progress(
                     &app_handle,
                     &downloads,

@@ -8,13 +8,13 @@ import type {
   DownloadGroup,
   DownloadProgressEvent,
   DownloadTaskPage,
-  DownloadTaskSegmentState,
   DownloadTaskSummary,
 } from "../types";
 import * as api from "../services/api";
 
 const DEFAULT_PAGE_SIZE = 50;
 const BATCH_CREATE_CONCURRENCY = 3;
+const PROGRESS_FLUSH_INTERVAL_MS = 100;
 
 interface PageState {
   items: DownloadTaskSummary[];
@@ -110,10 +110,21 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
     active: true,
     history: true,
   });
-  const [segmentStateCache, setSegmentStateCache] = useState<
-    Record<string, DownloadTaskSegmentState>
-  >({});
+  const activePageRef = useRef(activePage);
+  const historyPageRef = useRef(historyPage);
+  const pendingProgressRef = useRef(
+    new Map<string, DownloadProgressEvent>()
+  );
+  const progressFlushTimerRef = useRef<number | null>(null);
   const historyRequestIdRef = useRef(0);
+
+  useEffect(() => {
+    activePageRef.current = activePage;
+  }, [activePage]);
+
+  useEffect(() => {
+    historyPageRef.current = historyPage;
+  }, [historyPage]);
 
   const refreshCounts = useCallback(async () => {
     const nextCounts = await api.getDownloadCounts();
@@ -124,7 +135,8 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
   const refreshGroup = useCallback(async (group: DownloadGroup, page?: number) => {
     setLoadingGroups((prev) => ({ ...prev, [group]: true }));
     try {
-      const currentPage = group === "active" ? activePage : historyPage;
+      const currentPage =
+        group === "active" ? activePageRef.current : historyPageRef.current;
       const pageSize =
         group === "history" ? historyPageSize : currentPage.pageSize;
       const nextPage = await api.getDownloadsPage(
@@ -135,14 +147,16 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
       const nextState = toPageState(nextPage);
 
       if (group === "active") {
+        activePageRef.current = nextState;
         setActivePage(nextState);
       } else {
+        historyPageRef.current = nextState;
         setHistoryPage(nextState);
       }
     } finally {
       setLoadingGroups((prev) => ({ ...prev, [group]: false }));
     }
-  }, [activePage, historyPage, historyPageSize]);
+  }, [historyPageSize]);
 
   useEffect(() => {
     let disposed = false;
@@ -156,8 +170,10 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
         if (disposed) {
           return;
         }
+        const nextActivePage = toPageState(active);
         setCounts(nextCounts);
-        setActivePage(toPageState(active));
+        activePageRef.current = nextActivePage;
+        setActivePage(nextActivePage);
       } catch (error) {
         console.error("Failed to initialize downloads", error);
       } finally {
@@ -183,7 +199,9 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
       .getDownloadsPage("history", 1, historyPageSize)
       .then((history) => {
         if (!disposed && historyRequestIdRef.current === requestId) {
-          setHistoryPage(toPageState(history));
+          const nextHistoryPage = toPageState(history);
+          historyPageRef.current = nextHistoryPage;
+          setHistoryPage(nextHistoryPage);
         }
       })
       .catch((error) => {
@@ -200,45 +218,84 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
     };
   }, [historyPageSize]);
 
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
+  const flushPendingProgress = useCallback(() => {
+    progressFlushTimerRef.current = null;
+    if (pendingProgressRef.current.size === 0) return;
 
-    listen<DownloadProgressEvent>("download-progress", (event) => {
-      const progress = event.payload;
-      setSegmentStateCache((prev) => {
-        const next = { ...prev };
-        delete next[progress.id];
-        return next;
-      });
+    const events = Array.from(pendingProgressRef.current.values());
+    pendingProgressRef.current.clear();
+    const hasTerminalEvent = events.some((event) => event.group !== "active");
 
-      if (progress.group === "active") {
-        setActivePage((prev) => patchPageItem(prev, progress).nextPage);
-        return;
+    setActivePage((prev) => {
+      let next = prev;
+
+      for (const event of events) {
+        if (event.group === "active") {
+          next = patchPageItem(next, event).nextPage;
+          continue;
+        }
+
+        const itemCount = next.items.length;
+        const items = next.items.filter((item) => item.id !== event.id);
+        if (items.length !== itemCount) {
+          next = {
+            ...next,
+            items,
+            total: Math.max(0, next.total - 1),
+          };
+        }
       }
 
-      setActivePage((prev) => ({
-        ...prev,
-        items: prev.items.filter((item) => item.id !== progress.id),
-        total: Math.max(0, prev.total - 1),
-      }));
+      activePageRef.current = next;
+      return next;
+    });
 
-      void refreshCounts().catch((error) => {
-        console.error("Failed to refresh download counts", error);
-      });
-      void refreshGroup("active").catch((error) => {
-        console.error("Failed to refresh active downloads", error);
-      });
-      void refreshGroup("history").catch((error) => {
-        console.error("Failed to refresh history downloads", error);
-      });
+    if (!hasTerminalEvent) return;
+
+    void refreshCounts().catch((error) => {
+      console.error("Failed to refresh download counts", error);
+    });
+    void refreshGroup("active").catch((error) => {
+      console.error("Failed to refresh active downloads", error);
+    });
+    void refreshGroup("history", 1).catch((error) => {
+      console.error("Failed to refresh history downloads", error);
+    });
+  }, [refreshCounts, refreshGroup]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+    const pendingProgress = pendingProgressRef.current;
+
+    void listen<DownloadProgressEvent>("download-progress", ({ payload }) => {
+      pendingProgress.set(payload.id, payload);
+      if (progressFlushTimerRef.current !== null) return;
+
+      progressFlushTimerRef.current = window.setTimeout(
+        flushPendingProgress,
+        PROGRESS_FLUSH_INTERVAL_MS
+      );
     }).then((fn) => {
-      unlisten = fn;
+      if (disposed) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    }).catch((error) => {
+      console.error("Failed to subscribe to download progress", error);
     });
 
     return () => {
+      disposed = true;
       unlisten?.();
+      if (progressFlushTimerRef.current !== null) {
+        window.clearTimeout(progressFlushTimerRef.current);
+        progressFlushTimerRef.current = null;
+      }
+      pendingProgress.clear();
     };
-  }, [refreshCounts, refreshGroup]);
+  }, [flushPendingProgress]);
 
   const addDownload = useCallback(async (params: CreateDownloadParams) => {
     const task = await api.createDownload(params);
@@ -331,11 +388,6 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
       await api.removeDownload(id, deleteFile);
       await refreshCounts();
       await Promise.all([refreshGroup("active"), refreshGroup("history")]);
-      setSegmentStateCache((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
     } catch (error) {
       console.error("Failed to remove download:", error);
       message.error(t("failedToDeleteTask", { value0: error }));
@@ -359,18 +411,8 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
   }, [counts.history_count, refreshCounts, refreshGroup]);
 
   const getSegmentState = useCallback(async (task: DownloadTaskSummary) => {
-    const cached = segmentStateCache[task.id];
-    if (cached && cached.updated_at === task.updated_at) {
-      return cached;
-    }
-
-    const segmentState = await api.getDownloadSegmentState(task.id);
-    setSegmentStateCache((prev) => ({
-      ...prev,
-      [task.id]: segmentState,
-    }));
-    return segmentState;
-  }, [segmentStateCache]);
+    return api.getDownloadSegmentState(task.id);
+  }, []);
 
   return {
     counts,
