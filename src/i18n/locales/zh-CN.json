@@ -576,5 +576,11 @@
   "ignoreHttpsCertificateErrors": "忽略 HTTPS 证书错误",
   "ignoreHttpsCertificateErrorsDescription": "跳过证书和域名校验，可访问过期或自签名证书的资源，但会降低连接安全性，仅用于可信来源。已运行任务请暂停后继续。",
   "httpsCertificateSettingsSaved": "HTTPS 证书设置已保存",
-  "failedToSaveHttpsCertificateSettings": "保存 HTTPS 证书设置失败：{{value0}}"
+  "failedToSaveHttpsCertificateSettings": "保存 HTTPS 证书设置失败：{{value0}}",
+  "directParallelDownload": "并发分片下载",
+  "directSingleFallback": "单连接下载（未启用分片）",
+  "directCheckingRanges": "正在检测分片支持",
+  "directBuffering": "正在缓冲，等待所需分片下载…",
+  "directRestartRequired": "需要重新下载",
+  "directRestartExplanation": "远端文件或分片支持已变化，或无法确认文件版本。重新下载将清除已保存的 {{value0}} 分块数据并从头开始。"
 }

@@ -40,6 +40,7 @@ export function PlaybackWindow() {
   const hlsRef = useRef<Hls | null>(null);
   const mpegtsRef = useRef<Mpegts.Player | null>(null);
   const sessionClosedRef = useRef(false);
+  const directParallelRef = useRef(false);
   const taskStatusRef = useRef<DownloadStatus | null>(null);
   const lastPrioritizedRef = useRef<{ position: number; at: number } | null>(null);
   const suppressSeekGuardRef = useRef(false);
@@ -145,6 +146,7 @@ export function PlaybackWindow() {
         }
 
         appendDebugLog(t("taskStatusSyncedStatus", { value0: formatStatus(task.status) }));
+        directParallelRef.current = task.direct_info?.parallel === true;
         setTaskStatus(task.status);
       } catch (error) {
         if (!disposed) {
@@ -170,6 +172,7 @@ export function PlaybackWindow() {
       }
 
       appendDebugLog(t("downloadProgressEventStatus", { value0: formatStatus(event.payload.status) }));
+      if (event.payload.direct_info) directParallelRef.current = event.payload.direct_info.parallel;
       setTaskStatus(event.payload.status);
       setLoading(false);
     }).then((fn) => {
@@ -294,7 +297,7 @@ export function PlaybackWindow() {
           return;
         }
 
-        if (isInProgressProgressiveFilePlayback(query, taskStatusRef.current)) {
+        if (!directParallelRef.current && isInProgressProgressiveFilePlayback(query, taskStatusRef.current)) {
           const bufferedEnd = getPlayableBufferedEnd(video);
           if (bufferedEnd !== null && video.currentTime > bufferedEnd + 0.35) {
             const fallbackTime = Math.max(0, bufferedEnd - 0.1);
@@ -319,6 +322,7 @@ export function PlaybackWindow() {
     const handleWaiting = () => {
       if (!disposed) {
         appendDebugLog(`video: waiting current=${video.currentTime.toFixed(3)}`);
+        if (directParallelRef.current) setNoticeText(translatedMessage("directBuffering"));
         void prioritizeCurrentPosition();
       }
     };

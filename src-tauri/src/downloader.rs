@@ -1,3 +1,5 @@
+pub mod direct;
+
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::io::ErrorKind;
@@ -2868,6 +2870,7 @@ fn calculate_percentage(completed_segments: usize, total_segments: usize) -> f64
 
 fn snapshot_to_event(snapshot: &RuntimeProgressSnapshot) -> DownloadProgressEvent {
     DownloadProgressEvent {
+        direct_info: None,
         id: snapshot.id.clone(),
         status: snapshot.status.clone(),
         group: download_group_for_status(&snapshot.status),

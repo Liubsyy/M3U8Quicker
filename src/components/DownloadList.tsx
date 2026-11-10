@@ -109,6 +109,9 @@ function calculatePercentage(record: DownloadTaskSummary): number {
   if (record.is_live) {
     return 0;
   }
+  if (record.direct_info?.parallel && record.direct_info.total_bytes > 0) {
+    return Math.min(100, record.total_bytes / record.direct_info.total_bytes * 100);
+  }
   if (record.total_segments <= 0) {
     return 0;
   }
@@ -147,6 +150,7 @@ function renderSegmentGrid(segmentState: DownloadTaskSegmentState) {
         return (
           <div
             key={segmentNumber}
+            title={segmentState.segment_errors?.[segmentNumber]}
             className={segmentClassName}
             style={{
               minWidth: 36,
@@ -275,11 +279,12 @@ export function DownloadList({
         label: t("stopRecording"),
       });
     }
-    if (record.failed_segment_count > 0 && !record.is_live) {
+    if ((record.failed_segment_count > 0 || (record.direct_parallel && typeof record.status === "object")) && !record.is_live) {
       opGroup.push({
         key: "retry",
         icon: <ReloadOutlined />,
-        label: t("retryFailedSegments"),
+        label: t(record.failed_segment_count > 0 ? "retryFailedSegments" : "retry"),
+        disabled: record.direct_parallel === true && record.status === "Downloading",
       });
     }
 
@@ -536,6 +541,7 @@ export function DownloadList({
             size="small"
             icon={<ReloadOutlined />}
             style={{ paddingInline: 0, marginBottom: 8 }}
+            disabled={record.direct_parallel === true && record.status === "Downloading"}
             onClick={() => onRetryFailed(record.id)}
           >
             {t("retryFailedSegments")}</Button>
@@ -607,6 +613,11 @@ export function DownloadList({
                   {record.filename}
                 </span>
               </div>
+              {record.direct_parallel && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {t(record.direct_info?.parallel ? "directParallelDownload" : record.direct_info ? "directSingleFallback" : "directCheckingRanges")}
+                </Typography.Text>
+              )}
               {record.encryption_method && (
                 <Typography.Text
                   type="secondary"
@@ -649,7 +660,7 @@ export function DownloadList({
             }
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {isDirectFileType(record.file_type) || record.is_live ? (
+            {(isDirectFileType(record.file_type) && !record.direct_info?.parallel) || record.is_live ? (
               <span>{formatBytes(record.total_bytes)}</span>
             ) : (
               <>

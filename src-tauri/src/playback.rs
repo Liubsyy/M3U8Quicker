@@ -143,6 +143,15 @@ impl DownloadPriorityState {
         None
     }
 
+    pub async fn prioritize_segment(&self, index: usize) {
+        let mut inner = self.inner.lock().await;
+        if let Some(position) = inner.pending.iter().position(|value| *value == index) {
+            inner.pending.remove(position);
+            inner.pending.push_front(index);
+        }
+        self.notify.notify_waiters();
+    }
+
     pub async fn mark_segment_completed(&self, segment_index: usize) {
         let mut inner = self.inner.lock().await;
         inner.in_progress.remove(&segment_index);
@@ -616,7 +625,16 @@ async fn serve_file(
         Err(error) => return error.into_response(),
     };
 
-    let response = match build_file_response(&task, &headers).await {
+    let result = if task.direct_parallel && task.status != DownloadStatus::Completed {
+        match downloader::direct::manifest(&task).await {
+            Ok(Some(manifest)) => build_direct_file_response(state.clone(), task.clone(), query.token.clone(), manifest, &headers).await,
+            Ok(None) => build_file_response(&task, &headers).await,
+            Err(error) => Err(PlaybackHttpError::new(StatusCode::CONFLICT, error.to_string())),
+        }
+    } else {
+        build_file_response(&task, &headers).await
+    };
+    let response = match result {
         Ok(response) => response,
         Err(error) => error.into_response(),
     };
@@ -1276,6 +1294,97 @@ async fn build_file_response(
     }
 
     Ok(with_playback_headers(response))
+}
+
+struct DirectFileStream {
+    state: PlaybackHttpState,
+    task: DownloadTask,
+    token: String,
+    manifest: downloader::direct::Manifest,
+    position: u64,
+    end: u64,
+}
+
+async fn build_direct_file_response(
+    state: PlaybackHttpState, task: DownloadTask, token: String,
+    manifest: downloader::direct::Manifest, headers: &HeaderMap,
+) -> Result<Response, PlaybackHttpError> {
+    if !task.file_type.supports_progressive_playback() {
+        return Err(PlaybackHttpError::new(StatusCode::CONFLICT, crate::i18n::tr("thisFormatCannotBePlayedWhileDownloading")));
+    }
+    let total = manifest.total;
+    let (start, end, status) = match parse_byte_range(headers, total)? {
+        Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
+        None => (0, total - 1, StatusCode::OK),
+    };
+    let content_type = content_type_for_file_path(&task.filename);
+    let stream = futures::stream::try_unfold(DirectFileStream {
+        state, task, token, manifest, position: start, end,
+    }, |mut cursor| async move {
+        if cursor.position > cursor.end { return Ok(None); }
+        let bytes = read_direct_bytes(&cursor).await?;
+        cursor.position += bytes.len() as u64;
+        Ok::<_, std::io::Error>(Some((bytes, cursor)))
+    });
+    let mut response = Response::new(Body::from_stream(stream));
+    *response.status_mut() = status;
+    let response_headers = response.headers_mut();
+    response_headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    response_headers.insert(header::CONTENT_LENGTH, HeaderValue::from_str(&(end - start + 1).to_string()).unwrap());
+    if status == StatusCode::PARTIAL_CONTENT {
+        response_headers.insert(header::CONTENT_RANGE, HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")).unwrap());
+    }
+    Ok(with_playback_headers(response))
+}
+
+async fn read_direct_bytes(cursor: &DirectFileStream) -> Result<Bytes, std::io::Error> {
+    let index = (cursor.position / cursor.manifest.chunk_size) as usize;
+    let offset = cursor.position % cursor.manifest.chunk_size;
+    let path = downloader::direct::block_path(&downloader::direct::directory(&cursor.task), index);
+    let mut prioritized = false;
+    loop {
+        let snapshot = {
+            let mut sessions = cursor.state.playback_sessions.lock().await;
+            let session = sessions.get_mut(&cursor.task.id)
+                .filter(|session| session.session_token == cursor.token)
+                .ok_or_else(|| std::io::Error::other("播放会话已关闭"))?;
+            session.last_accessed_at = Utc::now();
+            session.task_snapshot.clone()
+        };
+        let task = cursor.state.downloads.lock().await.get(&cursor.task.id).cloned().unwrap_or(snapshot);
+        if task.status == DownloadStatus::Cancelled {
+            return Err(std::io::Error::other("下载已取消"));
+        }
+        // Once Completed is persisted the worker updates the session snapshot,
+        // then removes blocks. Readers can safely switch to the final file.
+        let (read_path, read_offset) = if task.status == DownloadStatus::Completed {
+            (PathBuf::from(task.file_path.as_deref().ok_or_else(|| std::io::Error::other("文件不存在"))?), cursor.position)
+        } else { (path.clone(), offset) };
+        if let Ok(mut file) = File::open(read_path).await {
+            let available = file.metadata().await?.len().saturating_sub(read_offset);
+            if available > 0 {
+                let count = available.min(cursor.end - cursor.position + 1).min(64 * 1024) as usize;
+                file.seek(SeekFrom::Start(read_offset)).await?;
+                let mut bytes = vec![0; count];
+                file.read_exact(&mut bytes).await?;
+                return Ok(Bytes::from(bytes));
+            }
+        }
+        if task.failed_segment_indices.contains(&(index + 1)) || matches!(task.status, DownloadStatus::Failed(_)) {
+            return Err(std::io::Error::other("所需分块下载失败，请重试失败分片"));
+        }
+        if task.direct_info.as_ref().is_some_and(|info| !info.parallel) {
+            return Err(std::io::Error::other("下载已切换为单连接，请重新打开播放器"));
+        }
+        if !prioritized {
+            if let Some(priority) = cursor.state.download_priorities.lock().await.get(&task.id).cloned() {
+                priority.prioritize_window(index, cursor.manifest.count()).await;
+                prioritized = true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 fn playback_file_path_for_task(task: &DownloadTask) -> Result<PathBuf, PlaybackHttpError> {
@@ -2047,6 +2156,8 @@ mod tests {
 
     fn build_task(status: DownloadStatus) -> DownloadTask {
         DownloadTask {
+            direct_parallel: false,
+            direct_info: None,
             id: "task-1".to_string(),
             url: "https://example.com/video.m3u8".to_string(),
             source_kind: crate::models::DownloadSourceKind::Url,
@@ -2214,6 +2325,63 @@ mod tests {
         state.prioritize_window(4, 6).await;
 
         assert_eq!(state.pending_snapshot().await, vec![4, 5, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn direct_playback_waits_for_missing_bytes_and_prioritizes_seek() {
+        let root = unique_temp_path("direct-ranges");
+        let mut task = build_task(DownloadStatus::Downloading);
+        task.id = Uuid::new_v4().to_string();
+        task.file_type = FileType::Mp4;
+        task.direct_parallel = true;
+        task.output_dir = root.to_string_lossy().into_owned();
+        task.total_segments = 3;
+        let dir = downloader::direct::directory(&task);
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(downloader::direct::block_path(&dir, 0), b"abcd").await.unwrap();
+        tokio::fs::write(downloader::direct::block_path(&dir, 2), b"ij").await.unwrap();
+        let state = PlaybackHttpState {
+            downloads: Arc::new(Mutex::new(HashMap::from([(task.id.clone(), task.clone())]))),
+            playback_sessions: Arc::new(Mutex::new(HashMap::from([(task.id.clone(), PlaybackSession {
+                task_id: task.id.clone(), session_token: "test".into(), window_label: "test".into(),
+                playback_kind: PlaybackSourceKind::File, playback_path: String::new(), is_live: false,
+                task_snapshot: task.clone(), last_accessed_at: Utc::now(), active_client_count: 0,
+            })]))),
+            download_priorities: Arc::new(Mutex::new(HashMap::new())),
+            live_records: Arc::new(Mutex::new(HashMap::new())),
+            live_playback_sessions: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let priority = ensure_download_priority_state(&state.download_priorities, &task).await;
+        let manifest = serde_json::from_value(serde_json::json!({
+            "version": 1, "total": 10, "chunk_size": 4, "validator": null, "filename": "video.mp4"
+        })).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, HeaderValue::from_static("bytes=4-9"));
+        let response = build_direct_file_response(state.clone(), task.clone(), "test".into(), manifest, &headers).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes 4-9/10");
+        let reader = tokio::spawn(async { axum::body::to_bytes(response.into_body(), 100).await.unwrap() });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!reader.is_finished(), "must not send holes as zero bytes");
+        assert_eq!(priority.pending_snapshot().await.first(), Some(&1));
+        tokio::fs::write(downloader::direct::block_path(&dir, 1), b"efgh").await.unwrap();
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2), reader).await.unwrap().unwrap().as_ref(), b"efghij");
+
+        // A stream already in progress must survive block cleanup at completion.
+        let final_path = root.join("video.mp4");
+        tokio::fs::write(&final_path, b"abcdefghij").await.unwrap();
+        task.status = DownloadStatus::Completed;
+        task.file_path = Some(final_path.to_string_lossy().into_owned());
+        state.downloads.lock().await.clear();
+        state.playback_sessions.lock().await.get_mut(&task.id).unwrap().task_snapshot = task.clone();
+        tokio::fs::remove_dir_all(&dir).await.unwrap();
+        let cursor = DirectFileStream { state: state.clone(), task: task.clone(), token: "test".into(),
+            manifest: serde_json::from_value(serde_json::json!({"version":1,"total":10,"chunk_size":4,"validator":null,"filename":"video.mp4"})).unwrap(),
+            position: 7, end: 9 };
+        assert_eq!(read_direct_bytes(&cursor).await.unwrap().as_ref(), b"hij");
+        state.playback_sessions.lock().await.clear();
+        assert!(read_direct_bytes(&cursor).await.is_err());
+        remove_temp_dir(&root);
     }
 
     #[test]

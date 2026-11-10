@@ -43,11 +43,11 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
-function confirmRestartMp4Download(downloadedBytes: number): Promise<boolean> {
+function confirmRestartMp4Download(downloadedBytes: number, parallel = false): Promise<boolean> {
   return new Promise((resolve) => {
     Modal.confirm({
-      title: t("serverDoesNotSupportResumingDownloads"),
-      content: t("downloadedSoFarResumingWillRestartFromTheBeginning", { value0: formatBytes(downloadedBytes) }),
+      title: t(parallel ? "directRestartRequired" : "serverDoesNotSupportResumingDownloads"),
+      content: t(parallel ? "directRestartExplanation" : "downloadedSoFarResumingWillRestartFromTheBeginning", { value0: formatBytes(downloadedBytes) }),
       okText: t("restartDownload"),
       cancelText: t("keepPaused"),
       onOk: () => {
@@ -82,6 +82,7 @@ function patchPageItem(
     found = true;
     return {
       ...item,
+      direct_info: event.direct_info ?? item.direct_info,
       status: event.status,
       completed_segments: event.completed_segments,
       total_segments: event.total_segments,
@@ -297,7 +298,7 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
       const check = await api.checkResumeDownload(id);
       const restartConfirmed =
         check.action === "confirm_restart"
-          ? await confirmRestartMp4Download(check.downloaded_bytes)
+          ? await confirmRestartMp4Download(check.downloaded_bytes, activePage.items.find((item) => item.id === id)?.direct_info?.parallel === true)
           : false;
 
       if (check.action === "confirm_restart" && !restartConfirmed) {
@@ -313,7 +314,7 @@ export function useDownloads(historyPageSize = DEFAULT_PAGE_SIZE) {
       message.error(t("theOriginalUrlIsInvalidOrExpiredCannotResumeDownload"));
       return undefined;
     }
-  }, [refreshCounts, refreshGroup]);
+  }, [activePage.items, refreshCounts, refreshGroup]);
 
   const retryFailed = useCallback(async (id: string) => {
     const task = await api.retryFailedSegments(id);

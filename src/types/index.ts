@@ -54,7 +54,14 @@ export const FILE_TYPE_OPTIONS: Array<{ value: FileType; label: string }> = [
   })),
 ];
 
+export interface DirectDownloadInfo {
+  parallel: boolean;
+  total_bytes: number;
+}
+
 export interface DownloadTaskSummary {
+  direct_parallel?: boolean;
+  direct_info?: DirectDownloadInfo | null;
   id: string;
   filename: string;
   file_type: FileType;
@@ -78,6 +85,7 @@ export interface DownloadTaskSummary {
 }
 
 export interface DownloadTaskSegmentState {
+  segment_errors?: Record<number, string>;
   id: string;
   total_segments: number;
   completed_segment_indices: number[];
@@ -105,6 +113,7 @@ export interface ResumeDownloadCheckResult {
 }
 
 export interface DownloadProgressEvent {
+  direct_info?: DirectDownloadInfo | null;
   id: string;
   status: DownloadStatus;
   group: DownloadGroup;
@@ -118,6 +127,7 @@ export interface DownloadProgressEvent {
 }
 
 export interface CreateDownloadParams {
+  direct_parallel?: boolean;
   url: string;
   source_kind?: DownloadSourceKind;
   source_text?: string;

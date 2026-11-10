@@ -389,6 +389,16 @@ pub fn run() {
                 let mut downloads: tokio::sync::MutexGuard<'_, HashMap<DownloadId, DownloadTask>> =
                     state.downloads.lock().await;
                 for mut task in saved {
+                    if let Err(error) = downloader::direct::restore(&mut task).await {
+                        eprintln!("Failed to restore Direct blocks: {error}");
+                    }
+                    if task.direct_parallel {
+                        let saved = persistence::save_task(&handle, &task).await.is_ok();
+                        if task.status == crate::models::DownloadStatus::Completed {
+                            if saved { let _ = downloader::direct::cleanup(&task).await; }
+                            continue;
+                        }
+                    }
                     if matches!(
                         task.status,
                         crate::models::DownloadStatus::Pending

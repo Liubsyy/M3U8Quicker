@@ -576,5 +576,11 @@
   "ignoreHttpsCertificateErrors": "Ignore HTTPS certificate errors",
   "ignoreHttpsCertificateErrorsDescription": "Skip certificate and hostname validation to access resources with expired or self-signed certificates. This reduces connection security; use only with trusted sources. Pause and resume running tasks to apply.",
   "httpsCertificateSettingsSaved": "HTTPS certificate settings saved",
-  "failedToSaveHttpsCertificateSettings": "Failed to save HTTPS certificate settings: {{value0}}"
+  "failedToSaveHttpsCertificateSettings": "Failed to save HTTPS certificate settings: {{value0}}",
+  "directParallelDownload": "Concurrent chunk download",
+  "directSingleFallback": "Single connection (parallel unavailable)",
+  "directCheckingRanges": "Checking range support",
+  "directBuffering": "Buffering downloaded chunks…",
+  "directRestartRequired": "Restart required",
+  "directRestartExplanation": "The remote file or range support changed, or its version cannot be verified. Restarting will discard {{value0}} of saved chunks and download again."
 }

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.1
+
+**更新说明**
+
+- Direct 直链新增分片并发下载。
+- 下载并发上限提升至 10000。
+
+**Release Notes**
+
+- Added concurrent chunk downloads for Direct links.
+- Increased the download concurrency limit to 10,000.
+
 ## 1.3.0
 
 - 新增「忽略 HTTPS 证书错误」网络设置，并优化证书校验失败时的多语言错误提示。

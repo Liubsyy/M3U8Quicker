@@ -51,7 +51,6 @@ The application includes an optional **browser extension (Chrome/Firefox/Edge)**
 - Automatically detect videos and live streams on web pages.
 - Create video download or live recording tasks with one click.
 - Support sites such as Bilibili, Douyin, and CCTV in addition to generic video URLs.
-- Switch between Chinese and English with “中 / EN”. The extension initially follows the browser language and remembers your manual selection.
 
 ## Usage
 

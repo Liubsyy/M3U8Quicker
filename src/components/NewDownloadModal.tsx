@@ -1,6 +1,6 @@
 import { t, useTranslation } from "../i18n";
 import { useState, useEffect } from "react";
-import { Modal, Form, Input, Button, Space, Radio, Typography, message } from "antd";
+import { Modal, Form, Input, Button, Space, Radio, Switch, Typography, message } from "antd";
 import { FolderOpenOutlined, PictureOutlined } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -204,6 +204,7 @@ export function NewDownloadModal({
         extra_headers: values.extra_headers?.trim() || undefined,
         download_mode: downloadMode,
         file_type: fileType,
+        direct_parallel: downloadMode === "direct" && values.direct_parallel === true,
       };
 
       if (downloadMode === "hls") {
@@ -450,6 +451,12 @@ export function NewDownloadModal({
             <Radio.Button value="direct">Direct</Radio.Button>
           </Radio.Group>
         </Form.Item>
+        {downloadMode === "direct" && (
+          <Form.Item name="direct_parallel" label={t("directParallelDownload")}
+            valuePropName="checked" initialValue={false}>
+            <Switch />
+          </Form.Item>
+        )}
         <Form.Item
           name="url"
           label={urlLabel}

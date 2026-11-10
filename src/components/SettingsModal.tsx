@@ -79,7 +79,7 @@ import type {
 import { UpdateModal } from "./UpdateModal";
 
 const MIN_DOWNLOAD_CONCURRENCY = 1;
-const MAX_DOWNLOAD_CONCURRENCY = 64;
+const MAX_DOWNLOAD_CONCURRENCY = 10000;
 const DEFAULT_LIMITED_DOWNLOAD_SPEED_KBPS = 1024;
 
 const SPEED_LIMIT_PRESETS: { label: string; value: number }[] = [

@@ -182,6 +182,8 @@ fn task_to_detail(task: &DownloadTask) -> DownloadTaskDetail {
 
 pub fn task_to_summary(task: &DownloadTask) -> DownloadTaskSummary {
     DownloadTaskSummary {
+        direct_parallel: task.direct_parallel,
+        direct_info: task.direct_info.clone(),
         id: task.id.clone(),
         filename: task.filename.clone(),
         file_type: task.file_type,
@@ -245,6 +247,7 @@ async fn refresh_completed_file_size(summary: &mut DownloadTaskSummary) {
 
 pub fn task_to_segment_state(task: &DownloadTask) -> DownloadTaskSegmentState {
     DownloadTaskSegmentState {
+        segment_errors: Default::default(),
         id: task.id.clone(),
         total_segments: task.total_segments,
         completed_segment_indices: task.completed_segment_indices.clone(),
@@ -258,6 +261,8 @@ fn task_from_parts(
     detail: DownloadTaskDetail,
 ) -> Result<DownloadTask, AppError> {
     Ok(DownloadTask {
+        direct_parallel: summary.direct_parallel,
+        direct_info: summary.direct_info,
         id: summary.id,
         url: detail.url,
         source_kind: detail.source_kind,

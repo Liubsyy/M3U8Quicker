@@ -8,6 +8,7 @@ import {
   Modal,
   Select,
   Space,
+  Switch,
   Table,
   Typography,
   message,
@@ -83,6 +84,7 @@ export function BatchDownloadModal({
   const [rawInput, setRawInput] = useState("");
   const [extraHeaders, setExtraHeaders] = useState("");
   const [outputDir, setOutputDir] = useState("");
+  const [directParallel, setDirectParallel] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [previewingKey, setPreviewingKey] = useState<string | null>(null);
   const [parsedItems, setParsedItems] = useState<ParsedBatchItem[]>([]);
@@ -94,6 +96,7 @@ export function BatchDownloadModal({
     }
 
     void getDefaultDownloadDir().then(setOutputDir);
+    setDirectParallel(false);
     setRawInput(initialRawInput || "");
     setExtraHeaders(initialExtraHeaders || "");
     const nextItems = parseBatchInput(
@@ -271,6 +274,7 @@ export function BatchDownloadModal({
           output_dir: outputDir || undefined,
           extra_headers: extraHeaders.trim() || undefined,
           download_mode: item.mode,
+          direct_parallel: item.mode === "direct" && directParallel,
           file_type: item.fileType,
           source_kind: item.sourceKind,
           source_text: item.sourceText,
@@ -344,6 +348,15 @@ export function BatchDownloadModal({
           />
         ) : null}
 
+        {parsedItems.some((item) => item.mode === "direct") && (
+          <div>
+            <Space><Typography.Text>Direct · {t("directParallelDownload")}</Typography.Text>
+              <Switch checked={directParallel} onChange={setDirectParallel} /></Space>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              {t("directParallelDownloadHint")}
+            </Typography.Paragraph>
+          </div>
+        )}
         <div>
           <Typography.Text strong>{t("parsedResults")}</Typography.Text>
           <div style={{ marginTop: 10 }}>

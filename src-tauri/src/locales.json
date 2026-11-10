@@ -1,4 +1,8 @@
 {
+  "directParallelNotSupported": {
+    "en": "This server does not support concurrent chunk downloads (a valid byte range and file size are required). Disable concurrent chunk downloads to use a single connection.",
+    "zh-CN": "该服务器不支持并发分片下载（需返回有效的字节范围和文件大小）。如需单连接下载，请关闭“并发分片下载”后重试。"
+  },
   "onlyDownloadingTasksCanBePaused": {
     "en": "Only downloading tasks can be paused",
     "zh-CN": "只有下载中的任务可以暂停",

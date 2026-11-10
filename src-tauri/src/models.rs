@@ -164,6 +164,12 @@ pub enum DownloadStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectDownloadInfo {
+    pub parallel: bool,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadTask {
     pub id: DownloadId,
     pub url: String,
@@ -174,6 +180,10 @@ pub struct DownloadTask {
     pub filename: String,
     #[serde(default)]
     pub file_type: FileType,
+    #[serde(default)]
+    pub direct_parallel: bool,
+    #[serde(default)]
+    pub direct_info: Option<DirectDownloadInfo>,
     #[serde(default)]
     pub hls_output_mode: HlsOutputMode,
     #[serde(default)]
@@ -228,6 +238,8 @@ impl DownloadTask {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadProgressEvent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direct_info: Option<DirectDownloadInfo>,
     pub id: DownloadId,
     pub status: DownloadStatus,
     pub group: DownloadGroup,
@@ -242,6 +254,8 @@ pub struct DownloadProgressEvent {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateDownloadParams {
+    #[serde(default)]
+    pub direct_parallel: bool,
     pub url: String,
     #[serde(default)]
     pub source_kind: DownloadSourceKind,
@@ -267,7 +281,7 @@ pub struct ProxySettings {
 
 pub const DEFAULT_DOWNLOAD_CONCURRENCY: usize = 8;
 pub const MIN_DOWNLOAD_CONCURRENCY: usize = 1;
-pub const MAX_DOWNLOAD_CONCURRENCY: usize = 64;
+pub const MAX_DOWNLOAD_CONCURRENCY: usize = 10000;
 pub const DEFAULT_DOWNLOAD_SPEED_LIMIT_KBPS: u64 = 0;
 pub const DEFAULT_PREVIEW_COLUMNS: usize = 3;
 pub const MIN_PREVIEW_COLUMNS: usize = 1;
@@ -661,6 +675,10 @@ pub struct DownloadTaskSummary {
     #[serde(default)]
     pub file_type: FileType,
     #[serde(default)]
+    pub direct_parallel: bool,
+    #[serde(default)]
+    pub direct_info: Option<DirectDownloadInfo>,
+    #[serde(default)]
     pub hls_output_mode: HlsOutputMode,
     #[serde(default)]
     pub hls_media_kind: HlsMediaKind,
@@ -688,6 +706,8 @@ fn default_playback_available() -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadTaskSegmentState {
+    #[serde(default)]
+    pub segment_errors: HashMap<usize, String>,
     pub id: DownloadId,
     pub total_segments: usize,
     pub completed_segment_indices: Vec<usize>,
