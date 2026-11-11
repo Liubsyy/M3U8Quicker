@@ -1,4 +1,5 @@
 {
+  "failedToLoadRecordingHistory": "Не удалось загрузить историю записей: {{value0}}",
   "searchDownloadFilename": "Поиск по имени файла",
   "searchByFilename": "Поиск по имени файла",
   "matchingDownloadCount": "Найдено записей: {{value0}}",

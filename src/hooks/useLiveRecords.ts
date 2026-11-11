@@ -70,11 +70,52 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
   });
   const [activePage, setActivePage] = useState<PageState>(INITIAL_PAGE_STATE);
   const [historyPage, setHistoryPage] = useState<PageState>(INITIAL_PAGE_STATE);
+  const [historySearch, setHistorySearch] = useState("");
   const [loadingGroups, setLoadingGroups] = useState<Record<LiveGroup, boolean>>({
     active: true,
     history: true,
   });
   const historyRequestIdRef = useRef(0);
+  const historyQueryRef = useRef({ keyword: "", page: 1, pageSize: historyPageSize });
+  const historySearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshHistory = useCallback(async (page?: number) => {
+    if (historySearchTimerRef.current !== null) return;
+    const query = { ...historyQueryRef.current, page: page ?? historyQueryRef.current.page };
+    historyQueryRef.current.page = query.page;
+    const requestId = ++historyRequestIdRef.current;
+    setLoadingGroups((prev) => ({ ...prev, history: true }));
+    try {
+      const result = await api.getLiveRecordsPage("history", query.page, query.pageSize, query.keyword);
+      if (historyRequestIdRef.current !== requestId) return;
+      historyQueryRef.current.page = result.page;
+      setHistoryPage(toPageState(result));
+    } catch (error) {
+      if (historyRequestIdRef.current !== requestId) return;
+      setHistoryPage({ ...INITIAL_PAGE_STATE, pageSize: query.pageSize });
+      console.error("Failed to load recording history", error);
+      message.error(t("failedToLoadRecordingHistory", { value0: String(error) }));
+    } finally {
+      if (historyRequestIdRef.current === requestId) {
+        setLoadingGroups((prev) => ({ ...prev, history: false }));
+      }
+    }
+  }, []);
+
+  const searchHistory = useCallback((value: string) => {
+    setHistorySearch(value);
+    const keyword = value.trim();
+    if (keyword === historyQueryRef.current.keyword) return;
+    historyQueryRef.current.keyword = keyword;
+    historyQueryRef.current.page = 1;
+    historyRequestIdRef.current += 1;
+    if (historySearchTimerRef.current !== null) clearTimeout(historySearchTimerRef.current);
+    setLoadingGroups((prev) => ({ ...prev, history: true }));
+    historySearchTimerRef.current = setTimeout(() => {
+      historySearchTimerRef.current = null;
+      void refreshHistory(1);
+    }, keyword ? 300 : 0);
+  }, [refreshHistory]);
 
   const refreshCounts = useCallback(async () => {
     const next = await api.getLiveRecordCounts();
@@ -84,27 +125,20 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
 
   const refreshGroup = useCallback(
     async (group: LiveGroup, page?: number) => {
+      if (group === "history") return refreshHistory(page);
       setLoadingGroups((prev) => ({ ...prev, [group]: true }));
       try {
-        const currentPage = group === "active" ? activePage : historyPage;
-        const pageSize =
-          group === "history" ? historyPageSize : currentPage.pageSize;
         const next = await api.getLiveRecordsPage(
           group,
-          page ?? currentPage.page,
-          pageSize
+          page ?? activePage.page,
+          activePage.pageSize
         );
-        const nextState = toPageState(next);
-        if (group === "active") {
-          setActivePage(nextState);
-        } else {
-          setHistoryPage(nextState);
-        }
+        setActivePage(toPageState(next));
       } finally {
         setLoadingGroups((prev) => ({ ...prev, [group]: false }));
       }
     },
-    [activePage, historyPage, historyPageSize]
+    [activePage, refreshHistory]
   );
 
   useEffect(() => {
@@ -133,31 +167,16 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
   }, []);
 
   useEffect(() => {
-    let disposed = false;
-    const requestId = historyRequestIdRef.current + 1;
-    historyRequestIdRef.current = requestId;
-
-    setLoadingGroups((prev) => ({ ...prev, history: true }));
-    void api
-      .getLiveRecordsPage("history", 1, historyPageSize)
-      .then((history) => {
-        if (!disposed && historyRequestIdRef.current === requestId) {
-          setHistoryPage(toPageState(history));
-        }
-      })
-      .catch((error) => {
-        console.error("Failed to load history live records", error);
-      })
-      .finally(() => {
-        if (!disposed && historyRequestIdRef.current === requestId) {
-          setLoadingGroups((prev) => ({ ...prev, history: false }));
-        }
-      });
-
+    historyQueryRef.current.pageSize = historyPageSize;
+    void refreshHistory(1);
     return () => {
-      disposed = true;
+      historyRequestIdRef.current += 1;
+      if (historySearchTimerRef.current !== null) {
+        clearTimeout(historySearchTimerRef.current);
+        historySearchTimerRef.current = null;
+      }
     };
-  }, [historyPageSize]);
+  }, [historyPageSize, refreshHistory]);
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
@@ -269,7 +288,7 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
   );
 
   const clearCompleted = useCallback(async () => {
-    if (counts.history_count === 0) return;
+    if (counts.history_count === 0 || historyQueryRef.current.keyword) return;
     try {
       await api.clearLiveHistory();
       await refreshCounts();
@@ -291,6 +310,8 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
     recordedPage: historyPage.page,
     recordedPageSize: historyPage.pageSize,
     recordedTotal: historyPage.total,
+    historySearch,
+    searchHistory,
     loadingActive: loadingGroups.active,
     loadingHistory: loadingGroups.history,
     addLiveRecord,
@@ -302,6 +323,6 @@ export function useLiveRecords(historyPageSize = DEFAULT_PAGE_SIZE) {
     clearCompleted,
     refreshCounts,
     refreshActive: (page?: number) => refreshGroup("active", page),
-    refreshHistory: (page?: number) => refreshGroup("history", page),
+    refreshHistory,
   };
 }

@@ -1,4 +1,5 @@
 {
+  "failedToLoadRecordingHistory": "Falha ao carregar o histórico de gravações: {{value0}}",
   "searchDownloadFilename": "Pesquisar nomes de arquivos",
   "searchByFilename": "Pesquisar por nome de arquivo",
   "matchingDownloadCount": "{{value0}} registros correspondentes encontrados",

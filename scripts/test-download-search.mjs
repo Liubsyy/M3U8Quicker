@@ -4,25 +4,27 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 
-const source = fs.readFileSync(new URL("../src/hooks/useDownloads.ts", import.meta.url), "utf8");
-const compiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-}).outputText;
+const compiled = Object.fromEntries(["useDownloads", "useLiveRecords"].map((name) => {
+  const source = fs.readFileSync(new URL(`../src/hooks/${name}.ts`, import.meta.url), "utf8");
+  return [name, ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText];
+}));
 
 test("search labels exist in all ten languages with matching placeholders", () => {
-  const keys = ["searchDownloadFilename", "searchByFilename", "matchingDownloadCount", "noMatchingDownloads", "searchingDownloads", "failedToLoadDownloadHistory"];
+  const keys = ["searchDownloadFilename", "searchByFilename", "matchingDownloadCount", "noMatchingDownloads", "searchingDownloads", "failedToLoadDownloadHistory", "failedToLoadRecordingHistory"];
   for (const locale of ["en", "zh-CN", "zh-TW", "ja", "ko", "de", "es", "fr", "pt-BR", "ru"]) {
     const messages = JSON.parse(fs.readFileSync(new URL(`../src/i18n/locales/${locale}.json`, import.meta.url), "utf8"));
     for (const key of keys) {
       assert.ok(messages[key]?.trim(), `${locale}.${key}`);
       const placeholders = [...messages[key].matchAll(/\{\{([^}]+)\}\}/g)].map((match) => match[1]);
-      assert.deepEqual(placeholders, ["matchingDownloadCount", "failedToLoadDownloadHistory"].includes(key) ? ["value0"] : [], `${locale}.${key}`);
+      assert.deepEqual(placeholders, ["matchingDownloadCount", "failedToLoadDownloadHistory", "failedToLoadRecordingHistory"].includes(key) ? ["value0"] : [], `${locale}.${key}`);
     }
   }
 });
 
 // Run the actual hook with controlled effects, requests and timers, without native Tauri/UI dependencies.
-function createHarness() {
+function createHarness(hookName) {
   const slots = [];
   const timers = new Map();
   const requests = [];
@@ -76,6 +78,10 @@ function createHarness() {
     removeDownload: async () => {},
     clearHistoryDownloads: async () => { clearCalls += 1; },
   };
+  api.getLiveRecordCounts = api.getDownloadCounts;
+  api.getLiveRecordsPage = api.getDownloadsPage;
+  api.removeLiveRecord = api.removeDownload;
+  api.clearLiveHistory = api.clearHistoryDownloads;
   const modules = {
     react,
     "../i18n": { t: (key) => key, useTranslation() {} },
@@ -87,7 +93,7 @@ function createHarness() {
     } },
   };
   const exports = {};
-  vm.runInNewContext(compiled, {
+  vm.runInNewContext(compiled[hookName], {
     exports,
     require: (name) => { assert.ok(modules[name], name); return modules[name]; },
     console: { error() {} },
@@ -98,7 +104,7 @@ function createHarness() {
     cursor = 0;
     dirty = false;
     effects = [];
-    result = exports.useDownloads(pageSize);
+    result = exports[hookName](pageSize);
     effects.forEach((effect) => effect());
   };
   const flush = async () => {
@@ -110,7 +116,15 @@ function createHarness() {
   render();
   return {
     requests, errors, flush,
-    get current() { return result; },
+    get current() {
+      return hookName === "useDownloads" ? result : {
+        ...result,
+        completed: result.recorded,
+        completedPage: result.recordedPage,
+        completedPageSize: result.recordedPageSize,
+        completedTotal: result.recordedTotal,
+      };
+    },
     get clearCalls() { return clearCalls; },
     async advance(ms) {
       now += ms;
@@ -129,8 +143,9 @@ function createHarness() {
   };
 }
 
-test("filename input debounces and clearing immediately restores the unfiltered first page", async () => {
-  const h = createHarness();
+for (const hookName of ["useDownloads", "useLiveRecords"]) {
+test(`${hookName}: input debounces and clearing restores the unfiltered first page`, async () => {
+  const h = createHarness(hookName);
   await h.flush();
   h.current.searchHistory("旅");
   await h.advance(200);
@@ -149,8 +164,8 @@ test("filename input debounces and clearing immediately restores the unfiltered 
   h.unmount();
 });
 
-test("old responses cannot overwrite new keywords, including during debounce", async () => {
-  const h = createHarness();
+test(`${hookName}: old responses cannot overwrite new keywords, including during debounce`, async () => {
+  const h = createHarness(hookName);
   await h.flush();
   h.current.searchHistory("old");
   await h.answer(h.requests[0], "unfiltered.mp4");
@@ -166,8 +181,8 @@ test("old responses cannot overwrite new keywords, including during debounce", a
   h.unmount();
 });
 
-test("pagination uses the keyword and only the newest page response wins", async () => {
-  const h = createHarness();
+test(`${hookName}: pagination keeps the keyword and only the newest response wins`, async () => {
+  const h = createHarness(hookName);
   await h.flush();
   h.current.searchHistory("trip");
   await h.advance(300);
@@ -184,8 +199,8 @@ test("pagination uses the keyword and only the newest page response wins", async
   h.unmount();
 });
 
-test("task completion and removal preserve search, and filtered views cannot clear all history", async () => {
-  const h = createHarness();
+test(`${hookName}: completion and removal preserve search and filtered views cannot clear all history`, async () => {
+  const h = createHarness(hookName);
   await h.flush();
   h.current.searchHistory("trip");
   await h.advance(300);
@@ -207,8 +222,8 @@ test("task completion and removal preserve search, and filtered views cannot cle
   h.unmount();
 });
 
-test("page-size changes keep the keyword and invalidate previous requests", async () => {
-  const h = createHarness();
+test(`${hookName}: page-size changes keep the keyword and invalidate previous requests`, async () => {
+  const h = createHarness(hookName);
   await h.flush();
   h.current.searchHistory("trip");
   await h.advance(300);
@@ -225,4 +240,22 @@ test("page-size changes keep the keyword and invalidate previous requests", asyn
   h.unmount();
   await h.advance(300);
   assert.equal(h.requests.length, 3);
+});
+}
+
+test("download and recording searches keep independent keywords", async () => {
+  const downloads = createHarness("useDownloads");
+  const recordings = createHarness("useLiveRecords");
+  await Promise.all([downloads.flush(), recordings.flush()]);
+  downloads.current.searchHistory("下载");
+  recordings.current.searchHistory("录制");
+  await Promise.all([downloads.advance(300), recordings.advance(300)]);
+  assert.equal(downloads.requests[1].keyword, "下载");
+  assert.equal(recordings.requests[1].keyword, "录制");
+  downloads.current.searchHistory("");
+  await downloads.advance(0);
+  assert.equal(recordings.current.historySearch, "录制");
+  assert.equal(recordings.requests.length, 2);
+  downloads.unmount();
+  recordings.unmount();
 });

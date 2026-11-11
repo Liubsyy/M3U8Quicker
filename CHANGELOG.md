@@ -7,14 +7,14 @@
 - Direct 直链新增分片并发下载。
 - 下载并发上限提升至 10000。
 - 优化浏览器预览跳转，不再自动弹出主窗口。
-- 下载完成列表新增文件名搜索。
+- 下载完成和录制完成列表新增右侧文件名搜索框。
 
 **Release Notes**
 
 - Added concurrent chunk downloads for Direct links.
 - Increased the download concurrency limit to 10,000.
 - Browser preview links no longer bring up the main window.
-- Added filename search to the completed downloads list.
+- Added right-aligned filename search to the completed downloads and recordings lists.
 
 ## 1.3.0
 

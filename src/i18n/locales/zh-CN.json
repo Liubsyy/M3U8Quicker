@@ -1,4 +1,5 @@
 {
+  "failedToLoadRecordingHistory": "加载录制历史失败：{{value0}}",
   "searchDownloadFilename": "搜索文件名",
   "searchByFilename": "按文件名搜索",
   "matchingDownloadCount": "找到 {{value0}} 条匹配记录",

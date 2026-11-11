@@ -1,4 +1,5 @@
 {
+  "failedToLoadRecordingHistory": "Aufnahmeverlauf konnte nicht geladen werden: {{value0}}",
   "searchDownloadFilename": "Dateinamen suchen",
   "searchByFilename": "Nach Dateiname suchen",
   "matchingDownloadCount": "{{value0}} passende Einträge gefunden",

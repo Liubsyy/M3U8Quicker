@@ -2,7 +2,6 @@ import { t, useTranslation } from "./i18n";
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import {
   Button,
-  Input,
   Layout,
   Modal,
   Popconfirm,
@@ -17,7 +16,6 @@ import {
   ChromeOutlined,
   ClearOutlined,
   FolderOpenOutlined,
-  SearchOutlined,
 } from "@ant-design/icons";
 import { EdgeIcon } from "./components/EdgeIcon";
 import { FirefoxIcon } from "./components/FirefoxIcon";
@@ -25,6 +23,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Toolbar } from "./components/Toolbar";
 import { DownloadList } from "./components/DownloadList";
+import { HistorySearchBar } from "./components/HistorySearchBar";
 import { NewDownloadModal } from "./components/NewDownloadModal";
 import { NewLiveRecordModal } from "./components/NewLiveRecordModal";
 import { BatchDownloadModal } from "./components/BatchDownloadModal";
@@ -210,6 +209,8 @@ function App({
     recordedPage: liveRecordedPage,
     recordedPageSize: liveRecordedPageSize,
     recordedTotal: liveRecordedTotal,
+    historySearch: liveHistorySearch,
+    searchHistory: searchLiveHistory,
     addLiveRecord,
     pause: pauseLive,
     resume: resumeLive,
@@ -222,6 +223,7 @@ function App({
     loadingActive: loadingLiveActive,
     loadingHistory: loadingLiveHistory,
   } = useLiveRecords(historyPageSize);
+  const hasLiveHistorySearch = Boolean(liveHistorySearch.trim());
   const { token } = theme.useToken();
 
   useEffect(() => {
@@ -743,31 +745,12 @@ function App({
       label: t("completed", { value0: counts.history_count }),
       children: (
         <div>
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 16,
-            flexWrap: "wrap",
-            marginBottom: 16,
-          }}>
-            <Space wrap>
-              <Input
-                value={historySearch}
-                onChange={(event) => searchHistory(event.target.value)}
-                prefix={<SearchOutlined style={{ color: token.colorTextPlaceholder }} />}
-                placeholder={t("searchDownloadFilename")}
-                aria-label={t("searchDownloadFilename")}
-                allowClear
-                style={{ width: 355, maxWidth: "100%" }}
-              />
-            </Space>
-            {hasHistorySearch && (
-              <Typography.Text type="secondary" aria-live="polite">
-                {loadingHistory ? t("searchingDownloads") : t("matchingDownloadCount", { value0: completedTotal })}
-              </Typography.Text>
-            )}
-          </div>
+          <HistorySearchBar
+            value={historySearch}
+            onChange={searchHistory}
+            loading={loadingHistory}
+            total={completedTotal}
+          />
           <DownloadList
             downloads={completed}
             total={completedTotal}
@@ -857,47 +840,58 @@ function App({
       key: "live-recorded",
       label: t("recorded2", { value0: liveCounts.history_count }),
       children: (
-        <DownloadList
-          downloads={liveRecordedItems}
-          total={liveRecordedTotal}
-          currentPage={liveRecordedPage}
-          pageSize={liveRecordedPageSize}
-          onPageChange={(page) => {
-            void refreshLiveHistory(page);
-          }}
-          getSegmentState={noopGetSegmentState}
-          onPause={() => undefined}
-          onResume={() => undefined}
-          onRetryFailed={() => undefined}
-          onCancel={() => undefined}
-          onRemove={removeLive}
-          onPlay={(task) => {
-            void handleOpenLivePlaybackWindow(task);
-          }}
-          loading={loadingLiveHistory}
-          showActions={["play", "remove", "open"]}
-          showSpeed={false}
-          statusTagOverride={liveStatusTagOverride}
-          actionsHeaderExtra={
-            <Popconfirm
-              title={t("clearThisList")}
-              description={t("onlyCompletedRecordingRecordsWillBeRemovedLocalFilesWill")}
-              onConfirm={() => void clearLiveCompleted()}
-              okText={t("clearList")}
-              cancelText={t("cancel")}
-              disabled={liveCounts.history_count === 0}
-            >
-              <Button
-                type="text"
-                size="small"
-                danger
-                icon={<ClearOutlined />}
-                aria-label={t("clearList")}
-                disabled={liveCounts.history_count === 0}
-              />
-            </Popconfirm>
-          }
-        />
+        <div>
+          <HistorySearchBar
+            value={liveHistorySearch}
+            onChange={searchLiveHistory}
+            loading={loadingLiveHistory}
+            total={liveRecordedTotal}
+          />
+          <DownloadList
+            downloads={liveRecordedItems}
+            total={liveRecordedTotal}
+            currentPage={liveRecordedPage}
+            pageSize={liveRecordedPageSize}
+            onPageChange={(page) => {
+              void refreshLiveHistory(page);
+            }}
+            getSegmentState={noopGetSegmentState}
+            onPause={() => undefined}
+            onResume={() => undefined}
+            onRetryFailed={() => undefined}
+            onCancel={() => undefined}
+            onRemove={removeLive}
+            onPlay={(task) => {
+              void handleOpenLivePlaybackWindow(task);
+            }}
+            loading={loadingLiveHistory}
+            emptyText={hasLiveHistorySearch ? t("noMatchingDownloads") : undefined}
+            showActions={["play", "remove", "open"]}
+            showSpeed={false}
+            statusTagOverride={liveStatusTagOverride}
+            actionsHeaderExtra={
+              !hasLiveHistorySearch && !loadingLiveHistory && (
+                <Popconfirm
+                  title={t("clearThisList")}
+                  description={t("onlyCompletedRecordingRecordsWillBeRemovedLocalFilesWill")}
+                  onConfirm={() => void clearLiveCompleted()}
+                  okText={t("clearList")}
+                  cancelText={t("cancel")}
+                  disabled={liveCounts.history_count === 0}
+                >
+                  <Button
+                    type="text"
+                    size="small"
+                    danger
+                    icon={<ClearOutlined />}
+                    aria-label={t("clearList")}
+                    disabled={liveCounts.history_count === 0}
+                  />
+                </Popconfirm>
+              )
+            }
+          />
+        </div>
       ),
     },
   ];

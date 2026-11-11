@@ -1,4 +1,5 @@
 {
+  "failedToLoadRecordingHistory": "載入錄製歷史失敗：{{value0}}",
   "searchDownloadFilename": "搜尋檔案名稱",
   "searchByFilename": "依檔案名稱搜尋",
   "matchingDownloadCount": "找到 {{value0}} 筆符合的記錄",

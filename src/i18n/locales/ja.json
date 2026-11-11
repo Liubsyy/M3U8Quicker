@@ -1,4 +1,5 @@
 {
+  "failedToLoadRecordingHistory": "録画履歴の読み込みに失敗しました：{{value0}}",
   "searchDownloadFilename": "ファイル名を検索",
   "searchByFilename": "ファイル名で検索",
   "matchingDownloadCount": "{{value0}} 件の一致する履歴",

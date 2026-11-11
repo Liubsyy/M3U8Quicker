@@ -520,12 +520,14 @@ export async function getLiveRecordCounts(): Promise<LiveRecordCounts> {
 export async function getLiveRecordsPage(
   group: LiveGroup,
   page: number,
-  pageSize: number
+  pageSize: number,
+  keyword?: string
 ): Promise<LiveRecordPage> {
   return invoke<LiveRecordPage>("get_live_records_page", {
     group,
     page,
     pageSize,
+    keyword,
   });
 }
 

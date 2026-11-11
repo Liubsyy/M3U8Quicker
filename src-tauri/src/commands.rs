@@ -4526,8 +4526,9 @@ pub async fn get_live_records_page(
     group: LiveGroup,
     page: usize,
     page_size: usize,
+    keyword: Option<String>,
 ) -> Result<LiveRecordPage, AppError> {
-    persistence::get_live_records_page(&app_handle, group, page, page_size).await
+    persistence::get_live_records_page(&app_handle, group, page, page_size, keyword.as_deref()).await
 }
 
 /// Convert a finished live recording into MP4 file(s). This is independent of

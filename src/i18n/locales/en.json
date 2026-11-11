@@ -1,4 +1,5 @@
 {
+  "failedToLoadRecordingHistory": "Failed to load recording history: {{value0}}",
   "searchDownloadFilename": "Search filenames",
   "searchByFilename": "Search by filename",
   "matchingDownloadCount": "Found {{value0}} matching records",
