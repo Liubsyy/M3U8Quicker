@@ -1,4 +1,10 @@
 {
+  "searchDownloadFilename": "파일 이름 검색",
+  "searchByFilename": "파일 이름으로 검색",
+  "matchingDownloadCount": "일치하는 기록 {{value0}}개",
+  "noMatchingDownloads": "일치하는 기록이 없습니다",
+  "searchingDownloads": "검색 중…",
+  "failedToLoadDownloadHistory": "다운로드 기록을 불러오지 못했습니다: {{value0}}",
   "installChromeExtension": "Chrome 확장 설치",
   "openChrome": "Chrome 열기",
   "installMicrosoftEdgeExtension": "Microsoft Edge 확장 설치",

@@ -2,6 +2,7 @@ import { t, useTranslation } from "./i18n";
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import {
   Button,
+  Input,
   Layout,
   Modal,
   Popconfirm,
@@ -16,6 +17,7 @@ import {
   ChromeOutlined,
   ClearOutlined,
   FolderOpenOutlined,
+  SearchOutlined,
 } from "@ant-design/icons";
 import { EdgeIcon } from "./components/EdgeIcon";
 import { FirefoxIcon } from "./components/FirefoxIcon";
@@ -41,6 +43,7 @@ import {
   openLivePlaybackSession,
   createPreviewSession,
   closePreviewSession,
+  showPreviewDialog,
   getAppSettings,
   setProxySettings,
   getFfmpegStatus,
@@ -180,6 +183,8 @@ function App({
     completedPage,
     completedPageSize,
     completedTotal,
+    historySearch,
+    searchHistory,
     addDownload,
     addDownloadsBatch,
     pause,
@@ -194,6 +199,7 @@ function App({
     refreshHistory,
     getSegmentState,
   } = useDownloads(historyPageSize);
+  const hasHistorySearch = Boolean(historySearch.trim());
   const {
     counts: liveCounts,
     recording: liveRecording,
@@ -736,51 +742,81 @@ function App({
       key: "completed",
       label: t("completed", { value0: counts.history_count }),
       children: (
-        <DownloadList
-          downloads={completed}
-          total={completedTotal}
-          currentPage={completedPage}
-          pageSize={completedPageSize}
-          onPageChange={(page) => {
-            void refreshHistory(page);
-          }}
-          getSegmentState={getSegmentState}
-          onPause={pause}
-          onResume={resume}
-          onRetryFailed={retryFailed}
-          onCancel={cancel}
-          onRemove={remove}
-          onPlay={(task) => {
-            void handleOpenPlaybackWindow(task);
-          }}
-          loading={loadingHistory}
-          onAnalyze={(filePath) => {
-            setToolInputPath(filePath);
-            setActiveTool("analyze-media");
-            setToolModalOpen(true);
-          }}
-          showActions={["play", "remove", "open"]}
-          showSpeed={false}
-          actionsHeaderExtra={
-            <Popconfirm
-              title={t("clearThisList")}
-              description={t("onlyCompletedRecordsWillBeRemovedLocalFilesWillBe")}
-              onConfirm={() => void clearCompleted()}
-              okText={t("clearList")}
-              cancelText={t("cancel")}
-              disabled={counts.history_count === 0}
-            >
-              <Button
-                type="text"
-                size="small"
-                danger
-                icon={<ClearOutlined />}
-                aria-label={t("clearList")}
-                disabled={counts.history_count === 0}
+        <div>
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 16,
+            flexWrap: "wrap",
+            marginBottom: 16,
+          }}>
+            <Space wrap>
+              <Input
+                value={historySearch}
+                onChange={(event) => searchHistory(event.target.value)}
+                prefix={<SearchOutlined style={{ color: token.colorTextPlaceholder }} />}
+                placeholder={t("searchDownloadFilename")}
+                aria-label={t("searchDownloadFilename")}
+                allowClear
+                style={{ width: 355, maxWidth: "100%" }}
               />
-            </Popconfirm>
-          }
-        />
+            </Space>
+            {hasHistorySearch && (
+              <Typography.Text type="secondary" aria-live="polite">
+                {loadingHistory ? t("searchingDownloads") : t("matchingDownloadCount", { value0: completedTotal })}
+              </Typography.Text>
+            )}
+          </div>
+          <DownloadList
+            downloads={completed}
+            total={completedTotal}
+            currentPage={completedPage}
+            pageSize={completedPageSize}
+            onPageChange={(page) => {
+              void refreshHistory(page);
+            }}
+            getSegmentState={getSegmentState}
+            onPause={pause}
+            onResume={resume}
+            onRetryFailed={retryFailed}
+            onCancel={cancel}
+            onRemove={remove}
+            onPlay={(task) => {
+              void handleOpenPlaybackWindow(task);
+            }}
+            loading={loadingHistory}
+            emptyText={hasHistorySearch ? t("noMatchingDownloads") : undefined}
+            onAnalyze={(filePath) => {
+              setToolInputPath(filePath);
+              setActiveTool("analyze-media");
+              setToolModalOpen(true);
+            }}
+            showActions={["play", "remove", "open"]}
+            showSpeed={false}
+            actionsHeaderExtra={
+              !hasHistorySearch && !loadingHistory && (
+                <Popconfirm
+                  title={t("clearThisList")}
+                  description={t("onlyCompletedRecordsWillBeRemovedLocalFilesWillBe")}
+                  onConfirm={() => void clearCompleted()}
+                  okText={t("clearList")}
+                  cancelText={t("cancel")}
+                  disabled={counts.history_count === 0}
+                >
+                  <Button
+                    type="text"
+                    size="small"
+                    danger
+                    icon={<ClearOutlined />}
+                    aria-label={t("clearList")}
+                    disabled={counts.history_count === 0}
+                  />
+                </Popconfirm>
+              )
+            }
+          />
+        </div>
       ),
     },
     {
@@ -1636,22 +1672,17 @@ async function ensureFfmpegReadyForPreview(
     // fall through to prompt
   }
 
-  return await new Promise<boolean>((resolve) => {
-    Modal.confirm({
-      title: t("ffmpegRequiredForPreviews"),
-      content: (
-        <Typography.Paragraph style={{ marginBottom: 0 }}>
-          {t("videoPreviewsUseFfmpegToExtractFramesEnableAndConfigure")}</Typography.Paragraph>
-      ),
-      okText: t("goToSettings"),
-      cancelText: t("cancel"),
-      onOk: () => {
-        onOpenFfmpegSettings();
-        resolve(false);
-      },
-      onCancel: () => resolve(false),
-    });
-  });
+  // 深链预览的主窗口可能隐藏，使用原生对话框让提示仍然可见。
+  const openSettings = await showPreviewDialog(
+    t("videoPreviewsUseFfmpegToExtractFramesEnableAndConfigure"),
+    t("ffmpegRequiredForPreviews"),
+    [t("goToSettings"), t("cancel")]
+  );
+  if (openSettings) {
+    await bringMainWindowToFront();
+    onOpenFfmpegSettings();
+  }
+  return false;
 }
 
 async function openPreviewWindowFromDeepLink(
@@ -1660,11 +1691,11 @@ async function openPreviewWindowFromDeepLink(
   title: string | undefined,
   onOpenFfmpegSettings: () => void
 ): Promise<void> {
-  if (!(await ensureFfmpegReadyForPreview(onOpenFfmpegSettings))) {
-    return;
-  }
   let token: string | null = null;
   try {
+    if (!(await ensureFfmpegReadyForPreview(onOpenFfmpegSettings))) {
+      return;
+    }
     const isInlineDashJson = url.trim().startsWith("{");
     const sessionUrl = isInlineDashJson ? "inline-dash-json" : url;
     const sourceKind = isInlineDashJson ? "inline_dash_json" : undefined;
@@ -1697,21 +1728,38 @@ async function openPreviewWindowFromDeepLink(
     });
 
     previewWindow.once("tauri://created", () => {
-      void previewWindow.setFocus();
+      // 主窗口可能仍被浏览器遮挡，直接显示并激活新建的预览窗口。
+      void (async () => {
+        await previewWindow.show();
+        if (await previewWindow.isMinimized()) {
+          await previewWindow.unminimize();
+        }
+        await previewWindow.setFocus();
+      })().catch((error) => {
+        console.error("Failed to bring preview window to front", error);
+      });
     });
     previewWindow.once("tauri://error", (event) => {
       console.error("Failed to create preview window", event);
       if (token) {
         void closePreviewSession(token);
       }
-      message.error(t("failedToOpenPreviewWindow"));
+      void showPreviewError(t("failedToOpenPreviewWindow"));
     });
   } catch (error) {
     if (token) {
       void closePreviewSession(token);
     }
     console.error("[m3u8quicker] failed to open preview window", error);
-    message.error(t("failedToGeneratePreview", { value0: formatPreviewError(error) }));
+    await showPreviewError(t("failedToGeneratePreview", { value0: formatPreviewError(error) }));
+  }
+}
+
+async function showPreviewError(error: string): Promise<void> {
+  try {
+    await showPreviewDialog(error, t("previewFailed"));
+  } catch (dialogError) {
+    console.error("[m3u8quicker] failed to show preview error", dialogError);
   }
 }
 

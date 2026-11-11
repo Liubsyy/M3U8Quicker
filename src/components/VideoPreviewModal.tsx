@@ -104,7 +104,15 @@ export function VideoPreviewModal({
       });
 
       previewWindow.once("tauri://created", () => {
-        void previewWindow.setFocus();
+        void (async () => {
+          await previewWindow.show();
+          if (await previewWindow.isMinimized()) {
+            await previewWindow.unminimize();
+          }
+          await previewWindow.setFocus();
+        })().catch((error) => {
+          console.error("Failed to bring preview window to front", error);
+        });
       });
       previewWindow.once("tauri://error", (event) => {
         console.error("Failed to create preview window", event);

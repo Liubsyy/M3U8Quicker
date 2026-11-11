@@ -1,4 +1,10 @@
 {
+  "searchDownloadFilename": "Search filenames",
+  "searchByFilename": "Search by filename",
+  "matchingDownloadCount": "Found {{value0}} matching records",
+  "noMatchingDownloads": "No matching records found",
+  "searchingDownloads": "Searching…",
+  "failedToLoadDownloadHistory": "Failed to load download history: {{value0}}",
   "installChromeExtension": "Install Chrome extension",
   "openChrome": "Open Chrome",
   "installMicrosoftEdgeExtension": "Install Microsoft Edge extension",

@@ -11,6 +11,7 @@
     "windows": [
       {
         "title": "M3U8 Quicker",
+        "visible": false,
         "width": 1000,
         "height": 680,
         "resizable": true,

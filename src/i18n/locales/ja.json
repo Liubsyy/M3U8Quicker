@@ -1,4 +1,10 @@
 {
+  "searchDownloadFilename": "ファイル名を検索",
+  "searchByFilename": "ファイル名で検索",
+  "matchingDownloadCount": "{{value0}} 件の一致する履歴",
+  "noMatchingDownloads": "一致する履歴がありません",
+  "searchingDownloads": "検索中…",
+  "failedToLoadDownloadHistory": "ダウンロード履歴の読み込みに失敗しました：{{value0}}",
   "installChromeExtension": "Chrome 拡張機能をインストールする",
   "openChrome": "Chrome を開く",
   "installMicrosoftEdgeExtension": "Microsoft Edge 拡張機能をインストールする",

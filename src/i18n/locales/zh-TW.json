@@ -1,4 +1,10 @@
 {
+  "searchDownloadFilename": "搜尋檔案名稱",
+  "searchByFilename": "依檔案名稱搜尋",
+  "matchingDownloadCount": "找到 {{value0}} 筆符合的記錄",
+  "noMatchingDownloads": "找不到符合的記錄",
+  "searchingDownloads": "正在搜尋…",
+  "failedToLoadDownloadHistory": "載入下載歷史失敗：{{value0}}",
   "installChromeExtension": "安裝 Chrome 擴充套件",
   "openChrome": "開啟Chrome",
   "installMicrosoftEdgeExtension": "安裝 Microsoft Edge 擴充套件",

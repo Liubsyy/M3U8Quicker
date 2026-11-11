@@ -1,4 +1,10 @@
 {
+  "searchDownloadFilename": "Pesquisar nomes de arquivos",
+  "searchByFilename": "Pesquisar por nome de arquivo",
+  "matchingDownloadCount": "{{value0}} registros correspondentes encontrados",
+  "noMatchingDownloads": "Nenhum registro correspondente encontrado",
+  "searchingDownloads": "Pesquisando…",
+  "failedToLoadDownloadHistory": "Falha ao carregar o histórico de downloads: {{value0}}",
   "installChromeExtension": "Instalar a extensão do Chrome",
   "openChrome": "Abrir Chrome",
   "installMicrosoftEdgeExtension": "Instalar a extensão Microsoft Edge",

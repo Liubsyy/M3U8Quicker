@@ -1,4 +1,10 @@
 {
+  "searchDownloadFilename": "Поиск по имени файла",
+  "searchByFilename": "Поиск по имени файла",
+  "matchingDownloadCount": "Найдено записей: {{value0}}",
+  "noMatchingDownloads": "Совпадений не найдено",
+  "searchingDownloads": "Поиск…",
+  "failedToLoadDownloadHistory": "Не удалось загрузить историю загрузок: {{value0}}",
   "installChromeExtension": "Установите расширение Chrome",
   "openChrome": "Открыть Chrome",
   "installMicrosoftEdgeExtension": "Установите расширение Microsoft Edge",

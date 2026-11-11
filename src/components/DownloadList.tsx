@@ -68,6 +68,7 @@ interface DownloadListProps {
   showActions: ("pause" | "resume" | "cancel" | "stop" | "remove" | "open" | "play")[];
   showSpeed?: boolean;
   actionsHeaderExtra?: ReactNode;
+  emptyText?: ReactNode;
   cancelLabels?: CancelLabels;
   statusTagOverride?: (status: DownloadStatus) => ReactNode | undefined;
   /** Override the "in progress" set when deciding which timestamp to show. */
@@ -201,6 +202,7 @@ export function DownloadList({
   showActions,
   showSpeed = true,
   actionsHeaderExtra,
+  emptyText,
   cancelLabels,
   statusTagOverride,
 }: DownloadListProps) {
@@ -903,7 +905,7 @@ export function DownloadList({
         }}
         size="middle"
         tableLayout="fixed"
-        locale={{ emptyText: t("noDownloadTasks") }}
+        locale={{ emptyText: emptyText ?? t("noDownloadTasks") }}
         onRow={(record) => ({
           onContextMenu: (event) => {
             if (buildMenuItems(record).length === 0) return;

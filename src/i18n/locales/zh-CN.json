@@ -1,4 +1,10 @@
 {
+  "searchDownloadFilename": "搜索文件名",
+  "searchByFilename": "按文件名搜索",
+  "matchingDownloadCount": "找到 {{value0}} 条匹配记录",
+  "noMatchingDownloads": "未找到匹配记录",
+  "searchingDownloads": "正在搜索…",
+  "failedToLoadDownloadHistory": "加载下载历史失败：{{value0}}",
   "installChromeExtension": "安装 Chrome 扩展",
   "openChrome": "打开Chrome",
   "installMicrosoftEdgeExtension": "安装 Microsoft Edge 扩展",

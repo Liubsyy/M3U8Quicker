@@ -86,12 +86,14 @@ export async function getDownloadCounts(): Promise<DownloadCounts> {
 export async function getDownloadsPage(
   group: DownloadGroup,
   page: number,
-  pageSize: number
+  pageSize: number,
+  keyword?: string
 ): Promise<DownloadTaskPage> {
   return invoke<DownloadTaskPage>("get_downloads_page", {
     group,
     page,
     pageSize,
+    keyword,
   });
 }
 
@@ -423,6 +425,14 @@ export interface PreviewThumbnail {
   time_secs: number;
   path: string;
   video_info: PreviewVideoInfo | null;
+}
+
+export async function showPreviewDialog(
+  message: string,
+  title: string,
+  settingsLabels?: [string, string]
+): Promise<boolean> {
+  return invoke("show_preview_dialog", { message, title, settingsLabels });
 }
 
 export async function createPreviewSession(

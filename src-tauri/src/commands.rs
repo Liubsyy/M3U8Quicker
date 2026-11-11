@@ -1052,12 +1052,13 @@ pub async fn get_downloads_page(
     group: DownloadGroup,
     page: usize,
     page_size: usize,
+    keyword: Option<String>,
 ) -> Result<DownloadTaskPage, AppError> {
     if group == DownloadGroup::Active {
         return Ok(get_active_downloads_page(&state, page, page_size).await);
     }
 
-    persistence::get_downloads_page(&app_handle, group, page, page_size).await
+    persistence::get_downloads_page(&app_handle, group, page, page_size, keyword.as_deref()).await
 }
 
 #[tauri::command]
@@ -2430,6 +2431,30 @@ pub async fn set_ffmpeg_enabled(
 pub struct CreatePreviewSessionResponse {
     pub token: String,
     pub window_label: String,
+}
+
+#[tauri::command]
+pub async fn show_preview_dialog(
+    app_handle: AppHandle,
+    title: String,
+    message: String,
+    settings_labels: Option<(String, String)>,
+) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    // 不设置 parent：macOS 的 sheet 会附着于隐藏的主窗口，导致提示不可见。
+    let dialog = app_handle.dialog().message(message).title(title);
+    if let Some((settings_label, cancel_label)) = settings_labels {
+        dialog
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                settings_label,
+                cancel_label,
+            ))
+            .blocking_show()
+    } else {
+        dialog.kind(MessageDialogKind::Error).blocking_show()
+    }
 }
 
 #[tauri::command]
