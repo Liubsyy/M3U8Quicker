@@ -28,13 +28,14 @@ pub struct PreviewSession {
     pub extra_headers: Option<String>,
     pub cache_dir: PathBuf,
     /// What gets handed to ffmpeg/ffprobe as `-i`. For URL sources this is the
-    /// original URL; for inline DASH JSON it's a local HLS playlist file we
-    /// generated inside `cache_dir`.
+    /// original URL; for local files it's their absolute path; for inline DASH
+    /// JSON it's a local HLS playlist file generated inside `cache_dir`.
     pub resolved_input: String,
-    /// Whether `resolved_input` points to a local playlist that references
+    /// Whether `resolved_input` points to a local playlist, possibly referencing
     /// remote segments. ffmpeg's default protocol whitelist for files refuses
     /// to follow `http(s)` URIs, so we have to widen it for these sessions.
     pub uses_local_playlist: bool,
+    pub is_local_file: bool,
     pub media_info: Mutex<Option<ffmpeg::PreviewMediaInfo>>,
     pub operation_lock: RwLock<()>,
     pub cancel_token: Mutex<CancellationToken>,
@@ -74,6 +75,28 @@ pub struct PreviewThumbnailEvent {
     pub thumbnail: PreviewThumbnail,
 }
 
+fn resolve_local_input(raw: &str) -> Result<PathBuf, AppError> {
+    let path = std::path::Path::new(raw);
+    if raw.trim().is_empty() || !path.exists() {
+        return Err(AppError::InvalidInput(crate::localized!("localFileNotFound", raw)));
+    }
+    let path = std::path::absolute(path)?;
+    if path.is_file() {
+        return Ok(path);
+    }
+    // Completed multi-track bundles contain video/index.m3u8; fMP4 outputs
+    // contain index.m3u8. Never choose an arbitrary file from a directory.
+    if path.is_dir() {
+        for relative in ["video/index.m3u8", "index.m3u8"] {
+            let playlist = path.join(relative);
+            if playlist.is_file() {
+                return Ok(playlist);
+            }
+        }
+    }
+    Err(AppError::InvalidInput(crate::localized!("noPreviewVideoAtPath", raw)))
+}
+
 pub async fn create_session(
     app_handle: &AppHandle,
     state: &AppState,
@@ -81,31 +104,39 @@ pub async fn create_session(
     extra_headers: Option<String>,
     source_kind: DownloadSourceKind,
     source_text: Option<String>,
+    local_path: Option<String>,
 ) -> Result<String, AppError> {
+    let local_input = local_path.as_deref().map(resolve_local_input).transpose()?;
+    let is_local_file = local_input.is_some();
     let token = Uuid::new_v4().to_string();
     let cache_dir = preview_root_dir(app_handle)?.join(&token);
     tokio::fs::create_dir_all(&cache_dir).await?;
 
-    let (resolved_input, uses_local_playlist) = match source_kind {
-        DownloadSourceKind::Url => (url.clone(), false),
-        DownloadSourceKind::InlineDashJson => {
-            let raw = source_text
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| AppError::InvalidInput(crate::i18n::tr("dashJsonCannotBeEmpty").to_string()))?;
-            // Prefer handing ffmpeg the bare segment URL when the manifest is
-            // a single self-contained segment (the bilibili case). That avoids
-            // the local-playlist `-headers` propagation issue: when input is
-            // file://, the http protocol child isn't part of the AVFormat
-            // context yet, so ffmpeg rejects `-headers` with "Option not found".
-            if let Some(direct_url) = downloader::inline_dash_preview_direct_url(raw)? {
-                (direct_url, false)
-            } else {
-                let playlist = downloader::build_dash_preview_playlist_from_json(raw)?;
-                let playlist_path = cache_dir.join("preview.m3u8");
-                tokio::fs::write(&playlist_path, playlist).await?;
-                (playlist_path.to_string_lossy().into_owned(), true)
+    let (resolved_input, uses_local_playlist) = if let Some(path) = local_input {
+        let is_playlist = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("m3u8"));
+        (path.to_string_lossy().into_owned(), is_playlist)
+    } else {
+        match source_kind {
+            DownloadSourceKind::Url => (url.clone(), false),
+            DownloadSourceKind::InlineDashJson => {
+                let raw = source_text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| AppError::InvalidInput(crate::i18n::tr("dashJsonCannotBeEmpty").to_string()))?;
+                // Prefer handing ffmpeg the bare segment URL when the manifest is
+                // a single self-contained segment (the bilibili case). That avoids
+                // the local-playlist `-headers` propagation issue: when input is
+                // file://, the http protocol child isn't part of the AVFormat
+                // context yet, so ffmpeg rejects `-headers` with "Option not found".
+                if let Some(direct_url) = downloader::inline_dash_preview_direct_url(raw)? {
+                    (direct_url, false)
+                } else {
+                    let playlist = downloader::build_dash_preview_playlist_from_json(raw)?;
+                    let playlist_path = cache_dir.join("preview.m3u8");
+                    tokio::fs::write(&playlist_path, playlist).await?;
+                    (playlist_path.to_string_lossy().into_owned(), true)
+                }
             }
         }
     };
@@ -115,6 +146,7 @@ pub async fn create_session(
         cache_dir,
         resolved_input,
         uses_local_playlist,
+        is_local_file,
         media_info: Mutex::new(None),
         operation_lock: RwLock::new(()),
         cancel_token: Mutex::new(CancellationToken::new()),
@@ -177,7 +209,7 @@ pub async fn extract_thumbnails(
         }
         guard.child_token()
     };
-    let proxy_url = {
+    let proxy_url = if session.is_local_file { None } else {
         let proxy = state.proxy_settings.lock().await;
         if proxy.enabled && !proxy.url.trim().is_empty() {
             Some(proxy.url.trim().to_string())
@@ -258,6 +290,7 @@ pub async fn extract_thumbnails(
                         target_width,
                         jpeg_quality,
                         session.ffmpeg_input_args(),
+                        session.is_local_file,
                         &cancel_token,
                     )
                     .await?;
@@ -378,6 +411,30 @@ fn thumbnail_dir_for_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_preview_resolves_files_and_known_download_layouts() {
+        let root = std::env::temp_dir().join(format!("preview-path-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("video")).unwrap();
+        let video = root.join("本地 video #1.mp4");
+        std::fs::write(&video, b"test").unwrap();
+        let raw = |path: &std::path::Path| path.to_string_lossy().into_owned();
+
+        assert_eq!(resolve_local_input(&raw(&video)).unwrap(), video);
+        assert!(resolve_local_input("").is_err());
+        assert!(resolve_local_input(&raw(&root.join("missing.mp4"))).is_err());
+        // An arbitrary video file is not enough to resolve a task directory.
+        assert!(resolve_local_input(&raw(&root)).is_err());
+        let playlist = root.join("index.m3u8");
+        std::fs::write(&playlist, b"#EXTM3U").unwrap();
+        assert_eq!(resolve_local_input(&raw(&root)).unwrap(), playlist);
+        let video_playlist = root.join("video/index.m3u8");
+        std::fs::write(&video_playlist, b"#EXTM3U").unwrap();
+        assert_eq!(resolve_local_input(&raw(&root)).unwrap(), video_playlist);
+        assert_eq!(resolve_local_input(&raw(&playlist)).unwrap(), playlist);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn preview_window_label_round_trips_token() {

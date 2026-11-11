@@ -1,4 +1,6 @@
 {
+  "networkLink": "網路連結",
+  "localFile": "本機檔案",
   "failedToLoadRecordingHistory": "載入錄製歷史失敗：{{value0}}",
   "searchDownloadFilename": "搜尋檔案名稱",
   "searchByFilename": "依檔案名稱搜尋",

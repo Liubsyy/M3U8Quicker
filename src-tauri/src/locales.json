@@ -1,4 +1,16 @@
 {
+  "noPreviewVideoAtPath": {
+    "en": "No video file or supported video playlist found at: {}",
+    "zh-CN": "该路径下没有视频文件或支持的视频播放列表：{}",
+    "zh-TW": "該路徑下沒有影片檔案或支援的影片播放清單：{}",
+    "ja": "このパスに動画ファイルまたは対応する動画プレイリストがありません: {}",
+    "ko": "이 경로에 동영상 파일 또는 지원되는 동영상 재생 목록이 없습니다: {}",
+    "es": "No se encontró un vídeo ni una lista de reproducción compatible en: {}",
+    "fr": "Aucun fichier vidéo ni liste de lecture vidéo compatible à cet emplacement : {}",
+    "de": "Keine Videodatei oder unterstützte Video-Wiedergabeliste unter diesem Pfad gefunden: {}",
+    "pt-BR": "Nenhum arquivo de vídeo ou lista de reprodução de vídeo compatível encontrado em: {}",
+    "ru": "По этому пути не найден видеофайл или поддерживаемый плейлист: {}"
+  },
   "directParallelNotSupported": {
     "en": "This server does not support concurrent chunk downloads (a valid byte range and file size are required). Disable concurrent chunk downloads to use a single connection.",
     "zh-CN": "该服务器不支持并发分片下载（需返回有效的字节范围和文件大小）。如需单连接下载，请关闭“并发分片下载”后重试。"

@@ -1,4 +1,6 @@
 {
+  "networkLink": "Link de rede",
+  "localFile": "Arquivo local",
   "failedToLoadRecordingHistory": "Falha ao carregar o histórico de gravações: {{value0}}",
   "searchDownloadFilename": "Pesquisar nomes de arquivos",
   "searchByFilename": "Pesquisar por nome de arquivo",

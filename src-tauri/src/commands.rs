@@ -2465,13 +2465,15 @@ pub async fn create_preview_session(
     extra_headers: Option<String>,
     source_kind: Option<DownloadSourceKind>,
     source_text: Option<String>,
+    local_path: Option<String>,
 ) -> Result<CreatePreviewSessionResponse, AppError> {
     let source_kind = source_kind.unwrap_or(DownloadSourceKind::Url);
     let trimmed_url = url.trim();
-    if trimmed_url.is_empty() {
+    if local_path.is_none() && trimmed_url.is_empty() {
         return Err(AppError::InvalidInput(crate::i18n::tr("enterADownloadUrl").to_string()));
     }
     // Surface invalid Header format early using the existing parser.
+    let extra_headers = if local_path.is_some() { None } else { extra_headers };
     parse_request_headers(extra_headers.as_deref())?;
 
     let normalized_headers = extra_headers
@@ -2496,6 +2498,7 @@ pub async fn create_preview_session(
         normalized_headers,
         source_kind,
         normalized_source_text,
+        local_path,
     )
     .await?;
     Ok(CreatePreviewSessionResponse {

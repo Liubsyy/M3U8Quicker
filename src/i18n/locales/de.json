@@ -1,4 +1,6 @@
 {
+  "networkLink": "Netzwerklink",
+  "localFile": "Lokale Datei",
   "failedToLoadRecordingHistory": "Aufnahmeverlauf konnte nicht geladen werden: {{value0}}",
   "searchDownloadFilename": "Dateinamen suchen",
   "searchByFilename": "Nach Dateiname suchen",

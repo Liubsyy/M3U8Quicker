@@ -1,4 +1,6 @@
 {
+  "networkLink": "Network link",
+  "localFile": "Local file",
   "failedToLoadRecordingHistory": "Failed to load recording history: {{value0}}",
   "searchDownloadFilename": "Search filenames",
   "searchByFilename": "Search by filename",

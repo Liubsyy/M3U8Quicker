@@ -1014,6 +1014,7 @@ pub async fn extract_thumbnail_jpeg_cancellable(
     target_width: u32,
     jpeg_quality: u8,
     extra_input_args: &[&str],
+    retry_with_output_seek: bool,
     cancel_token: &CancellationToken,
 ) -> Result<(), AppError> {
     let formatted_headers = format_ffmpeg_headers(extra_headers);
@@ -1021,8 +1022,6 @@ pub async fn extract_thumbnail_jpeg_cancellable(
     let mut args: Vec<String> = vec![
         "-y".to_string(),
         "-hide_banner".to_string(),
-        "-ss".to_string(),
-        format!("{:.3}", time_secs.max(0.0)),
     ];
     if let Some(headers) = formatted_headers {
         args.push("-headers".to_string());
@@ -1035,6 +1034,7 @@ pub async fn extract_thumbnail_jpeg_cancellable(
     for extra in extra_input_args {
         args.push((*extra).to_string());
     }
+    let output_seek_index = args.len() + 2;
     args.extend([
         "-i".to_string(),
         input.to_string(),
@@ -1050,7 +1050,19 @@ pub async fn extract_thumbnail_jpeg_cancellable(
         output_path.to_string_lossy().into_owned(),
     ]);
 
-    run_ffmpeg_command_cancellable(ffmpeg_path, &args, cancel_token).await
+    let seek_args = ["-ss".to_string(), format!("{:.3}", time_secs.max(0.0))];
+    let mut fast_args = args.clone();
+    fast_args.splice(2..2, seek_args.clone());
+    let result = run_ffmpeg_command_cancellable(ffmpeg_path, &fast_args, cancel_token).await;
+    if retry_with_output_seek && !cancel_token.is_cancelled()
+        && (result.is_err() || !tokio::fs::metadata(output_path).await.is_ok_and(|meta| meta.len() > 0))
+    {
+        // Short/unindexed local TS files may seek past the last keyframe.
+        // Decode to the timestamp only as a fallback; keep normal previews fast.
+        args.splice(output_seek_index..output_seek_index, seek_args);
+        return run_ffmpeg_command_cancellable(ffmpeg_path, &args, cancel_token).await;
+    }
+    result
 }
 
 fn sanitize_ffmpeg_proxy(raw: Option<&str>) -> Option<String> {

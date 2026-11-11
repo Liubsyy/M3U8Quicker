@@ -1,4 +1,6 @@
 {
+  "networkLink": "网络链接",
+  "localFile": "本地文件",
   "failedToLoadRecordingHistory": "加载录制历史失败：{{value0}}",
   "searchDownloadFilename": "搜索文件名",
   "searchByFilename": "按文件名搜索",

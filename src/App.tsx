@@ -320,7 +320,7 @@ function App({
 
       const previewDraft = parsePreviewDraft(deepLink);
       if (previewDraft) {
-        void openPreviewWindowFromDeepLink(
+        void openPreviewWindow(
           previewDraft.url,
           previewDraft.extraHeaders,
           previewDraft.title,
@@ -713,6 +713,14 @@ function App({
     updated_at: new Date().toISOString(),
   });
 
+  const handlePreviewLocalVideo = (task: DownloadTaskSummary) => {
+    if (!task.file_path) return;
+    void openPreviewWindow("", undefined, task.filename, () => {
+      setSettingsInitialTab("ffmpeg");
+      setSettingsOpen(true);
+    }, task.file_path);
+  };
+
   const tabItems = [
     {
       key: "downloading",
@@ -770,6 +778,7 @@ function App({
             }}
             loading={loadingHistory}
             emptyText={hasHistorySearch ? t("noMatchingDownloads") : undefined}
+            onPreview={handlePreviewLocalVideo}
             onAnalyze={(filePath) => {
               setToolInputPath(filePath);
               setActiveTool("analyze-media");
@@ -866,6 +875,7 @@ function App({
             }}
             loading={loadingLiveHistory}
             emptyText={hasLiveHistorySearch ? t("noMatchingDownloads") : undefined}
+            onPreview={handlePreviewLocalVideo}
             showActions={["play", "remove", "open"]}
             showSpeed={false}
             statusTagOverride={liveStatusTagOverride}
@@ -1679,11 +1689,12 @@ async function ensureFfmpegReadyForPreview(
   return false;
 }
 
-async function openPreviewWindowFromDeepLink(
+async function openPreviewWindow(
   url: string,
   extraHeaders: string | undefined,
   title: string | undefined,
-  onOpenFfmpegSettings: () => void
+  onOpenFfmpegSettings: () => void,
+  localPath?: string
 ): Promise<void> {
   let token: string | null = null;
   try {
@@ -1698,7 +1709,8 @@ async function openPreviewWindowFromDeepLink(
       sessionUrl,
       extraHeaders,
       sourceKind,
-      sourceText
+      sourceText,
+      localPath
     );
     token = session.token;
     const previewParams = new URLSearchParams({

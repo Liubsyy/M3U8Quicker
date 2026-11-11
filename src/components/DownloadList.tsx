@@ -27,6 +27,7 @@ import {
   GlobalOutlined,
   InfoCircleOutlined,
   PauseCircleOutlined,
+  PictureOutlined,
   ReloadOutlined,
   VideoCameraOutlined,
 } from "@ant-design/icons";
@@ -64,6 +65,7 @@ interface DownloadListProps {
   onStop?: (id: string) => void;
   onPlay?: (task: DownloadTaskSummary) => void;
   onAnalyze?: (filePath: string) => void;
+  onPreview?: (task: DownloadTaskSummary) => void;
   loading: boolean;
   showActions: ("pause" | "resume" | "cancel" | "stop" | "remove" | "open" | "play")[];
   showSpeed?: boolean;
@@ -198,6 +200,7 @@ export function DownloadList({
   onStop,
   onPlay,
   onAnalyze,
+  onPreview,
   loading,
   showActions,
   showSpeed = true,
@@ -246,6 +249,14 @@ export function DownloadList({
         icon: <VideoCameraOutlined />,
         label: t("play"),
         disabled: !canOpenInProgressPlayback(record),
+      });
+    }
+    if (onPreview && record.status === "Completed") {
+      opGroup.push({
+        key: "preview",
+        icon: <PictureOutlined />,
+        label: t("videoThumbnails"),
+        disabled: !record.file_path?.trim(),
       });
     }
     if (onAnalyze && record.status === "Completed") {
@@ -348,6 +359,11 @@ export function DownloadList({
       case "analyze":
         if (record.status === "Completed" && record.file_path?.trim()) {
           onAnalyze?.(record.file_path);
+        }
+        return;
+      case "preview":
+        if (record.status === "Completed" && record.file_path?.trim()) {
+          onPreview?.(record);
         }
         return;
       case "pause":

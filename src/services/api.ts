@@ -439,13 +439,15 @@ export async function createPreviewSession(
   url: string,
   extraHeaders?: string,
   sourceKind?: DownloadSourceKind,
-  sourceText?: string
+  sourceText?: string,
+  localPath?: string
 ): Promise<{ token: string; window_label: string }> {
   return invoke<{ token: string; window_label: string }>("create_preview_session", {
     url,
     extraHeaders: extraHeaders ?? null,
     sourceKind: sourceKind ?? null,
     sourceText: sourceText ?? null,
+    localPath: localPath ?? null,
   });
 }
 

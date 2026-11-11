@@ -1,4 +1,6 @@
 {
+  "networkLink": "네트워크 링크",
+  "localFile": "로컬 파일",
   "failedToLoadRecordingHistory": "녹화 기록을 불러오지 못했습니다: {{value0}}",
   "searchDownloadFilename": "파일 이름 검색",
   "searchByFilename": "파일 이름으로 검색",
