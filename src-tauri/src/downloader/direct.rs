@@ -3,7 +3,7 @@ use super::*;
 use serde::Serialize;
 use tokio::io::AsyncReadExt;
 
-pub const CHUNK_SIZE: u64 = 8 * 1024 * 1024;
+pub const CHUNK_SIZE: u64 = 2 * 1024 * 1024;
 const MAX_ATTEMPTS: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

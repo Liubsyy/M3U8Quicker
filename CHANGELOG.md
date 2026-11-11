@@ -12,6 +12,7 @@
 
 **Release Notes**
 
+- Video thumbnails now support local files and can be opened directly from the context menu for completed tasks.
 - Added concurrent chunk downloads for Direct links.
 - Increased the download concurrency limit to 10,000.
 - Browser preview links no longer bring up the main window.
