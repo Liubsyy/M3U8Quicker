@@ -585,5 +585,12 @@
   "ignoreHttpsCertificateErrors": "忽略 HTTPS 憑證錯誤",
   "ignoreHttpsCertificateErrorsDescription": "略過憑證與網域驗證，可存取憑證過期或自簽憑證的資源，但會降低連線安全性，僅適用於可信來源。執行中的工作請暫停後繼續。",
   "httpsCertificateSettingsSaved": "HTTPS 憑證設定已儲存",
-  "failedToSaveHttpsCertificateSettings": "儲存 HTTPS 憑證設定失敗：{{value0}}"
+  "failedToSaveHttpsCertificateSettings": "儲存 HTTPS 憑證設定失敗：{{value0}}",
+  "directParallelDownload": "並行分段下載",
+  "directParallelDownloadHint": "為本批次的直連影片啟用分段並行下載，需要伺服器支援 Range 請求。",
+  "directSingleFallback": "單一連線下載（未啟用分段）",
+  "directCheckingRanges": "正在檢查分段支援",
+  "directBuffering": "正在緩衝，等待所需分段下載…",
+  "directRestartRequired": "需要重新下載",
+  "directRestartExplanation": "遠端檔案或分段支援已變更，或無法確認檔案版本。重新下載將清除已儲存的 {{value0}} 分段資料並從頭開始。"
 }

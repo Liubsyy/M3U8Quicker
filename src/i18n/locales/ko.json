@@ -585,5 +585,12 @@
   "ignoreHttpsCertificateErrors": "HTTPS 인증서 오류 무시",
   "ignoreHttpsCertificateErrorsDescription": "인증서 및 호스트 이름 검증을 건너뛰어 만료되었거나 자체 서명된 인증서의 리소스에 접근합니다. 연결 보안이 약화되므로 신뢰할 수 있는 출처에만 사용하세요. 실행 중인 작업은 일시 중지 후 다시 시작하세요.",
   "httpsCertificateSettingsSaved": "HTTPS 인증서 설정이 저장되었습니다",
-  "failedToSaveHttpsCertificateSettings": "HTTPS 인증서 설정 저장 실패: {{value0}}"
+  "failedToSaveHttpsCertificateSettings": "HTTPS 인증서 설정 저장 실패: {{value0}}",
+  "directParallelDownload": "병렬 분할 다운로드",
+  "directParallelDownloadHint": "이번 일괄 다운로드의 직접 동영상 링크에 병렬 분할 다운로드를 사용합니다. 서버가 Range 요청을 지원해야 합니다.",
+  "directSingleFallback": "단일 연결(분할 다운로드 꺼짐)",
+  "directCheckingRanges": "분할 다운로드 지원 확인 중",
+  "directBuffering": "필요한 부분이 다운로드될 때까지 버퍼링 중…",
+  "directRestartRequired": "다시 다운로드해야 합니다",
+  "directRestartExplanation": "원격 파일 또는 범위 요청 지원이 변경되었거나 파일 버전을 확인할 수 없습니다. 다시 시작하면 저장된 {{value0}}의 분할 데이터를 삭제하고 처음부터 다운로드합니다."
 }

@@ -24,6 +24,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return;
   }
 
+  if (message.type === "m3u8quicker:batch-transfer" && sender.tab?.id >= 0) {
+    return globalThis.m3u8quickerTransferBatchAttempt(message).catch(() => ({ ok: false, retryable: true }));
+  }
+
   if (message.type === FRAME_DETECT_MESSAGE && sender.tab?.id >= 0) {
     queueAndDispatch(sender.tab.id, message.url);
     return;

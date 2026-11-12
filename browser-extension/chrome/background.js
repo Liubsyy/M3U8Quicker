@@ -1,3 +1,5 @@
+importScripts("batch-transfer.js");
+
 const BACKGROUND_DETECT_MESSAGE = "m3u8quicker:network-detected";
 const FRAME_DETECT_MESSAGE = "m3u8quicker:frame-detected";
 const SYNC_DETECTIONS_MESSAGE = "m3u8quicker:sync-detections";
@@ -22,6 +24,11 @@ chrome.webRequest.onBeforeRequest.addListener(
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") {
     return;
+  }
+
+  if (message.type === "m3u8quicker:batch-transfer" && sender.tab?.id >= 0) {
+    globalThis.m3u8quickerTransferBatchAttempt(message).then(sendResponse, () => sendResponse({ ok: false, retryable: true }));
+    return true;
   }
 
   if (message.type === FRAME_DETECT_MESSAGE && sender.tab?.id >= 0) {

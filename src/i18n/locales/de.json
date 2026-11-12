@@ -585,5 +585,12 @@
   "ignoreHttpsCertificateErrors": "HTTPS-Zertifikatsfehler ignorieren",
   "ignoreHttpsCertificateErrorsDescription": "Überspringt die Zertifikats- und Hostnamenprüfung, um auf Ressourcen mit abgelaufenen oder selbstsignierten Zertifikaten zuzugreifen. Dies verringert die Verbindungssicherheit; nur für vertrauenswürdige Quellen verwenden. Laufende Aufgaben pausieren und fortsetzen, um die Einstellung anzuwenden.",
   "httpsCertificateSettingsSaved": "HTTPS-Zertifikatseinstellungen gespeichert",
-  "failedToSaveHttpsCertificateSettings": "HTTPS-Zertifikatseinstellungen konnten nicht gespeichert werden: {{value0}}"
+  "failedToSaveHttpsCertificateSettings": "HTTPS-Zertifikatseinstellungen konnten nicht gespeichert werden: {{value0}}",
+  "directParallelDownload": "Paralleler Download in Teilstücken",
+  "directParallelDownloadHint": "Aktiviert parallele Downloads in Teilstücken für direkte Videolinks in diesem Stapel. Der Server muss Range-Anfragen unterstützen.",
+  "directSingleFallback": "Einzelverbindung (Teildownloads deaktiviert)",
+  "directCheckingRanges": "Unterstützung für Bereichsanfragen wird geprüft",
+  "directBuffering": "Warten auf den Download der benötigten Teilstücke…",
+  "directRestartRequired": "Neustart des Downloads erforderlich",
+  "directRestartExplanation": "Die entfernte Datei oder die Unterstützung für Bereichsanfragen hat sich geändert, oder die Dateiversion kann nicht überprüft werden. Beim Neustart werden {{value0}} gespeicherte Teildaten verworfen und erneut heruntergeladen."
 }

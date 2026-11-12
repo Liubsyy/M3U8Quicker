@@ -10,6 +10,7 @@
 - 优化浏览器预览跳转，不再自动弹出主窗口。
 - 下载完成和录制完成列表新增右侧文件名搜索框。
 - 浏览器扩展将标题与媒体地址分开传递，避免改写地址导致下载失败，并兼容旧版 `title` 文件名逻辑。
+- 优化跨平台批量下载（链接超过上限无法跳转问题）：短链接唤醒、本机 HTTP 传输
 
 **Release Notes**
 
@@ -18,6 +19,7 @@
 - Increased the download concurrency limit to 10,000.
 - Browser preview links no longer bring up the main window.
 - Added right-aligned filename search to the completed downloads and recordings lists.
+- Improved cross-platform batch downloads (fixing launch failures when links exceed length limits) with short launch links and local HTTP transfers.
 
 ## 1.3.0
 

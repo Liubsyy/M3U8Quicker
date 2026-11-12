@@ -9,7 +9,7 @@
   const PANEL_ID = "m3u8quicker-download-panel";
   const ROOT_HOST_ID = "m3u8quicker-root-host";
   const APP_DEEP_LINK_BASE_URL = "m3u8quicker://new-task";
-  const APP_BATCH_DEEP_LINK_BASE_URL = "m3u8quicker://batch-download";
+  const APP_BATCH_DEEP_LINK_BASE_URL = "m3u8quicker://batch-transfer";
   const APP_PREVIEW_DEEP_LINK_BASE_URL = "m3u8quicker://preview";
   const APP_LIVE_DEEP_LINK_BASE_URL = "m3u8quicker://new-live-record";
   const CHECK_PATTERN = /(png|image|ts|jpg|mp4|jpeg|EXTINF|MPD|SegmentTemplate|Representation)/i;
@@ -33,6 +33,10 @@
   const messages = {
     zh: {
       title: "选择要下载的视频", selectAll: "全选", deselect: "不选", clear: "清空",
+      batchSending: "正在连接客户端并发送…", batchRetry: "重试批量下载",
+      batchTimeout: "未能完成传输，请确认已安装并打开最新版客户端，然后点击重试。勾选已保留。",
+      batchTooLarge: "本次数据超过 16 MB，请减少勾选后重试。勾选已保留。",
+      batchInvalid: "客户端无法接收本次数据，请更新客户端和扩展后重试。勾选已保留。",
       batch: "批量下载", close: "关闭", empty: "暂无可下载视频",
       preview: "预览", copy: "复制", copied: "已复制", failed: "失败",
       download: "下载", record: "录播", quality: "{name} 清晰度",
@@ -40,6 +44,10 @@
     },
     en: {
       title: "Select videos to download", selectAll: "Select all", deselect: "Deselect", clear: "Clear",
+      batchSending: "Connecting and sending…", batchRetry: "Retry selected",
+      batchTimeout: "Transfer failed. Open the latest desktop app, then retry. Your selection is preserved.",
+      batchTooLarge: "This batch exceeds 16 MB. Select fewer items and retry. Your selection is preserved.",
+      batchInvalid: "The app could not accept this batch. Update the app and extension, then retry. Your selection is preserved.",
       batch: "Download selected", close: "Close", empty: "No videos available",
       preview: "Preview", copy: "Copy", copied: "Copied", failed: "Failed",
       download: "Download", record: "Record", quality: "{name} quality",
@@ -742,6 +750,8 @@
       update();
     };
     const selectedUrls = new Set();
+    let batchSending = false;
+    let batchErrorKey = "";
     const panelItems = buildTargetsWithUniqueNames(detectedTargets);
 
     const header = document.createElement("div");
@@ -811,10 +821,20 @@
       panel.remove();
     });
 
+    const batchStatus = document.createElement("div");
+    batchStatus.setAttribute("role", "status");
+    batchStatus.style.cssText = "font-size:12px;color:#b42318;margin-bottom:8px;white-space:normal;";
+    languageBindings.push(() => { batchStatus.textContent = batchErrorKey ? t(batchErrorKey) : ""; });
+
     const updateBatchButtonState = () => {
       const checkedCount = selectedUrls.size;
-      batchButton.textContent = checkedCount > 0 ? `${t("batch")} (${checkedCount})` : t("batch");
-      batchButton.disabled = checkedCount === 0;
+      const label = t(batchErrorKey ? "batchRetry" : "batch");
+      batchButton.textContent = batchSending ? t("batchSending") : checkedCount > 0 ? `${label} (${checkedCount})` : label;
+      batchButton.disabled = batchSending || checkedCount === 0;
+      selectAllButton.disabled = batchSending;
+      clearSelectionButton.disabled = batchSending;
+      clearListButton.disabled = batchSending;
+      selectionInputs.forEach((input) => { input.disabled = batchSending; });
       batchButton.style.opacity = checkedCount > 0 ? "1" : "0.45";
       batchButton.style.cursor = checkedCount > 0 ? "pointer" : "not-allowed";
     };
@@ -841,15 +861,22 @@
       clearDetectedTargets();
     });
 
-    batchButton.addEventListener("click", () => {
-      if (selectedUrls.size === 0) {
-        return;
+    batchButton.addEventListener("click", async () => {
+      if (selectedUrls.size === 0 || batchSending) return;
+      batchSending = true;
+      batchErrorKey = "";
+      batchStatus.textContent = "";
+      updateBatchButtonState();
+      try {
+        await openBatchDownloader(panelItems.filter((item) => selectedUrls.has(item.selectionKey)));
+        panel.remove();
+      } catch (error) {
+        batchErrorKey = error.message === "tooLarge" ? "batchTooLarge" : error.message === "invalid" ? "batchInvalid" : "batchTimeout";
+        batchStatus.textContent = t(batchErrorKey);
+      } finally {
+        batchSending = false;
+        updateBatchButtonState();
       }
-
-      openBatchDownloader(
-        panelItems.filter((item) => selectedUrls.has(item.selectionKey))
-      );
-      panel.remove();
     });
 
     const languageSwitch = document.createElement("div");
@@ -892,6 +919,7 @@
     headerActions.appendChild(batchButton);
     panel.appendChild(header);
     panel.appendChild(headerActions);
+    panel.appendChild(batchStatus);
 
     if (panelItems.length === 0) {
       const empty = document.createElement("div");
@@ -1198,25 +1226,56 @@
     window.location.href = `${APP_LIVE_DEEP_LINK_BASE_URL}?${params.toString()}`;
   }
 
-  function openBatchDownloader(items) {
-    if (!items || items.length === 0) {
-      return;
-    }
+  let batchTransferCache = null;
 
-    const params = new URLSearchParams({
-      items: items.map((item) => item.url).join("\n"),
-      titles: JSON.stringify(items.map((item) => item.batchTitle))
+  function sendBatchTransferMessage(transfer) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve({ ok: false, retryable: true }), 8000);
+      const done = (result) => { clearTimeout(timer); resolve(result || { ok: false, retryable: true }); };
+      const message = { type: "m3u8quicker:batch-transfer", id: transfer.id, secret: transfer.secret, payload: transfer.payload };
+      try {
+        if (typeof browser !== "undefined" && browser.runtime) {
+          browser.runtime.sendMessage(message).then(done, () => done(null));
+        } else {
+          chrome.runtime.sendMessage(message, (result) => {
+            done(chrome.runtime.lastError ? null : result);
+          });
+        }
+      } catch {
+        done(null);
+      }
     });
-    const fileTypes = items.map((item) => item.fileType || "").join("\n");
-    if (fileTypes.trim()) {
-      params.set("file_types", fileTypes);
-    }
-    const extraHeaders = buildExtraHeaders();
-    if (extraHeaders) {
-      params.set("extra_headers", extraHeaders);
-    }
+  }
 
+  async function openBatchDownloader(items) {
+    if (!items || items.length === 0) return;
+    const payload = {
+      items: items.map((item) => ({ url: item.url, title: item.batchTitle || "", file_type: item.fileType || "" })),
+      extra_headers: buildExtraHeaders() || "",
+    };
+    const serialized = JSON.stringify(payload);
+    if (new TextEncoder().encode(serialized).length > 16 * 1024 * 1024) throw new Error("tooLarge");
+    const randomHex = (bytes) => Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+    // Reuse the same ID on retry so a lost acknowledgement cannot import twice.
+    if (!batchTransferCache || batchTransferCache.serialized !== serialized || Date.now() - batchTransferCache.created > 240000) {
+      batchTransferCache = { id: randomHex(16), secret: randomHex(32), payload, serialized, created: Date.now() };
+    }
+    const transfer = batchTransferCache;
+    const params = new URLSearchParams({ id: transfer.id, secret: transfer.secret, attempt: randomHex(8) });
+    // Keep navigation synchronous with the click so browsers retain user activation.
     window.location.href = `${APP_BATCH_DEEP_LINK_BASE_URL}?${params.toString()}`;
+    const deadline = Date.now() + 90000;
+    do {
+      const result = await sendBatchTransferMessage(transfer);
+      if (result.ok) {
+        if (batchTransferCache === transfer) batchTransferCache = null;
+        return;
+      }
+      if (!result.retryable) throw new Error(result.error || "invalid");
+      // Each round sends a runtime message, keeping the MV3 worker active during cold start.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    } while (Date.now() < deadline);
+    throw new Error("timeout");
   }
 
   function buildTargetsWithUniqueNames(items) {

@@ -587,6 +587,7 @@
   "httpsCertificateSettingsSaved": "HTTPS certificate settings saved",
   "failedToSaveHttpsCertificateSettings": "Failed to save HTTPS certificate settings: {{value0}}",
   "directParallelDownload": "Concurrent chunk download",
+  "directParallelDownloadHint": "Enable concurrent chunk downloads for direct video links in this batch. The server must support Range requests.",
   "directSingleFallback": "Single connection (parallel unavailable)",
   "directCheckingRanges": "Checking range support",
   "directBuffering": "Buffering downloaded chunks…",

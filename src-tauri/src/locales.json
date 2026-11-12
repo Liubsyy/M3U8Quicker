@@ -13,7 +13,15 @@
   },
   "directParallelNotSupported": {
     "en": "This server does not support concurrent chunk downloads (a valid byte range and file size are required). Disable concurrent chunk downloads to use a single connection.",
-    "zh-CN": "该服务器不支持并发分片下载（需返回有效的字节范围和文件大小）。如需单连接下载，请关闭“并发分片下载”后重试。"
+    "zh-CN": "该服务器不支持并发分片下载（需返回有效的字节范围和文件大小）。如需单连接下载，请关闭“并发分片下载”后重试。",
+    "zh-TW": "此伺服器不支援並行分段下載（需回傳有效的位元組範圍與檔案大小）。如需使用單一連線，請關閉「並行分段下載」後重試。",
+    "ja": "このサーバーは分割並列ダウンロードに対応していません（有効なバイト範囲とファイルサイズが必要です）。単一接続を使用するには、分割並列ダウンロードを無効にして再試行してください。",
+    "ko": "이 서버는 병렬 분할 다운로드를 지원하지 않습니다(유효한 바이트 범위와 파일 크기가 필요합니다). 단일 연결을 사용하려면 병렬 분할 다운로드를 끄고 다시 시도하세요.",
+    "es": "Este servidor no admite descargas simultáneas por fragmentos (se requieren un rango de bytes y un tamaño de archivo válidos). Desactiva esta opción y vuelve a intentarlo para usar una sola conexión.",
+    "fr": "Ce serveur ne prend pas en charge le téléchargement simultané par blocs (une plage d’octets et une taille de fichier valides sont nécessaires). Désactivez cette option et réessayez pour utiliser une seule connexion.",
+    "de": "Dieser Server unterstützt keine parallelen Teildownloads (ein gültiger Bytebereich und eine Dateigröße sind erforderlich). Deaktivieren Sie parallele Teildownloads und versuchen Sie es erneut, um eine Einzelverbindung zu verwenden.",
+    "pt-BR": "Este servidor não oferece suporte ao download simultâneo em partes (são necessários um intervalo de bytes e um tamanho de arquivo válidos). Desative essa opção e tente novamente para usar uma única conexão.",
+    "ru": "Этот сервер не поддерживает параллельную загрузку по частям (требуются корректный диапазон байтов и размер файла). Отключите параллельную загрузку по частям и повторите попытку, чтобы использовать одно соединение."
   },
   "onlyDownloadingTasksCanBePaused": {
     "en": "Only downloading tasks can be paused",

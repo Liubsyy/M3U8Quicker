@@ -585,5 +585,12 @@
   "ignoreHttpsCertificateErrors": "Ignorar erros de certificado HTTPS",
   "ignoreHttpsCertificateErrorsDescription": "Ignora a validação do certificado e do nome do host para acessar recursos com certificados expirados ou autoassinados. Isso reduz a segurança da conexão; use apenas fontes confiáveis. Pause e retome as tarefas em andamento para aplicar.",
   "httpsCertificateSettingsSaved": "Configurações de certificado HTTPS salvas",
-  "failedToSaveHttpsCertificateSettings": "Falha ao salvar configurações de certificado HTTPS: {{value0}}"
+  "failedToSaveHttpsCertificateSettings": "Falha ao salvar configurações de certificado HTTPS: {{value0}}",
+  "directParallelDownload": "Download simultâneo em partes",
+  "directParallelDownloadHint": "Ativa o download simultâneo em partes para os links diretos de vídeo deste lote. O servidor deve oferecer suporte a solicitações Range.",
+  "directSingleFallback": "Conexão única (download em partes desativado)",
+  "directCheckingRanges": "Verificando o suporte a solicitações de intervalo",
+  "directBuffering": "Aguardando o download das partes necessárias…",
+  "directRestartRequired": "É necessário reiniciar o download",
+  "directRestartExplanation": "O arquivo remoto ou o suporte a solicitações de intervalo mudou, ou não é possível verificar sua versão. Reiniciar descartará {{value0}} de partes salvas e baixará novamente desde o início."
 }

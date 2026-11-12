@@ -34,6 +34,7 @@ import { useDownloads } from "./hooks/useDownloads";
 import { useLiveRecords } from "./hooks/useLiveRecords";
 import {
   installChromiumExtension,
+  receiveBrowserBatch,
   openChromiumExtensionsPage,
   installFirefoxExtension,
   openFirefoxAddonsPage,
@@ -333,6 +334,25 @@ function App({
             setSettingsOpen(true);
           }
         );
+        return;
+      }
+
+      const transfer = parseBatchTransferLink(deepLink);
+      if (transfer) {
+        void bringMainWindowToFront();
+        void receiveBrowserBatch(transfer.id, transfer.secret).then((payload) => {
+          if (!payload) return; // A retry of an already imported batch.
+          setBatchDownloadDraft({
+            rawInput: payload.items.map((item) => item.url).join("\n"),
+            extraHeaders: payload.extra_headers || undefined,
+            fileTypes: payload.items.map((item) => parseFileType(item.file_type)),
+            filenames: payload.items.map((item) => normalizeDownloadFilename(item.title) || undefined),
+            nonce: Date.now(),
+          });
+          setBatchDownloadModalOpen(true);
+        }).catch((error: unknown) => {
+          message.error(t("failedToCreateBatchDownloads", { value0: error instanceof Error ? error.message : String(error) }));
+        });
         return;
       }
 
@@ -1844,6 +1864,19 @@ function formatPreviewError(error: unknown): string {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function parseBatchTransferLink(deepLink: string): { id: string; secret: string } | null {
+  try {
+    const parsed = new URL(deepLink);
+    const action = (parsed.hostname || parsed.pathname.replace(/^\/+/, "")).toLowerCase();
+    if (parsed.protocol !== "m3u8quicker:" || action !== "batch-transfer") return null;
+    const id = parsed.searchParams.get("id") || "";
+    const secret = parsed.searchParams.get("secret") || "";
+    return /^[a-f0-9]{32}$/.test(id) && /^[a-f0-9]{64}$/.test(secret) ? { id, secret } : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseBatchDownloadDraft(

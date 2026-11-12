@@ -587,6 +587,7 @@
   "httpsCertificateSettingsSaved": "HTTPS 证书设置已保存",
   "failedToSaveHttpsCertificateSettings": "保存 HTTPS 证书设置失败：{{value0}}",
   "directParallelDownload": "并发分片下载",
+  "directParallelDownloadHint": "为本批次的直链视频启用分片并发下载，需要服务器支持 Range 请求。",
   "directSingleFallback": "单连接下载（未启用分片）",
   "directCheckingRanges": "正在检测分片支持",
   "directBuffering": "正在缓冲，等待所需分片下载…",

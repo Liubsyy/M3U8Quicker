@@ -25,6 +25,15 @@ import type {
 import type { AppLanguage, AppSettings, FfmpegStatus, ProxySettings } from "../types/settings";
 import type { UpdateAsset, UpdateInfo } from "../types/update";
 
+export interface BrowserBatchPayload {
+  items: Array<{ url: string; title: string; file_type: string }>;
+  extra_headers: string;
+}
+
+export function receiveBrowserBatch(id: string, secret: string): Promise<BrowserBatchPayload | null> {
+  return invoke("receive_browser_batch", { id, secret });
+}
+
 export function getAppLanguage(): Promise<AppLanguage> {
   return invoke("get_app_language");
 }

@@ -1,4 +1,5 @@
 mod commands;
+mod batch_bridge;
 mod downloader;
 mod error;
 mod ffmpeg;
@@ -68,6 +69,7 @@ pub fn run() {
                 .build(),
         )
         .manage(app_state)
+        .manage(batch_bridge::BatchBridge::default())
         .on_window_event(|window, event| {
             let tauri::WindowEvent::CloseRequested { api, .. } = event else {
                 return;
@@ -443,6 +445,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            batch_bridge::receive_browser_batch,
             i18n::get_app_language,
             i18n::set_app_language,
             commands::inspect_hls_tracks,
