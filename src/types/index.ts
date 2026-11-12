@@ -489,7 +489,7 @@ export function deriveFilenameFromUrl(url: string): string {
   }
 }
 
-function normalizeDownloadFilename(name: string): string {
+export function normalizeDownloadFilename(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) return "";
 

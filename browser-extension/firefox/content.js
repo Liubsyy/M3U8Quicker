@@ -355,13 +355,13 @@
 
     if (isFlvLiveUrl(url)) {
       checkedTargets.add(url);
-      registerTarget(url, appendTitle(url));
+      registerTarget(url);
       return;
     }
 
     if (isDirectVideoUrl(url)) {
       checkedTargets.add(url);
-      registerTarget(url, appendTitle(url));
+      registerTarget(url);
       return;
     }
 
@@ -375,8 +375,6 @@
       return;
     }
     checkedTargets.add(url);
-
-    const normalizedUrl = appendTitle(url);
 
     try {
       const response = await fetch(url, {
@@ -393,10 +391,10 @@
         return;
       }
 
-      registerTarget(url, normalizedUrl);
+      registerTarget(url);
     } catch (error) {
       console.debug("[m3u8quicker] failed to validate m3u8 url", url, error);
-      registerTarget(url, normalizedUrl);
+      registerTarget(url);
     }
   }
 
@@ -438,9 +436,9 @@
     return match ? match[1].toLowerCase() : "mp4";
   }
 
-  function registerTarget(rawUrl, normalizedUrl) {
+  function registerTarget(rawUrl) {
     let changed = false;
-    if (!detectedTargets.find((item) => item.url === normalizedUrl)) {
+    if (!detectedTargets.find((item) => item.url === rawUrl)) {
       var type = detectFileType(rawUrl);
       var ext = detectFileExt(rawUrl);
       var fallback = type === "mp4"
@@ -449,7 +447,8 @@
           ? `dash-${detectedTargets.length + 1}.mpd`
         : `m3u8-${detectedTargets.length + 1}.m3u8`;
       addDetectedTarget({
-        url: normalizedUrl,
+        url: rawUrl,
+        title: getPageTitle(),
         fileName: getFileName(rawUrl, fallback),
         fileType: type,
         thumbnail: resolveThumbnailFor(rawUrl) || null,
@@ -457,7 +456,7 @@
       });
       changed = true;
     } else {
-      const existing = detectedTargets.find((item) => item.url === normalizedUrl);
+      const existing = detectedTargets.find((item) => item.url === rawUrl);
       if (existing && !existing.thumbnail) {
         existing.thumbnail = resolveThumbnailFor(rawUrl) || null;
         changed = Boolean(existing.thumbnail);
@@ -493,6 +492,7 @@
     );
     if (existing) {
       existing.url = url;
+      existing.title = detail.fileName || existing.title;
       existing.fileName = /\.[a-z0-9]{2,5}$/i.test(fileName) ? fileName : `${fileName}.${ext}`;
       existing.thumbnail = detail.thumbnail || existing.thumbnail || null;
       existing.qualityOptions = qualityOptions;
@@ -511,6 +511,7 @@
     qualityOptions.forEach((quality) => checkedTargets.add(stripTitleParam(quality.url)));
     addDetectedTarget({
       url,
+      title: detail.fileName || getPageTitle(),
       fileName: /\.[a-z0-9]{2,5}$/i.test(fileName) ? fileName : `${fileName}.${ext}`,
       fileType,
       thumbnail: detail.thumbnail || null,
@@ -567,6 +568,7 @@
     const name = sanitizeFilename(title || getPageTitle(), fallback);
     if (existing) {
       existing.url = manifestJson;
+      existing.title = title || existing.title;
       existing.fileName = `${name}.json`;
       existing.qualityOptions = qualityOptions;
       qualityOptions.forEach((quality) => checkedTargets.add(quality.url));
@@ -575,6 +577,7 @@
     }
     addDetectedTarget({
       url: manifestJson,
+      title: title || getPageTitle(),
       fileName: `${name}.json`,
       fileType: "dash",
       thumbnail: null,
@@ -595,39 +598,8 @@
     }
   }
 
-  function appendTitle(url) {
-    try {
-      const urlObj = new URL(url, window.location.href);
-      urlObj.searchParams.set("title", getPageTitle());
-      return urlObj.href;
-    } catch (error) {
-      return url;
-    }
-  }
-
-  // Only when the stored target carries no usable title (e.g. detected before the
-  // page title finished loading) do we re-read the current document.title at action time.
-  function ensureTitleParam(url) {
-    // Inline dash manifests are JSON strings, not URLs; never run them through
-    // the URL parser or they get percent-encoded into a broken page URL.
-    if (typeof url === "string" && url.trim().startsWith("{")) {
-      return url;
-    }
-    try {
-      const urlObj = new URL(url, window.location.href);
-      const existing = urlObj.searchParams.get("title");
-      if (existing && existing.trim()) {
-        return url;
-      }
-      const fresh = getPageTitle();
-      if (!fresh || !fresh.trim()) {
-        return url;
-      }
-      urlObj.searchParams.set("title", fresh);
-      return urlObj.href;
-    } catch (error) {
-      return url;
-    }
+  function getTargetTitle(item) {
+    return String(item.title || getCurrentTitleFromUrl(item.url) || getPageTitle() || "").trim();
   }
 
   function getPageTitle() {
@@ -1019,7 +991,7 @@
       name.style.fontWeight = "600";
       name.style.color = "#17324d";
       name.addEventListener("click", () => {
-        openDownloader(item.url, item.fileType || "hls");
+        openDownloader(item.url, item.fileType || "hls", getTargetTitle(item));
         panel.remove();
       });
 
@@ -1053,9 +1025,6 @@
         qualitySelect.value = item.url;
         qualitySelect.addEventListener("change", () => {
           item.url = qualitySelect.value;
-          item.batchUrl = item.batchTitle
-            ? appendCustomTitle(item.url, item.batchTitle)
-            : item.url;
           content.title = item.url;
         });
         content.appendChild(qualitySelect);
@@ -1091,7 +1060,7 @@
       copyButton.style.flex = "0 0 auto";
       copyButton.addEventListener("click", async (event) => {
         event.stopPropagation();
-        const copied = await copyTextToClipboard(ensureTitleParam(item.url));
+        const copied = await copyTextToClipboard(item.url);
         copyState = copied ? "copied" : "failed";
         copyButton.textContent = t(copyState);
         window.setTimeout(() => {
@@ -1112,7 +1081,7 @@
       downloadButton.style.flex = "0 0 auto";
       downloadButton.addEventListener("click", (event) => {
         event.stopPropagation();
-        openDownloader(item.url, item.fileType || "hls");
+        openDownloader(item.url, item.fileType || "hls", getTargetTitle(item));
         panel.remove();
       });
 
@@ -1140,7 +1109,7 @@
         recordButton.style.flex = "0 0 auto";
         recordButton.addEventListener("click", (event) => {
           event.stopPropagation();
-          openLiveRecorder(item.url);
+          openLiveRecorder(item.url, getTargetTitle(item));
           panel.remove();
         });
         actions.appendChild(recordButton);
@@ -1162,14 +1131,16 @@
     getUiRoot().appendChild(panel);
   }
 
-  function openDownloader(target, fileType) {
+  function openDownloader(target, fileType, title) {
     if (!target) {
       return;
     }
-    target = ensureTitleParam(target);
     const params = new URLSearchParams({
       url: target,
     });
+    if (title) {
+      params.set("title", title);
+    }
     if (fileType && fileType !== "hls") {
       params.set("file_type", fileType);
     }
@@ -1203,14 +1174,16 @@
     window.location.href = `${APP_PREVIEW_DEEP_LINK_BASE_URL}?${params.toString()}`;
   }
 
-  function openLiveRecorder(target) {
+  function openLiveRecorder(target, title) {
     if (!target) {
       return;
     }
-    target = ensureTitleParam(target);
     const params = new URLSearchParams({
       url: target,
     });
+    if (title) {
+      params.set("title", title);
+    }
     const extraHeaders = buildExtraHeaders();
     if (extraHeaders) {
       params.set("extra_headers", extraHeaders);
@@ -1224,7 +1197,8 @@
     }
 
     const params = new URLSearchParams({
-      items: items.map((item) => item.batchUrl || item.url).join("\n")
+      items: items.map((item) => item.url).join("\n"),
+      titles: JSON.stringify(items.map((item) => item.batchTitle))
     });
     const fileTypes = items.map((item) => item.fileType || "").join("\n");
     if (fileTypes.trim()) {
@@ -1241,7 +1215,7 @@
   function buildTargetsWithUniqueNames(items) {
     const totals = new Map();
     items.forEach((item) => {
-      const key = String(getCurrentTitleFromUrl(item.url) || "").trim().toLowerCase();
+      const key = getTargetTitle(item).toLowerCase();
       if (!key) {
         return;
       }
@@ -1250,7 +1224,7 @@
 
     const indexes = new Map();
     return items.map((item) => {
-      const title = String(getCurrentTitleFromUrl(item.url) || "").trim();
+      const title = getTargetTitle(item);
       const key = title.toLowerCase();
       const total = totals.get(key) || 0;
       if (!key || total <= 1) {
@@ -1258,8 +1232,7 @@
           ...item,
           selectionKey: item.groupId || item.url,
           displayName: item.fileName || "video",
-          batchUrl: item.url,
-          batchTitle: ""
+          batchTitle: title
         };
       }
 
@@ -1269,7 +1242,6 @@
         ...item,
         selectionKey: item.groupId || item.url,
         displayName: item.fileName || "video",
-        batchUrl: appendCustomTitle(item.url, `${title}-${nextIndex}`),
         batchTitle: `${title}-${nextIndex}`
       };
     });
@@ -1281,16 +1253,6 @@
       return urlObj.searchParams.get("title") || "";
     } catch (error) {
       return "";
-    }
-  }
-
-  function appendCustomTitle(url, title) {
-    try {
-      const urlObj = new URL(url, window.location.href);
-      urlObj.searchParams.set("title", title);
-      return urlObj.href;
-    } catch (error) {
-      return url;
     }
   }
 

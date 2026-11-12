@@ -62,6 +62,7 @@ import {
   canOpenInProgressPlayback,
   isDirectFileType,
   liveRecordToDownloadSummary,
+  normalizeDownloadFilename,
   parseFileType,
 } from "./types";
 import type { ThemeMode } from "./types/settings";
@@ -79,6 +80,7 @@ interface DownloadDraft {
   url: string;
   extraHeaders?: string;
   fileType?: import("./types").FileType;
+  filename?: string;
   nonce: number;
 }
 
@@ -86,6 +88,7 @@ interface BatchDownloadDraft {
   rawInput: string;
   extraHeaders?: string;
   fileTypes?: Array<import("./types").FileType | undefined>;
+  filenames?: Array<string | undefined>;
   nonce: number;
 }
 
@@ -983,6 +986,7 @@ function App({
         initialUrl={downloadDraft?.url}
         initialExtraHeaders={downloadDraft?.extraHeaders}
         initialFileType={downloadDraft?.fileType}
+        initialFilename={downloadDraft?.filename}
         resetKey={downloadDraft?.nonce ?? 0}
         onClose={() => setModalOpen(false)}
         onOpenFfmpegSettings={() => {
@@ -1033,6 +1037,7 @@ function App({
         initialRawInput={batchDownloadDraft?.rawInput}
         initialExtraHeaders={batchDownloadDraft?.extraHeaders}
         initialFileTypes={batchDownloadDraft?.fileTypes}
+        initialFilenames={batchDownloadDraft?.filenames}
         resetKey={batchDownloadDraft?.nonce ?? 0}
         onClose={() => {
           setBatchDownloadModalOpen(false);
@@ -1617,7 +1622,9 @@ function parseDownloadDraft(deepLink: string): Omit<DownloadDraft, "nonce"> | nu
     const extraHeaders = parsed.searchParams.get("extra_headers")?.trim() || undefined;
     const rawFileType = parsed.searchParams.get("file_type");
     const fileType = parseFileType(rawFileType);
-    return { url, extraHeaders, fileType };
+    const title = parsed.searchParams.get("title");
+    const filename = title ? normalizeDownloadFilename(title) || undefined : undefined;
+    return { url, extraHeaders, fileType, filename };
   } catch (error) {
     console.debug("[m3u8quicker] failed to parse deep link", deepLink, error);
     return null;
@@ -1626,7 +1633,7 @@ function parseDownloadDraft(deepLink: string): Omit<DownloadDraft, "nonce"> | nu
 
 function parseNewLiveRecordDraft(
   deepLink: string
-): { url: string; extraHeaders?: string } | null {
+): { url: string; extraHeaders?: string; filename?: string } | null {
   try {
     const parsed = new URL(deepLink);
     const action = (parsed.hostname || parsed.pathname.replace(/^\/+/, "")).toLowerCase();
@@ -1640,7 +1647,9 @@ function parseNewLiveRecordDraft(
     }
 
     const extraHeaders = parsed.searchParams.get("extra_headers")?.trim() || undefined;
-    return { url, extraHeaders };
+    const title = parsed.searchParams.get("title");
+    const filename = title ? normalizeDownloadFilename(title) || undefined : undefined;
+    return { url, extraHeaders, filename };
   } catch (error) {
     console.debug("[m3u8quicker] failed to parse live record deep link", deepLink, error);
     return null;
@@ -1857,7 +1866,21 @@ function parseBatchDownloadDraft(
     const fileTypes = rawFileTypes
       ? rawFileTypes.split(/\r?\n/).map((value) => parseFileType(value))
       : undefined;
-    return { rawInput, extraHeaders, fileTypes };
+    let filenames: Array<string | undefined> | undefined;
+    const rawTitles = parsed.searchParams.get("titles");
+    if (rawTitles) {
+      try {
+        const titles: unknown = JSON.parse(rawTitles);
+        if (Array.isArray(titles)) {
+          filenames = titles.map((title) =>
+            typeof title === "string" ? normalizeDownloadFilename(title) || undefined : undefined
+          );
+        }
+      } catch {
+        // Invalid optional titles must not prevent the URLs from opening.
+      }
+    }
+    return { rawInput, extraHeaders, fileTypes, filenames };
   } catch (error) {
     console.debug("[m3u8quicker] failed to parse batch deep link", deepLink, error);
     return null;

@@ -47,6 +47,7 @@ interface BatchDownloadModalProps {
   initialRawInput?: string;
   initialExtraHeaders?: string;
   initialFileTypes?: Array<FileType | undefined>;
+  initialFilenames?: Array<string | undefined>;
   resetKey?: number;
   onClose: () => void;
   onOpenFfmpegSettings: () => void;
@@ -75,6 +76,7 @@ export function BatchDownloadModal({
   initialRawInput,
   initialExtraHeaders,
   initialFileTypes,
+  initialFilenames,
   resetKey,
   onClose,
   onOpenFfmpegSettings,
@@ -102,17 +104,18 @@ export function BatchDownloadModal({
     const nextItems = parseBatchInput(
       initialRawInput || "",
       initialFileTypes,
-      initialRawInput
+      initialRawInput,
+      initialFilenames
     );
     setParsedItems(nextItems);
     setSelectedRowKeys(nextItems.map((item) => item.key));
-  }, [initialExtraHeaders, initialFileTypes, initialRawInput, open, resetKey]);
+  }, [initialExtraHeaders, initialFileTypes, initialFilenames, initialRawInput, open, resetKey]);
 
   useEffect(() => {
-    const nextItems = parseBatchInput(rawInput, initialFileTypes, initialRawInput);
+    const nextItems = parseBatchInput(rawInput, initialFileTypes, initialRawInput, initialFilenames);
     setParsedItems(nextItems);
     setSelectedRowKeys(nextItems.map((item) => item.key));
-  }, [initialFileTypes, initialRawInput, rawInput]);
+  }, [initialFileTypes, initialFilenames, initialRawInput, rawInput]);
 
   const selectedKeySet = new Set(selectedRowKeys);
   const selectedItems = parsedItems.filter((item) => selectedKeySet.has(item.key));
@@ -554,7 +557,8 @@ export function BatchDownloadModal({
 function parseBatchInput(
   rawInput: string,
   initialFileTypes?: Array<FileType | undefined>,
-  initialRawInput?: string
+  initialRawInput?: string,
+  initialFilenames?: Array<string | undefined>
 ): ParsedBatchItem[] {
   const initialLines = initialRawInput?.split(/\r?\n/);
   return rawInput
@@ -567,15 +571,20 @@ function parseBatchInput(
         initialLine?.trim() === line.trim()
           ? initialFileTypes?.[lineNumber - 1]
           : undefined;
+      const initialFilename =
+        initialLine?.trim() === line.trim()
+          ? initialFilenames?.[lineNumber - 1]
+          : undefined;
 
-      return parseBatchLine(line, lineNumber, initialFileType);
+      return parseBatchLine(line, lineNumber, initialFileType, initialFilename);
     });
 }
 
 function parseBatchLine(
   rawLine: string,
   lineNumber: number,
-  initialFileType?: FileType
+  initialFileType?: FileType,
+  initialFilename?: string
 ): ParsedBatchItem {
   const trimmed = rawLine.trim();
   if (trimmed.startsWith("{")) {
@@ -584,7 +593,7 @@ function parseBatchLine(
       lineNumber,
       rawLine,
       url: trimmed,
-      filename: deriveFilenameFromInlineDashJson(trimmed),
+      filename: initialFilename || deriveFilenameFromInlineDashJson(trimmed),
       filenameEdited: false,
       mode: "dash",
       fileType: "dash",
@@ -605,7 +614,7 @@ function parseBatchLine(
       : directFileType
         ? "direct"
         : "hls";
-  const filename = deriveFilenameFromUrl(url) || undefined;
+  const filename = initialFilename || deriveFilenameFromUrl(url) || undefined;
 
   return normalizeParsedItem({
     key: `batch-${lineNumber}`,

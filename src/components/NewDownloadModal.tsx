@@ -33,6 +33,7 @@ interface NewDownloadModalProps {
   initialUrl?: string;
   initialExtraHeaders?: string;
   initialFileType?: FileType;
+  initialFilename?: string;
   resetKey?: number;
   onClose: () => void;
   onOpenFfmpegSettings: () => void;
@@ -50,6 +51,7 @@ export function NewDownloadModal({
   initialUrl,
   initialExtraHeaders,
   initialFileType,
+  initialFilename,
   resetKey,
   onClose,
   onOpenFfmpegSettings,
@@ -84,11 +86,11 @@ export function NewDownloadModal({
       form.resetFields();
       form.setFieldsValue({
         url: initialUrl || undefined,
-        filename: initialUrl ? deriveFilenameFromUrl(initialUrl) || undefined : undefined,
+        filename: initialFilename || (initialUrl ? deriveFilenameFromUrl(initialUrl) || undefined : undefined),
         extra_headers: initialExtraHeaders || undefined,
       });
     }
-  }, [form, initialExtraHeaders, initialFileType, initialUrl, isOpen, resetKey]);
+  }, [form, initialExtraHeaders, initialFileType, initialFilename, initialUrl, isOpen, resetKey]);
 
   const handleSelectDir = async () => {
     const selected = await open({

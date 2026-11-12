@@ -147,40 +147,19 @@
   }
 
   function emit(rawUrl, title, thumbnail, qualities, id) {
-    let url = rawUrl;
-    try {
-      const u = new URL(rawUrl);
-      u.searchParams.set("title", title);
-      url = u.href;
-    } catch (e) {
-      /* keep raw */
-    }
     window.dispatchEvent(
       new CustomEvent(TARGET_EVENT, {
         detail: {
           source: "douyin",
-          url: url,
+          url: rawUrl,
           fileName: title + ".mp4",
           fileType: "mp4",
           thumbnail: thumbnail,
           groupId: "douyin:" + id,
-          qualities: qualities.map((quality) => ({
-            ...quality,
-            url: withTitle(quality.url, title)
-          }))
+          qualities
         }
       })
     );
-  }
-
-  function withTitle(rawUrl, title) {
-    try {
-      const url = new URL(rawUrl);
-      url.searchParams.set("title", title);
-      return url.href;
-    } catch (e) {
-      return rawUrl;
-    }
   }
 
   function boot() {

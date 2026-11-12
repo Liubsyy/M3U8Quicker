@@ -80,20 +80,11 @@
   }
 
   function emit(rawUrl, title) {
-    let url = rawUrl;
-    try {
-      const urlObj = new URL(rawUrl, window.location.href);
-      urlObj.searchParams.set("title", title);
-      url = urlObj.href;
-    } catch (error) {
-      // keep raw url
-    }
-
     window.dispatchEvent(
       new CustomEvent(TARGET_EVENT, {
         detail: {
           source: "cctv",
-          url,
+          url: rawUrl,
           fileName: title + ".m3u8",
           fileType: "hls",
           thumbnail: null,
