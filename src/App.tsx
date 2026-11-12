@@ -135,6 +135,7 @@ function App({
 }: AppProps) {
   useTranslation();
   const [modalOpen, setModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("downloading");
   const [liveRecordModalOpen, setLiveRecordModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<
@@ -753,12 +754,6 @@ function App({
       label: t("completed", { value0: counts.history_count }),
       children: (
         <div>
-          <HistorySearchBar
-            value={historySearch}
-            onChange={searchHistory}
-            loading={loadingHistory}
-            total={completedTotal}
-          />
           <DownloadList
             downloads={completed}
             total={completedTotal}
@@ -850,12 +845,6 @@ function App({
       label: t("recorded2", { value0: liveCounts.history_count }),
       children: (
         <div>
-          <HistorySearchBar
-            value={liveHistorySearch}
-            onChange={searchLiveHistory}
-            loading={loadingLiveHistory}
-            total={liveRecordedTotal}
-          />
           <DownloadList
             downloads={liveRecordedItems}
             total={liveRecordedTotal}
@@ -966,7 +955,28 @@ function App({
           background: token.colorBgLayout,
         }}
       >
-        <Tabs items={tabItems} defaultActiveKey="downloading" />
+        <Tabs
+          items={tabItems}
+          activeKey={activeTab}
+          onChange={setActiveTab}
+          tabBarExtraContent={
+            activeTab === "completed" ? (
+              <HistorySearchBar
+                value={historySearch}
+                onChange={searchHistory}
+                loading={loadingHistory}
+                total={completedTotal}
+              />
+            ) : activeTab === "live-recorded" ? (
+              <HistorySearchBar
+                value={liveHistorySearch}
+                onChange={searchLiveHistory}
+                loading={loadingLiveHistory}
+                total={liveRecordedTotal}
+              />
+            ) : null
+          }
+        />
       </Content>
       <NewDownloadModal
         open={modalOpen}

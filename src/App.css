@@ -130,6 +130,11 @@ body,
   padding-inline: 10px;
 }
 
+.history-search-bar {
+  width: clamp(220px, 28vw, 270px);
+  margin-inline-start: 16px;
+}
+
 .toolbar-download-main-btn.ant-btn {
   position: relative;
 }
